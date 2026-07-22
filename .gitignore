@@ -29,3 +29,6 @@ profile.cov
 output/
 
 !.claude/settings.local.json
+
+# built plugin/fetcher binaries at repo root
+/goplugin

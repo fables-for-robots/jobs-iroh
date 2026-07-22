@@ -1,0 +1,43 @@
+#!/usr/bin/env bash
+# gomod fetcher: download one Go module into a module cache and emit its
+# cache/download entry (the pre-fetched form a build consumes offline).
+#
+# Params (JOBS_FETCH_PARAMS, JSON): { "module": "...", "version": "v..." }
+# Output tree: cache/download/<module>/@v/{info,mod,zip,ziphash,...}
+# Exit: 0 success · 75 retryable (network) · other hard.
+#
+# Uses the host `go` (network-capable, an import node) so module-path escaping,
+# hashing, and the .info/.mod/.ziphash files are produced exactly as the cache
+# expects. The consuming build merges this into $GOMODCACHE/cache/download and
+# builds with GOPROXY=off.
+set -euo pipefail
+out="${JOBS_OUTPUT_DIR:?JOBS_OUTPUT_DIR not set}"
+params="${JOBS_FETCH_PARAMS:?JOBS_FETCH_PARAMS not set}"
+
+module="$(jq -r '.module // empty' <<<"$params")"
+version="$(jq -r '.version // empty' <<<"$params")"
+[ -n "$module" ]  || { echo "gomod: module required" >&2; exit 1; }
+[ -n "$version" ] || { echo "gomod: version required" >&2; exit 1; }
+
+# go makes the module cache read-only; chmod before removing the temp tree.
+tmp="$(mktemp -d)"; trap 'chmod -R u+w "$tmp" 2>/dev/null || true; rm -rf "$tmp"' EXIT
+export GOMODCACHE="$tmp/mod" GOPATH="$tmp/gopath" GOCACHE="$tmp/gocache" GOTOOLCHAIN=local
+mkdir -p "$GOMODCACHE" "$tmp/work"
+
+# Download into a throwaway module context (robust regardless of go version).
+if ! ( cd "$tmp/work" && go mod init jobs.local/gomodfetch >/dev/null 2>&1 || true
+       go mod download -x "$module@$version" ); then
+	echo "gomod: go mod download failed for $module@$version" >&2
+	exit 75 # retryable — transient proxy/network
+fi
+
+src="$GOMODCACHE/cache/download"
+[ -d "$src" ] || { echo "gomod: no cache/download produced for $module@$version" >&2; exit 1; }
+mkdir -p "$out/cache/download"
+cp -a "$src/." "$out/cache/download/"
+chmod -R u+w "$out/cache/download"
+# Ship only the deterministic per-version files. Drop the sumdb cache and version
+# `list` (both grow/change over the global log's lifetime → non-reproducible) and
+# any lock scratch (recreated by the consuming build).
+rm -rf "$out/cache/download/sumdb"
+find "$out/cache/download" \( -name '*.lock' -o -name list \) -delete 2>/dev/null || true

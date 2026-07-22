@@ -1,0 +1,18 @@
+#!/usr/bin/env bash
+# goplugin fetcher: emit the go-build plugin executable (build.md §6).
+#
+# The plugin is a statically-linked (CGO-disabled) Go binary built from
+# plugins/goplugin — scripts/dev-setup.sh compiles it into THIS artifact dir as
+# `plugin` before registering the fetcher (the materialized artifact at fetch
+# time is not inside the Go module, so it cannot compile from source here).
+# We just place the prebuilt binary in the output tree.
+set -euo pipefail
+out="${JOBS_OUTPUT_DIR:?JOBS_OUTPUT_DIR not set}"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+[ -x "$here/plugin" ] || {
+	echo "goplugin: prebuilt 'plugin' missing in the artifact — run scripts/dev-setup.sh" >&2
+	exit 1
+}
+cp "$here/plugin" "$out/plugin"
+chmod +x "$out/plugin"

@@ -1,0 +1,56 @@
+# JOBS fetcher manifest — the embedded seed inventory.
+#
+# Since the recipe-declared-fetchers design
+# (docs/superpowers/specs/2026-07-10-recipe-declared-fetchers-design.md) this
+# file lists ONLY the embedded seed leaves, self-seeded into amber on startup.
+# Every other fetcher/plugin is declared at its point of use: recipes construct
+# fetcher(name, url = ..., sha256 = ...) values passed to imp(fetcher = ...),
+# and plugin artifacts bundle their companion fetcher pins in their own
+# fetchers.toml. `source = "build"` entries are a parse error.
+#
+# Seed leaves:
+#   tarball+https — the one network-capable bootstrap fetcher (static Go binary)
+#   shell         — the static bash+jq+busybox sandbox userland
+#   hostmusl      — the musl loader + libgcc_s (nix-built, not JOBS-buildable)
+#   github        — submit-time source imports are constructed outside any
+#                   recipe, so github must exist before any recipe does
+
+[[fetcher]]
+name = "tarball+https"
+platform = "linux/amd64"
+source = "embedded"
+
+[[fetcher]]
+name = "tarball+https"
+platform = "linux/arm64"
+source = "embedded"
+
+[[fetcher]]
+name = "shell"
+platform = "linux/amd64"
+source = "embedded"
+
+[[fetcher]]
+name = "shell"
+platform = "linux/arm64"
+source = "embedded"
+
+[[fetcher]]
+name = "hostmusl"
+platform = "linux/amd64"
+source = "embedded"
+
+[[fetcher]]
+name = "hostmusl"
+platform = "linux/arm64"
+source = "embedded"
+
+[[fetcher]]
+name = "github"
+platform = "linux/amd64"
+source = "embedded"
+
+[[fetcher]]
+name = "github"
+platform = "linux/arm64"
+source = "embedded"

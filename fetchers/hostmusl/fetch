@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# hostmusl fetcher: emit the musl runtime + link environment the Rust toolchain
+# and its (dynamic) outputs need (arch token = x86_64 / aarch64, from uname -m):
+#   - ld-musl-<arch>.so.1 : the musl dynamic loader (== libc)
+#   - libgcc_s.so.1       : the unwinder the musl-host rustc/cargo NEED-link against
+#     (the rust tarball does not bundle it)
+#   - libc.so, libc.musl-<arch>.so.1, libgcc_s.so : symlinks so rust-lld's -lc /
+#     -lgcc_s resolve at link time and the built binaries' NEEDED (SONAME) entries
+#     resolve at run time (all point at the two real objects).
+#
+# scripts/dev-setup.sh builds the two real objects (nix build .#muslRuntime) into
+# THIS artifact dir before registering the fetcher (fetchers run as plain host
+# subprocesses from the materialized artifact, so we must not depend on nix or the
+# repo flake at fetch time). We place them + the symlinks in the output tree.
+set -euo pipefail
+out="${JOBS_OUTPUT_DIR:?JOBS_OUTPUT_DIR not set}"
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# The loader is named per-arch (x86_64 / aarch64, the nixpkgs token). Derive it
+# from the artifact contents, NOT from uname: imports run on any runner, and a
+# platform-pinned import (imp(platform=)) must vendor the arch this artifact
+# carries even when fetched on a different-arch host.
+ldso=""
+for f in "$here"/ld-musl-*.so.1; do
+	[ -f "$f" ] && ldso="$(basename "$f")"
+done
+[ -n "$ldso" ] || {
+	echo "hostmusl: no ld-musl-<arch>.so.1 in the artifact — run scripts/dev-setup.sh" >&2
+	exit 1
+}
+arch="${ldso#ld-musl-}"
+arch="${arch%.so.1}"
+
+mkdir -p "$out/lib"
+for lib in "$ldso" libgcc_s.so.1; do
+	[ -f "$here/$lib" ] || {
+		echo "hostmusl: prebuilt '$lib' missing in the artifact — run scripts/dev-setup.sh" >&2
+		exit 1
+	}
+	case "$(od -An -N4 -tx1 "$here/$lib" | tr -d ' \n')" in
+		7f454c46) : ;; # ELF — good
+		*) echo "hostmusl: $lib is not an ELF object" >&2; exit 1 ;;
+	esac
+	cp "$here/$lib" "$out/lib/$lib"
+	chmod +x "$out/lib/$lib"
+done
+# -lc + the runtime libc NEEDED → the loader (musl's loader IS libc).
+ln -sf "$ldso" "$out/lib/libc.so"
+ln -sf "$ldso" "$out/lib/libc.musl-$arch.so.1"
+# -lgcc_s → the versioned unwinder.
+ln -sf libgcc_s.so.1 "$out/lib/libgcc_s.so"

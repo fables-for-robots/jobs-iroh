@@ -1,0 +1,165 @@
+package builddef
+
+import (
+	"bytes"
+	"testing"
+
+	"github.com/fables-for-robots/jobs-iroh/amber"
+	"github.com/fables-for-robots/jobs-iroh/importdef"
+)
+
+// importInput builds an import Input for a fetcher+url (test helper).
+func importInput(t *testing.T, fetcher, url string) Input {
+	t.Helper()
+	p, err := importdef.CanonicalParams(map[string]any{"url": url})
+	if err != nil {
+		t.Fatal(err)
+	}
+	canon, err := importdef.Definition{Fetcher: fetcher, Params: p}.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return Input{Kind: KindImport, Definition: canon}
+}
+
+func TestInput_Key(t *testing.T) {
+	in := importInput(t, "tarball+https", "https://example.com/x.tgz")
+	k, err := in.Key()
+	if err != nil {
+		t.Fatal(err)
+	}
+	// K must equal amber.FileKey of the embedded definition bytes (build.md §4).
+	want, err := amber.FileKey(in.Definition)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if k != want {
+		t.Fatalf("Input.Key=%s want %s", k, want)
+	}
+}
+
+func TestDefinition_CanonicalRoundTrip(t *testing.T) {
+	src := importInput(t, "github", "https://github.com/o/r")
+	p, err := importdef.CanonicalParams(map[string]any{"opt": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := Definition{Source: src, Dir: "sub", Platform: "linux/amd64", Params: p, BuildJobs: []byte("def build(): pass\n")}
+	c, err := d.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := DecodeDefinition(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Platform != "linux/amd64" || got.Dir != "sub" || string(got.BuildJobs) != "def build(): pass\n" {
+		t.Fatalf("decoded mismatch: %+v", got)
+	}
+}
+
+func TestDefinition_EmptyOverrideOmitted(t *testing.T) {
+	src := importInput(t, "github", "https://github.com/o/r")
+	p, err := importdef.CanonicalParams(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withEmpty := Definition{Source: src, Dir: "", Platform: "linux/amd64", Params: p, BuildJobs: []byte{}}
+	withNil := Definition{Source: src, Platform: "linux/amd64", Params: p}
+	a, err := withEmpty.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := withNil.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(a, b) {
+		t.Fatalf("empty override must encode like nil:\n a=%x\n b=%x", a, b)
+	}
+}
+
+func TestDefinition_BuildFileRoundTrip(t *testing.T) {
+	src := importInput(t, "github", "https://github.com/o/r")
+	p, err := importdef.CanonicalParams(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := Definition{Source: src, Platform: "linux/amd64", Params: p, BuildFile: "app-a.jobs"}
+	c, err := d.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := DecodeDefinition(c)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.BuildFile != "app-a.jobs" {
+		t.Fatalf("decoded BuildFile=%q want %q", got.BuildFile, "app-a.jobs")
+	}
+}
+
+// An empty BuildFile must encode identically to a definition without the field
+// (omitempty), so pre-existing builds keep their K after this field is added.
+func TestDefinition_EmptyBuildFileOmitted(t *testing.T) {
+	src := importInput(t, "github", "https://github.com/o/r")
+	p, err := importdef.CanonicalParams(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withEmpty := Definition{Source: src, Platform: "linux/amd64", Params: p, BuildFile: ""}
+	without := Definition{Source: src, Platform: "linux/amd64", Params: p}
+	a, err := withEmpty.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := without.Canonical()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(a, b) {
+		t.Fatalf("empty BuildFile must encode identically to absent:\n a=%x\n b=%x", a, b)
+	}
+}
+
+// Two builds that differ only in BuildFile are different definitions → different K.
+func TestDefinition_BuildFilePerturbsKey(t *testing.T) {
+	src := importInput(t, "github", "https://github.com/o/r")
+	p, err := importdef.CanonicalParams(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := Definition{Source: src, Platform: "linux/amd64", Params: p}
+	a := base
+	a.BuildFile = "a.jobs"
+	b := base
+	b.BuildFile = "b.jobs"
+	ka, err := a.Key()
+	if err != nil {
+		t.Fatal(err)
+	}
+	kb, err := b.Key()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ka == kb {
+		t.Fatalf("different BuildFile must yield different K, both %s", ka)
+	}
+}
+
+func TestDefinition_ParamsValue(t *testing.T) {
+	src := importInput(t, "github", "https://github.com/o/r")
+	p, err := importdef.CanonicalParams(map[string]any{"k": "v"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := Definition{Source: src, Platform: "linux/amd64", Params: p}
+	v, err := d.ParamsValue()
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, ok := v.(map[string]any)
+	if !ok || m["k"] != "v" {
+		t.Fatalf("ParamsValue=%#v", v)
+	}
+}
