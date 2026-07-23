@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.4.0 — 2026-07-23
+
+- **Build failures are now durably diagnosable.** Every failed (or
+  budget-burning retried) attempt folds a record into a new `FAILURES`
+  JetStream stream at the moment the scheduler decides its fate: origin
+  (runner result / commit / gate / server), disposition (retry + backoff,
+  or terminal), the runner's verbatim result (class, exit, runner ID,
+  rusage, and the proposed ref batch on gate/commit rejections), retry
+  counters, request tags, timing, and a trimmed snapshot of the attempt's
+  captured output (256KiB head + 512KiB tail). Previously the log ring was
+  reset by the very retry that made a failure terminal, leaving a 4KiB
+  stderr tail as the only trace. Records survive retries and server
+  restarts (7 days, last 8 attempts per node) and are diagnostics only —
+  never load-bearing.
+- **`jobs-client diagnose --server <id> (--request <id> | --node <name>)`**
+  renders the trail as a self-contained failure report — per attempt:
+  verdict, runner, error, timing, rusage, captured output between explicit
+  markers — designed to be pasted into an issue or an LLM conversation
+  as-is. `--json` emits the machine shape (logs as readable strings,
+  RFC3339 timestamps); `--logs-dir` dumps the output bytes verbatim.
+  Served by a new `diagnose` frame on `jobs-admin/1.0`; by-request
+  resolution works after a server restart by scanning the records' request
+  tags. `remote-build` and `watch` now print the exact diagnose command
+  when a build fails.
+
 ## v0.3.0 — 2026-07-23
 
 - **Sandbox remounts no longer fail on hardened mounts.** The read-only (and
