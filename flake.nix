@@ -21,7 +21,7 @@
           '';
           hardeningDisable = [ "all" ];
 
-          packages = with pkgs; [ go ];
+          packages = with pkgs; [ go gh ];
         };
       });
 
