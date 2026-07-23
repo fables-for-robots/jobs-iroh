@@ -2,23 +2,30 @@
 
 package runner
 
-// The local depth-first build driver — the CLI's "same code paths" orchestrator
-// (jobs' develop_linux.go, driver half). The interactive develop PTY shell
-// (prepareDevelop/RunDevelop) is a later milestone; this file carries only the
-// pieces the local build/run pipeline needs: DevelopConfig, the developDriver
-// (memoized, cycle-detected, skip-by-ref-existence ensure loops), and
-// outcomeErr.
+// The local build orchestrator + the interactive develop shell (jobs'
+// develop_linux.go): the developDriver (memoized, cycle-detected,
+// skip-by-ref-existence ensure loops) the local build/run pipeline shares,
+// plus prepareDevelop/developRun/RunDevelop — the PTY shell in the EXACT
+// hermetic build sandbox the runner would use (script printed, not run).
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"os"
+	"os/signal"
+	"path/filepath"
 	"sort"
+	"syscall"
 
+	"github.com/creack/pty"
 	"github.com/fables-for-robots/amber-store-core/key"
 	"github.com/fables-for-robots/jobs-iroh/amber"
 	"github.com/fables-for-robots/jobs-iroh/builddef"
 	"github.com/fables-for-robots/jobs-iroh/importdef"
+	"github.com/fables-for-robots/jobs-iroh/sandbox"
+	"golang.org/x/term"
 )
 
 // DevelopConfig configures a `jobs develop` / local `jobs run --source` run.
@@ -196,4 +203,177 @@ func outcomeErr(what string, out Outcome) error {
 	default:
 		return nil
 	}
+}
+
+// prepareDevelop computes F for the local target, drives it through the F-keyed
+// stages (tagging build-plugin-resolved:F + build-pinned:F, skipping cached
+// stages, reporting progress), ensures inputs, and assembles the dev-shell
+// sandbox spec from build-pinned:F. It does NOT run build-output (develop shells
+// in). Returns the spec + the build script. jobs' prepareDevelop minus the
+// signer: local refs are plain unsigned refstore records (LocalRefWriter).
+func prepareDevelop(ctx context.Context, st *amber.Store, cfg DevelopConfig, p *Progress) (BuildSpec, string, error) {
+	platform := cfg.Platform
+	if platform == "" {
+		platform = Platform()
+	}
+	shellRef := cfg.ShellRef
+	if shellRef == "" {
+		shellRef = "shell:" + platform
+	}
+	shellKey, ok, err := st.GetKey(ctx, shellRef)
+	if err != nil {
+		return BuildSpec{}, "", fmt.Errorf("resolve %s: %w", shellRef, err)
+	}
+	if !ok {
+		return BuildSpec{}, "", fmt.Errorf("shell artifact %q not found (seed missing — restart to re-seed)", shellRef)
+	}
+	brc := BuildRunCfg{Platform: platform, ShellKey: shellKey, CacheDir: cfg.CacheDir}
+
+	bf := p.Start("build-from")
+	f, err := localBuildFrom(ctx, st, brc, cfg)
+	if err != nil {
+		bf(err)
+		return BuildSpec{}, "", err
+	}
+	bf(nil)
+
+	d := &developDriver{
+		ctx: ctx, st: st, rw: NewLocalRefWriter(st), brc: brc, secrets: cfg.Secrets,
+		visited: map[string]bool{}, inProgress: map[string]bool{},
+	}
+	if err := d.driveFStages(f, false, p); err != nil { // runFinal=false: stop at pin
+		return BuildSpec{}, "", err
+	}
+	spec, _, out := assembleBuildSpec(ctx, st, brc, f)
+	if out != nil {
+		return BuildSpec{}, "", outcomeErr("assemble build spec", *out)
+	}
+	return spec, spec.Script, nil
+}
+
+// developRcfile is sourced by the interactive shell: a recognizable prompt + a
+// one-line reminder of how to run the real build script.
+const developRcfile = `PS1='(jobs develop) \w \$ '
+echo 'jobs develop: $SRC is the source copy, $out is the (empty) output dir.'
+echo 'The runner build script is printed above and saved at /build/build.sh (run: bash -e /build/build.sh).'
+`
+
+// developRun assembles the target sandbox and runs command in it. It binds the
+// host /dev recursively so an interactive shell has /dev/tty etc. (a develop-only
+// relaxation; the hermetic build path gets only a minimal pseudo-device /dev).
+// The build script is written to /build/build.sh and the rcfile to
+// /build/.developrc inside the sandbox. When tty is non-nil it is the
+// controlling terminal; otherwise stdout/stderr wire the command's output.
+func developRun(ctx context.Context, st *amber.Store, spec BuildSpec, command []string, stdout, stderr io.Writer, tty *os.File) (int, error) {
+	a, err := assembleSandbox(ctx, st, spec, command, []sandbox.Mount{
+		{Source: "/dev", Target: "/dev"}, // recursive bind (applyMount adds MS_REC)
+	})
+	if err != nil {
+		return -1, err
+	}
+	defer func() {
+		if a.cg != nil {
+			_ = a.cg.Close()
+		}
+		_ = os.RemoveAll(a.work)
+	}()
+
+	// Drop the script + rcfile into the sandbox's /build (== <newRoot>/build).
+	buildDir := filepath.Join(a.cfg.NewRoot, "build")
+	if err := os.WriteFile(filepath.Join(buildDir, "build.sh"), []byte(spec.Script), 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "jobs develop: warning: write build.sh: %v\n", err)
+	}
+	if err := os.WriteFile(filepath.Join(buildDir, ".developrc"), []byte(developRcfile), 0o644); err != nil {
+		fmt.Fprintf(os.Stderr, "jobs develop: warning: write .developrc: %v\n", err)
+	}
+
+	if tty != nil {
+		a.cfg.Tty = tty
+	} else {
+		a.cfg.Stdout, a.cfg.Stderr = stdout, stderr
+	}
+	return sandbox.Run(ctx, a.cfg)
+}
+
+// printScript writes a human summary of the assembled build + the script the
+// runner would execute, before the interactive shell starts.
+func printScript(w io.Writer, spec BuildSpec, script string) {
+	fmt.Fprintln(w, "=== jobs develop ===")
+	fmt.Fprintf(w, "SRC=%s  out=%s\n", sandboxSrcDir, sandboxOutDir)
+	if len(spec.JobsDeps) > 0 {
+		fmt.Fprintln(w, "deps (JOBS_DEPS — name → /jobs/store/<BOK>, read-only):")
+		names := make([]string, 0, len(spec.JobsDeps))
+		for n := range spec.JobsDeps {
+			names = append(names, n)
+		}
+		sort.Strings(names)
+		for _, n := range names {
+			fmt.Fprintf(w, "  %s=%s\n", n, spec.JobsDeps[n])
+		}
+	}
+	if len(spec.Env) > 0 {
+		fmt.Fprintln(w, "env:")
+		envKeys := make([]string, 0, len(spec.Env))
+		for k := range spec.Env {
+			envKeys = append(envKeys, k)
+		}
+		sort.Strings(envKeys)
+		for _, k := range envKeys {
+			fmt.Fprintf(w, "  %s=%s\n", k, spec.Env[k])
+		}
+	}
+	fmt.Fprintln(w, "--- build script (runner would execute; saved at /build/build.sh) ---")
+	fmt.Fprintln(w, script)
+	fmt.Fprintln(w, "----------------------------------------------------------------------")
+}
+
+// RunDevelop ensures the target's dependencies are built, prints the build
+// script, and opens an interactive bash shell in the assembled hermetic sandbox
+// over a PTY (real prompt, line editing, Ctrl-C job control).
+func RunDevelop(ctx context.Context, st *amber.Store, cfg DevelopConfig) error {
+	p := NewProgress(os.Stderr)
+	spec, script, err := prepareDevelop(ctx, st, cfg, p)
+	if err != nil {
+		return err
+	}
+	// Develop mounts the declared caches warm but never uploads (build-cache
+	// design §7): interactive state is not shared cache state. The host dirs
+	// are discarded on exit.
+	defer removeCacheDirs(spec.Caches)
+	for _, cm := range spec.Caches {
+		fmt.Fprintf(os.Stderr, "jobs develop: cache %q mounted rw at %s (not uploaded on exit)\n", cm.ID, cm.Path)
+	}
+	printScript(os.Stdout, spec, script)
+
+	ptmx, tty, err := pty.Open()
+	if err != nil {
+		return fmt.Errorf("open pty: %w", err)
+	}
+	defer ptmx.Close()
+
+	// Host terminal → raw mode for the duration (best-effort: if stdin is not a
+	// terminal, e.g. piped, skip raw mode and continue).
+	if oldState, err := term.MakeRaw(int(os.Stdin.Fd())); err == nil {
+		defer term.Restore(int(os.Stdin.Fd()), oldState)
+	}
+
+	// Propagate window size now and on SIGWINCH.
+	winch := make(chan os.Signal, 1)
+	signal.Notify(winch, syscall.SIGWINCH)
+	defer signal.Stop(winch)
+	go func() {
+		for range winch {
+			_ = pty.InheritSize(os.Stdin, ptmx)
+		}
+	}()
+	winch <- syscall.SIGWINCH
+
+	// Forward host stdio ↔ PTY master.
+	go func() { _, _ = io.Copy(ptmx, os.Stdin) }()
+	go func() { _, _ = io.Copy(os.Stdout, ptmx) }()
+
+	command := []string{storeShellDir(spec.ShellBOK) + "/bin/bash", "--rcfile", "/build/.developrc", "-i"}
+	_, err = developRun(ctx, st, spec, command, nil, nil, tty)
+	_ = tty.Close()
+	return err
 }

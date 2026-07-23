@@ -203,6 +203,15 @@ func amberConnHandler(srv *ambserver.Server) iroh.ProtocolHandler {
 			}
 			g.Go(func() error {
 				srv.HandleStream(conn.RemoteID().String(), stream)
+				// HandleStream closes only the send side; the sync protocol
+				// never reads the client's FIN after the final frame. Cancel
+				// the receive side so the stream fully terminates — QUIC
+				// returns MAX_STREAMS credit to the client only for fully
+				// closed streams, and without this every operation leaks one
+				// stream until the client's 101st open blocks forever.
+				if cr, ok := stream.(interface{ CancelRead(code uint64) }); ok {
+					cr.CancelRead(0)
+				}
 				return nil
 			})
 		}

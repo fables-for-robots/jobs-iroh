@@ -61,7 +61,7 @@ func (a *apiConn) openRequest(ctx context.Context, t string, body any) (net.Conn
 	stop := context.AfterFunc(ctx, func() { _ = stream.SetDeadline(time.Now()) })
 	if err := api.WriteFrame(stream, t, body); err != nil {
 		stop()
-		stream.Close()
+		amberclient.CloseStream(stream)
 		return nil, nil, fmt.Errorf("send %s: %w", t, err)
 	}
 	return stream, func() { stop() }, nil
@@ -75,7 +75,11 @@ func (a *apiConn) call(ctx context.Context, t string, body any, wantType string,
 		return err
 	}
 	defer stop()
-	defer stream.Close()
+	// Full termination (send FIN + receive cancel): one-shot request streams
+	// are never read to EOF by either side, and only fully closed streams
+	// hand their MAX_STREAMS credit back — long-lived admin/TUI sessions
+	// would otherwise stall on the 101st call.
+	defer amberclient.CloseStream(stream)
 	rt, rb, err := api.ReadFrame(stream)
 	if err != nil {
 		return fmt.Errorf("%s: read reply: %w", t, err)

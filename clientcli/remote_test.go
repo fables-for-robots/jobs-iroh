@@ -72,30 +72,38 @@ func TestTreeDefinitionCanonicalIdentity(t *testing.T) {
 	}
 }
 
-func TestRenderSnapshotDedupes(t *testing.T) {
-	var buf bytes.Buffer
-	var last string
+// TestSnapshotChangeLineDedupes: the non-TTY watch path prints one line per
+// snapshot DELTA — an unchanged snapshot maps to the same line, which the
+// stream loop dedupes.
+func TestSnapshotChangeLineDedupes(t *testing.T) {
 	snap := api.Snapshot{
 		Phase:  "running",
-		Counts: wire.Counts{Total: 3, Done: 1, Running: 1},
+		Counts: wire.Counts{Total: 3, Done: 1, Running: 1, Waiting: 1},
 		Nodes: []api.NodeSnap{
 			{Node: "buildfrom_ab", Phase: wire.PhaseRunning},
 			{Node: "buildvalue_ab", Phase: wire.PhaseWaiting},
 		},
 	}
-	renderSnapshot(&buf, snap, &last)
-	renderSnapshot(&buf, snap, &last) // identical: must not repeat
-	out := buf.String()
-	if strings.Count(out, "\n") != 1 {
-		t.Fatalf("expected one line, got %q", out)
+	a := snapshotChangeLine(snap)
+	if a != snapshotChangeLine(snap) {
+		t.Fatal("identical snapshots must map to identical lines")
 	}
-	if !strings.Contains(out, "done 1/3") || !strings.Contains(out, "buildfrom_ab") {
-		t.Fatalf("line content: %q", out)
+	if !strings.Contains(a, "1/3 done") || !strings.Contains(a, "buildfrom_ab") {
+		t.Fatalf("line content: %q", a)
+	}
+	if strings.Contains(a, "buildvalue_ab") {
+		t.Fatalf("waiting node must not be listed as in flight: %q", a)
+	}
+	if strings.Contains(a, "failed") {
+		t.Fatalf("no-failure snapshot must not mention failures: %q", a)
 	}
 	snap.Counts.Done = 2
-	renderSnapshot(&buf, snap, &last)
-	if strings.Count(buf.String(), "\n") != 2 {
-		t.Fatalf("expected a second line after a change, got %q", buf.String())
+	if snapshotChangeLine(snap) == a {
+		t.Fatal("changed counts must change the line")
+	}
+	snap.Counts.Failed = 1
+	if !strings.Contains(snapshotChangeLine(snap), "1 failed") {
+		t.Fatalf("failed count missing: %q", snapshotChangeLine(snap))
 	}
 }
 
@@ -201,6 +209,14 @@ func TestRemoteBuildEndToEnd(t *testing.T) {
 	if !strings.Contains(errOut.String(), "submitted request ") {
 		t.Fatalf("stderr missing submit line:\n%s", errOut.String())
 	}
+	// Non-TTY watch: the terminal snapshot collapses to the plain verdict
+	// line (no ANSI on a buffer-backed ErrWriter).
+	if !strings.Contains(errOut.String(), "build: DONE · ") {
+		t.Fatalf("stderr missing watch verdict line:\n%s", errOut.String())
+	}
+	if strings.Contains(errOut.String(), "\x1b[") {
+		t.Fatalf("non-TTY stderr must carry no ANSI:\n%q", errOut.String())
+	}
 
 	// The outputs were pulled home into the client store.
 	cst, err := amber.Open(filepath.Join(dataDir, "store"))
@@ -211,5 +227,25 @@ func TestRemoteBuildEndToEnd(t *testing.T) {
 	got, ok, err := cst.GetKey(ctx, "build-output:"+f.String())
 	if err != nil || !ok || got != outKey {
 		t.Fatalf("local build-output ref: key=%s ok=%v err=%v (want %s)", got, ok, err, outKey)
+	}
+
+	// One-shot status against the same server: the finished request shows in
+	// the requests table; the fleet table renders (empty — no runner here).
+	stApp := App()
+	var stOut, stErr bytes.Buffer
+	stApp.Writer = &stOut
+	stApp.ErrWriter = &stErr
+	err = stApp.RunContext(ctx, []string{"jobs-client", "status",
+		"--server", serverID, "--addr", serverAddr})
+	if err != nil {
+		t.Fatalf("status: %v\nstderr:\n%s", err, stErr.String())
+	}
+	for _, want := range []string{"REQUEST", "RUNNER", "done"} {
+		if !strings.Contains(stOut.String(), want) {
+			t.Fatalf("status output missing %q:\n%s", want, stOut.String())
+		}
+	}
+	if strings.Contains(stOut.String(), "\x1b[") {
+		t.Fatalf("status output must be plain text:\n%q", stOut.String())
 	}
 }

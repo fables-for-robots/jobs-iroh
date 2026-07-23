@@ -28,9 +28,13 @@ type RunIO struct {
 // opening a shell. It publishes build-output:F + build-output-deps:F so an
 // unchanged target reuses its cached output on the next run. Returns the
 // entrypoint's exit code (a non-zero exit is NOT a Go error); a Go error means
-// the build or sandbox setup failed.
-func RunFromSource(ctx context.Context, st *amber.Store, cfg DevelopConfig, extraArgs []string, rio RunIO) (int, error) {
-	p := NewProgress(rio.Stderr) // progress to the run command's stderr
+// the build or sandbox setup failed. p receives the build phase's step
+// events (nil for silence); a nil p from the CLI is replaced by the classic
+// plain reporter on rio.Stderr so `run` never builds mutely by accident.
+func RunFromSource(ctx context.Context, st *amber.Store, cfg DevelopConfig, extraArgs []string, rio RunIO, p *Progress) (int, error) {
+	if p == nil {
+		p = NewProgress(rio.Stderr) // progress to the run command's stderr
+	}
 	art, err := prepareSourceArtifact(ctx, st, cfg, p)
 	if err != nil {
 		return -1, err

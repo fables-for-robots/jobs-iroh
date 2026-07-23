@@ -1,12 +1,14 @@
 // Package clientcli wires the jobs-client command surface: hermetic LOCAL
-// builds (`build`) and build-then-execute (`run`) over the embedded
-// amber-store-core store under --data-dir, plus the remote surface against a
-// jobs-server — `remote-build` (push source, submit, watch, pull outputs
-// home), `watch`, and the thin `admin` frame calls (stats/fleet/requests/
-// refs). It is the jobs-iroh port of jobs' internal/jobscli with the store
-// seam swapped (methods on *amber.Store) and the signing/grant plumbing
-// deleted — refs are plain unsigned refstore records; transport identity is
-// the server's iroh endpoint key.
+// builds (`build`), build-then-execute (`run`), the interactive build-sandbox
+// shell (`develop`, flock held for the whole session), and OCI image export
+// (`image`, by --source or by build key) over the embedded amber-store-core
+// store under --data-dir, plus the remote surface against a jobs-server —
+// `remote-build` (push source, submit, watch, pull outputs home), `watch`,
+// and the thin `admin` frame calls (stats/fleet/requests/refs). It is the
+// jobs-iroh port of jobs' internal/jobscli with the store seam swapped
+// (methods on *amber.Store) and the signing/grant plumbing deleted — refs are
+// plain unsigned refstore records; transport identity is the server's iroh
+// endpoint key.
 package clientcli
 
 import (
@@ -33,9 +35,13 @@ func App() *cli.App {
 		Commands: []*cli.Command{
 			buildCmd(),
 			runCmd(),
+			developCmd(),
+			imageCmd(),
 			remoteBuildCmd(),
 			watchCmd(),
+			statusCmd(),
 			adminCmd(),
+			tuiCmd(),
 		},
 	}
 }

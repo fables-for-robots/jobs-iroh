@@ -14,6 +14,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 
@@ -334,5 +335,138 @@ func TestPushMissingRoot(t *testing.T) {
 	storeEmpty := openStore(t)
 	if err := client.Push(ctx, storeEmpty, "x", bogus); err == nil {
 		t.Fatal("push of a locally missing root must fail")
+	}
+}
+
+// TestPushPullProgress pins the observer seam: callbacks report monotonic
+// done counts converging on the total, the returned stats match the final
+// callback, and an already-synced transfer reports 0/0 without callbacks.
+func TestPushPullProgress(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+	defer cancel()
+
+	srv := startServer(t, ctx)
+	client := dialClient(t, ctx, srv, serve.ALPNAmberAdmin)
+
+	src := layeredSource(t)
+	storeA := openStore(t)
+	root, err := storeA.IngestDir(ctx, src)
+	if err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+
+	type sample struct{ done, total int }
+	var mu sync.Mutex
+	var pushSamples []sample
+	record := func(dst *[]sample) amberclient.ProgressFunc {
+		return func(done, total int) {
+			mu.Lock()
+			*dst = append(*dst, sample{done, total})
+			mu.Unlock()
+		}
+	}
+
+	const name = "e2e/progress"
+	pushStats, err := client.PushWithProgress(ctx, storeA, name, root, record(&pushSamples))
+	if err != nil {
+		t.Fatalf("push: %v", err)
+	}
+	if pushStats.Objects == 0 || pushStats.Bytes == 0 {
+		t.Fatalf("push stats empty: %+v", pushStats)
+	}
+	mu.Lock()
+	if len(pushSamples) == 0 {
+		mu.Unlock()
+		t.Fatal("push progress callback never fired")
+	}
+	lastDone := -1
+	for _, s := range pushSamples {
+		if s.done < lastDone {
+			t.Fatalf("done went backwards: %+v", pushSamples)
+		}
+		lastDone = s.done
+	}
+	final := pushSamples[len(pushSamples)-1]
+	mu.Unlock()
+	if final.done != pushStats.Objects || final.total != pushStats.Objects {
+		t.Fatalf("final push sample %+v, want done=total=%d", final, pushStats.Objects)
+	}
+
+	// Pull into a fresh store: the same closure crosses back.
+	var pullSamples []sample
+	storeB := openStore(t)
+	got, pullStats, err := client.PullWithProgress(ctx, storeB, name, record(&pullSamples))
+	if err != nil {
+		t.Fatalf("pull: %v", err)
+	}
+	if got != root {
+		t.Fatalf("pulled root %s, want %s", got, root)
+	}
+	if pullStats.Objects != pushStats.Objects || pullStats.Bytes != pushStats.Bytes {
+		t.Fatalf("pull stats %+v, want the pushed closure %+v", pullStats, pushStats)
+	}
+	mu.Lock()
+	if len(pullSamples) == 0 {
+		t.Fatal("pull progress callback never fired")
+	}
+	mu.Unlock()
+
+	// Re-pull into the same store: nothing is missing, so no objects move
+	// and the callback stays silent (total 0 — no wants were exchanged).
+	var againSamples []sample
+	_, againStats, err := client.PullWithProgress(ctx, storeB, name, record(&againSamples))
+	if err != nil {
+		t.Fatalf("re-pull: %v", err)
+	}
+	if againStats.Objects != 0 || againStats.Bytes != 0 {
+		t.Fatalf("re-pull moved objects: %+v", againStats)
+	}
+	mu.Lock()
+	for _, s := range againSamples {
+		if s.done != 0 {
+			t.Fatalf("re-pull reported transfers: %+v", againSamples)
+		}
+	}
+	mu.Unlock()
+}
+
+// TestManyOpsOneConnection regression-tests stream retirement: every
+// operation must FULLY close its stream (send FIN + receive cancel on both
+// peers), or the server stops granting MAX_STREAMS credit and the client
+// blocks forever on the 101st open (the QUIC default bidi-stream limit) —
+// exactly how a long-lived runner froze mid-build after its first hundred
+// pushes/pulls. 120 mixed operations over ONE connection, each under its own
+// short deadline, prove credit keeps flowing.
+func TestManyOpsOneConnection(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Second)
+	defer cancel()
+
+	srv := startServer(t, ctx)
+	client := dialClient(t, ctx, srv, serve.ALPNRunnerAmber)
+	st := openStore(t)
+
+	root, err := st.IngestSourceDir(ctx, layeredSource(t))
+	if err != nil {
+		t.Fatalf("ingest: %v", err)
+	}
+	if err := client.Push(ctx, st, "many/seed", root); err != nil {
+		t.Fatalf("seed push: %v", err)
+	}
+
+	for i := 0; i < 120; i++ {
+		opCtx, opDone := context.WithTimeout(ctx, 20*time.Second)
+		var err error
+		switch i % 3 {
+		case 0:
+			err = client.Push(opCtx, st, "many/seed", root)
+		case 1:
+			_, err = client.Pull(opCtx, st, "many/seed")
+		default:
+			_, err = client.Refs(opCtx)
+		}
+		opDone()
+		if err != nil {
+			t.Fatalf("op %d: %v (stream-credit leak: streams are not being fully closed)", i, err)
+		}
 	}
 }

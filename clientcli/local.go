@@ -86,17 +86,23 @@ func parseParams(kvs []string) ([]byte, error) {
 	return []byte(params), nil
 }
 
-// seedBootstrap publishes the embedded seed artifacts (shell:<p>,
+// seedLocal publishes the embedded seed artifacts (shell:<p>,
 // fetcher:tarball+https:<p>, fetcher:hostmusl:<p>, fetcher:github:<p>) into
-// the local store, idempotently, then verifies the bootstrap floor: without
-// shellRef no hermetic build sandbox can be assembled. A seed I/O failure is
-// a non-fatal warning (jobs' localSeed contract) — the hard gate is the shell
-// ref check afterwards.
-func seedBootstrap(ctx context.Context, st *amber.Store, shellRef string) error {
+// the local store, idempotently. A seed I/O failure is a non-fatal warning
+// (jobs' localSeed contract) — a real gap surfaces later as a missing-ref
+// error from whatever needed the artifact.
+func seedLocal(ctx context.Context, st *amber.Store) {
 	log := slog.New(slog.NewTextHandler(os.Stderr, nil))
 	if err := bootstrap.Seed(ctx, st, bootstrap.SeededPlatforms(), log); err != nil {
 		fmt.Fprintln(os.Stderr, "seed warning:", err)
 	}
+}
+
+// seedBootstrap seeds (seedLocal) and then verifies the bootstrap floor:
+// without shellRef no hermetic build sandbox can be assembled, so the
+// source-building commands hard-gate on it after seeding.
+func seedBootstrap(ctx context.Context, st *amber.Store, shellRef string) error {
+	seedLocal(ctx, st)
 	if _, ok, err := st.GetKey(ctx, shellRef); err != nil {
 		return fmt.Errorf("resolve %s: %w", shellRef, err)
 	} else if !ok {
@@ -145,8 +151,13 @@ func (cfg *localConfig) runBuild(c *cli.Context) error {
 	// ported local path (jobs kept it unexported inside prepareSourceArtifact,
 	// run_linux.go:53-90): resolve shell → localBuildFrom (IngestSourceDir →
 	// env subtree → BuildFromTree) → driveFStages(f, runFinal=true, p). It
-	// returns F; the output tree is at ref build-output:F.
-	f, err := runner.BuildFromSource(ctx, cs.Store, cfg.developConfig(params, cs.CacheDir), runner.NewProgress(os.Stderr))
+	// returns F; the output tree is at ref build-output:F. Step progress
+	// renders through the live view: in-place →-block on a TTY stderr,
+	// jobs' classic plain →/✓/✗ lines otherwise.
+	lp := newLiveProgress(cliLiveView(c))
+	defer lp.Close()
+	f, err := runner.BuildFromSource(ctx, cs.Store, cfg.developConfig(params, cs.CacheDir), runner.NewProgressSink(lp))
+	lp.Close()
 	if err != nil {
 		return err
 	}
@@ -200,8 +211,15 @@ func (cfg *localConfig) runRun(c *cli.Context) error {
 		return err
 	}
 
+	// The build phase's step progress renders through the live view. By the
+	// time the entrypoint executes every step has finished, so the block is
+	// empty and the refresh ticker writes nothing — the child owns the
+	// terminal untouched. Close (idempotent) stops the ticker afterwards.
+	lp := newLiveProgress(cliLiveView(c))
+	defer lp.Close()
 	code, err := runner.RunFromSource(ctx, cs.Store, cfg.developConfig(params, cs.CacheDir), c.Args().Slice(),
-		runner.RunIO{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr})
+		runner.RunIO{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr}, runner.NewProgressSink(lp))
+	lp.Close()
 	if err != nil {
 		return err
 	}
@@ -212,4 +230,45 @@ func (cfg *localConfig) runRun(c *cli.Context) error {
 		return cli.Exit("", code)
 	}
 	return nil
+}
+
+// --- develop ---
+
+func developCmd() *cli.Command {
+	cfg := &localConfig{}
+	return &cli.Command{
+		Name:   "develop",
+		Usage:  "build the local source's dependencies and open an interactive shell in its build sandbox",
+		Flags:  cfg.flags(),
+		Action: cfg.runDevelop,
+	}
+}
+
+// runDevelop prepares the target exactly like runBuild (same store, same seam,
+// joining the same cached refs) but stops at build-pinned:F and shells in:
+// runner.RunDevelop prints the pinned build script (saved at /build/build.sh,
+// NOT executed) and opens an interactive bash over a PTY inside the exact
+// hermetic build sandbox — host /dev bound (develop-only relaxation), declared
+// caches mounted warm rw but never uploaded. The store flock (EX) is held for
+// the WHOLE interactive session — jobs' `jobs develop` contract: cs.Close
+// (flock release) runs only after RunDevelop returns.
+func (cfg *localConfig) runDevelop(c *cli.Context) error {
+	ctx, stop := signalCtx(c.Context)
+	defer stop()
+
+	params, err := parseParams(c.StringSlice("param"))
+	if err != nil {
+		return err
+	}
+	cs, err := openClientStore(cfg.dataDir, lockExclusive)
+	if err != nil {
+		return err
+	}
+	defer cs.Close()
+
+	if err := seedBootstrap(ctx, cs.Store, cfg.effectiveShellRef()); err != nil {
+		return err
+	}
+
+	return runner.RunDevelop(ctx, cs.Store, cfg.developConfig(params, cs.CacheDir))
 }

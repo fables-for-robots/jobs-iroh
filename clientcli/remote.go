@@ -9,7 +9,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
-	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -90,10 +90,13 @@ func remoteBuildCmd() *cli.Command {
 // run drives the four remote-build phases (jobs remote-build's shape): ingest
 // + push the source tree, submit the canonical definition, watch snapshots to
 // terminal (SIGINT sends a cancel frame first), then pull the output home.
+// Progress renders through the liveView: an in-place block on a TTY stderr,
+// plain change-lines otherwise.
 func (cfg *remoteConfig) run(c *cli.Context) error {
 	ctx, cancel := context.WithCancel(c.Context)
 	defer cancel()
 	ew := errWriter(c)
+	lv := cliLiveView(c)
 	addrs := c.StringSlice("addr")
 
 	params, err := parseParams(c.StringSlice("param"))
@@ -109,7 +112,7 @@ func (cfg *remoteConfig) run(c *cli.Context) error {
 	}
 	defer cs.Close()
 
-	fmt.Fprintf(ew, "ingesting %s\n", cfg.source)
+	lv.Println("ingesting " + cfg.source)
 	sourceKey, err := cs.Store.IngestSourceDir(ctx, cfg.source)
 	if err != nil {
 		return fmt.Errorf("ingest source %s: %w", cfg.source, err)
@@ -131,8 +134,12 @@ func (cfg *remoteConfig) run(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(ew, "pushing source tree %s\n", sourceKey)
-	if err := ac.Push(ctx, cs.Store, scratch, sourceKey); err != nil {
+	lv.Println(fmt.Sprintf("pushing source tree %s", sourceKey))
+	push := newXferProgress(lv, "push")
+	pushStats, err := ac.PushWithProgress(ctx, cs.Store, scratch, sourceKey, push.cb)
+	push.setBytes(pushStats.Bytes)
+	push.finish(err == nil)
+	if err != nil {
 		return err
 	}
 
@@ -155,7 +162,7 @@ func (cfg *remoteConfig) run(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintf(ew, "submitted request %s (build %s)\n", sub.RequestID, k)
+	lv.Println(fmt.Sprintf("submitted request %s (build %s)", sub.RequestID, k))
 
 	// SIGINT/SIGTERM: send the cancel frame on its own stream, then let the
 	// watch loop unwind via ctx so every deferred teardown still runs. A
@@ -168,16 +175,16 @@ func (cfg *remoteConfig) run(c *cli.Context) error {
 			return
 		}
 		signal.Stop(sig)
-		fmt.Fprintln(ew, "interrupt: cancelling build")
+		lv.Println("interrupt: cancelling build")
 		cctx, cdone := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
 		defer cdone()
 		if err := bc.call(cctx, api.TCancel, api.CancelRequest{RequestID: sub.RequestID}, api.TOK, nil); err != nil {
-			fmt.Fprintln(ew, "cancel failed:", err)
+			lv.Println(fmt.Sprintf("cancel failed: %v", err))
 		}
 		cancel()
 	}()
 
-	final, err := streamWatch(ctx, bc, sub.RequestID, ew)
+	final, err := streamWatch(ctx, bc, sub.RequestID, lv)
 	if err != nil {
 		if ctx.Err() != nil {
 			return cli.Exit("build cancelled", 130)
@@ -187,10 +194,14 @@ func (cfg *remoteConfig) run(c *cli.Context) error {
 
 	switch final.Phase {
 	case "done":
-		return cfg.pullHome(ctx, c, ac, cs, k)
+		return cfg.pullHome(ctx, c, ac, cs, k, lv)
 	case "failed":
 		printFailureLogs(ctx, bc, final, ew)
-		return fmt.Errorf("build %s failed", sub.RequestID)
+		fmt.Fprintf(ew, "re-attach: jobs-client watch --server %s --request-id %s\n", cfg.server, sub.RequestID)
+		if s := failureSummary(final); s != "" {
+			return cli.Exit("build FAILED: "+s, 1)
+		}
+		return cli.Exit(fmt.Sprintf("build FAILED (request %s)", sub.RequestID), 1)
 	default: // cancelled
 		return cli.Exit("build cancelled", 130)
 	}
@@ -198,35 +209,66 @@ func (cfg *remoteConfig) run(c *cli.Context) error {
 
 // pullHome fetches the finished build's refs into the local store —
 // build-from:K first (K→F), then build-output:F and build-output-deps:F —
-// and prints the identity and output key like a local build.
-func (cfg *remoteConfig) pullHome(ctx context.Context, c *cli.Context, ac *amberclient.Client, cs *clientStore, k key.Key) error {
-	f, err := ac.Pull(ctx, cs.Store, "build-from:"+k.String())
+// under one cumulative "[pull]" counter, and prints the identity and output
+// key like a local build.
+func (cfg *remoteConfig) pullHome(ctx context.Context, c *cli.Context, ac *amberclient.Client, cs *clientStore, k key.Key, lv *liveView) error {
+	pull := newXferProgress(lv, "pull")
+	var mu sync.Mutex
+	var baseDone, baseTotal int // finished pulls' objects, folded into the display
+	var bytes int64
+	cb := func(done, total int) {
+		mu.Lock()
+		d, t := baseDone+done, baseTotal+total
+		mu.Unlock()
+		pull.cb(d, t)
+	}
+	step := func(name string) (key.Key, error) {
+		root, stats, err := ac.PullWithProgress(ctx, cs.Store, name, cb)
+		mu.Lock()
+		baseDone += stats.Objects
+		baseTotal += stats.Objects
+		bytes += stats.Bytes
+		mu.Unlock()
+		return root, err
+	}
+
+	f, err := step("build-from:" + k.String())
 	if err != nil {
+		pull.finish(false)
 		return fmt.Errorf("pull build-from: %w", err)
 	}
-	outKey, err := ac.Pull(ctx, cs.Store, "build-output:"+f.String())
+	outKey, err := step("build-output:" + f.String())
 	if err != nil {
+		pull.finish(false)
 		return fmt.Errorf("pull build-output: %w", err)
 	}
-	if _, err := ac.Pull(ctx, cs.Store, "build-output-deps:"+f.String()); err != nil &&
+	if _, err := step("build-output-deps:" + f.String()); err != nil &&
 		!errors.Is(err, amberclient.ErrRefNotFound) {
+		pull.finish(false)
 		return fmt.Errorf("pull build-output-deps: %w", err)
 	}
+	pull.setBytes(bytes)
+	pull.finish(true)
 	fmt.Fprintf(c.App.Writer, "build:  %s\n", f.String())
 	fmt.Fprintf(c.App.Writer, "output: %s\n", outKey.String())
 	return nil
 }
 
-// streamWatch opens a watch stream and renders coalesced snapshots one line
-// per change until the terminal snapshot, which it returns.
-func streamWatch(ctx context.Context, bc *apiConn, requestID string, w io.Writer) (api.Snapshot, error) {
+// streamWatch opens a watch stream and renders coalesced snapshots through
+// the live view until the terminal snapshot, which it returns after
+// collapsing the block to a one-line verdict. A TTY gets the in-place block
+// (counts header, running rows with server-computed elapsed, failure rows);
+// a non-TTY gets one change-line per snapshot delta.
+func streamWatch(ctx context.Context, bc *apiConn, requestID string, lv *liveView) (api.Snapshot, error) {
 	stream, stop, err := bc.openRequest(ctx, api.TWatch, api.WatchRequest{RequestID: requestID})
 	if err != nil {
 		return api.Snapshot{}, err
 	}
 	defer stop()
-	defer stream.Close()
+	defer amberclient.CloseStream(stream) // full termination — see apiConn.call
+	defer lv.Collapse("")                 // erase any leftover block on every exit path
 
+	start := time.Now()
 	var last string
 	for {
 		rt, body, err := api.ReadFrame(stream)
@@ -240,35 +282,16 @@ func streamWatch(ctx context.Context, bc *apiConn, requestID string, w io.Writer
 		if err := decodeReply(rt, body, api.TSnapshot, &snap); err != nil {
 			return api.Snapshot{}, err
 		}
-		renderSnapshot(w, snap, &last)
+		if lv.IsTTY() {
+			lv.Update(snapshotBlock(snap, time.Since(start)))
+		} else if line := snapshotChangeLine(snap); line != last {
+			lv.Println(line)
+			last = line
+		}
 		if snap.Terminal {
+			lv.Collapse(watchSummary(lv, snap.Phase, time.Since(start)))
 			return snap, nil
 		}
-	}
-}
-
-// renderSnapshot prints one status line — phase, counts, and the nodes
-// currently in flight — deduplicated against the previously printed line.
-func renderSnapshot(w io.Writer, snap api.Snapshot, last *string) {
-	var active []string
-	for _, n := range snap.Nodes {
-		switch n.Phase {
-		case wire.PhaseQueued, wire.PhaseRunning, wire.PhasePublishing:
-			active = append(active, shortNode(n.Node))
-		}
-	}
-	const maxShown = 6
-	if len(active) > maxShown {
-		active = append(active[:maxShown], "…")
-	}
-	line := fmt.Sprintf("%-9s done %d/%d  running %d  failed %d",
-		snap.Phase, snap.Counts.Done, snap.Counts.Total, snap.Counts.Running, snap.Counts.Failed)
-	if len(active) > 0 {
-		line += "  [" + strings.Join(active, " ") + "]"
-	}
-	if line != *last {
-		fmt.Fprintln(w, line)
-		*last = line
 	}
 }
 
@@ -281,18 +304,32 @@ func shortNode(name string) string {
 	return kind + ":" + k.String()[:8]
 }
 
+// logFetcher fetches one node's stored log view; *apiConn implements it,
+// tests fake it.
+type logFetcher interface {
+	fetchLogs(ctx context.Context, node string) (api.LogView, error)
+}
+
+// fetchLogs performs one logs frame exchange (stored view, no follow).
+func (a *apiConn) fetchLogs(ctx context.Context, node string) (api.LogView, error) {
+	var view api.LogView
+	err := a.call(ctx, api.TLogs, api.LogsRequest{Node: node}, api.TLogView, &view)
+	return view, err
+}
+
 // printFailureLogs fetches and prints the captured output of the terminal
 // snapshot's failing nodes (the hard failures, not the derived
-// failed-upstream ones). Best-effort: log fetch problems are reported and
+// failed-upstream ones) — the stored head/gap/tail view, i.e. the log tail
+// of the newest attempt. Best-effort: log fetch problems are reported and
 // swallowed — the build error is the story.
-func printFailureLogs(ctx context.Context, bc *apiConn, snap api.Snapshot, w io.Writer) {
+func printFailureLogs(ctx context.Context, lf logFetcher, snap api.Snapshot, w io.Writer) {
 	for _, n := range snap.Nodes {
 		if n.Phase != wire.PhaseFailed {
 			continue
 		}
 		fmt.Fprintf(w, "\n--- %s failed (gen %d): %s\n", n.Node, n.Gen, n.ErrSummary)
-		var view api.LogView
-		if err := bc.call(ctx, api.TLogs, api.LogsRequest{Node: n.Node}, api.TLogView, &view); err != nil {
+		view, err := lf.fetchLogs(ctx, n.Node)
+		if err != nil {
 			fmt.Fprintln(w, "(logs unavailable:", err, ")")
 			continue
 		}

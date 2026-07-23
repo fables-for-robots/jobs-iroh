@@ -236,3 +236,39 @@ Open v1 stances taken here (flag disagreement early): access is open-by-
 endpoint-ID like amber-store-iroh; no FUSE; no secrets/tags; K values are new
 (no store migration from jobs); local builds run the same NATS-backed scheduler
 in-process rather than a separate recursion.
+
+## 8. Implementation status (2026-07-23)
+
+All six milestones shipped and green (`go build/vet/test ./...`, e2e on
+loopback iroh, jobs-build/examples matrix local + remote). What exists:
+`amber`, `natsiroh`, `wire`, `api`, `events`, `sched`, `serve`, `runnerd`,
+`amberclient`, `runner` (stage drivers + local build/run + develop PTY shell +
+OCI image export), `clientcli` (build/run/develop/image/remote-build/watch/
+status/admin/tui), `tui`, plus the ported `builddef`/`recipe`/`importdef`/
+`resources`/`sandbox`/`bootstrap`/`fetchers`/`plugins`/`tailbuf` and the three
+`cmd/` mains.
+
+Documented deviations from this draft (all deliberate, spec'd in
+[`2026-07-23-sched-and-wire.md`](2026-07-23-sched-and-wire.md) where noted):
+
+- **Runner reconnect adoption dropped** — an orphaned in-flight job redelivers
+  via the work queue after AckWait lapses ("wasteful but never wrong").
+- **amberclient is single-connection** — no sharded TAttach transfers.
+- **Open access v1** — any peer knowing the endpoint ID may connect on any
+  ALPN; the ref gate guards against accidents, not malice.
+- **FUSE deleted** — materialize-only everywhere (develop/image included).
+- **events → NATS** — the events package keeps jobs' schema/OutputWriter
+  semantics but rides core NATS subjects via a Sink seam; no HTTP/Pebble
+  emitter, no collector/console.
+- **Wall-clock gen seeds** — node generations seed from wall clock so
+  JetStream dedup windows outlive in-memory node incarnations across server
+  restarts.
+- **Local builds do not run the in-process NATS scheduler** (§1's stance) —
+  the client drives the ported stage drivers directly (`runner` developDriver
+  / `driveFStages`); identity and cache-join are unaffected since refs and
+  canonical defs are identical.
+
+Known follow-ups: name-filter hook on the runner amber ALPN (today a runner
+could write refs directly), sharded/parallel amber transfers, secrets + runner
+tags (placement + credentialed fetchers), store GC/retention (refs and NATS
+streams age out, the object store only grows).

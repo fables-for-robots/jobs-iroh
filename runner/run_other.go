@@ -24,7 +24,7 @@ func BuildFromSource(ctx context.Context, st *amber.Store, cfg DevelopConfig, p 
 }
 
 // RunFromSource is unsupported off Linux (the run sandbox is Linux-only).
-func RunFromSource(ctx context.Context, st *amber.Store, cfg DevelopConfig, extraArgs []string, rio RunIO) (int, error) {
+func RunFromSource(ctx context.Context, st *amber.Store, cfg DevelopConfig, extraArgs []string, rio RunIO, p *Progress) (int, error) {
 	return -1, ErrUnsupported
 }
 

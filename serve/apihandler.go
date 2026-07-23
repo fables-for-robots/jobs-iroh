@@ -59,6 +59,14 @@ func (svc *apiService) handler() iroh.ProtocolHandler {
 // maps any error onto a terminal api.Error frame.
 func (svc *apiService) serveStream(ctx context.Context, remote string, stream net.Conn) {
 	defer stream.Close()
+	// Terminate the receive side too (Close only ends the send side): it
+	// retires the stream for MAX_STREAMS credit without waiting on the
+	// client's FIN and unblocks the one-request watchdog read below.
+	defer func() {
+		if cr, ok := stream.(interface{ CancelRead(code uint64) }); ok {
+			cr.CancelRead(0)
+		}
+	}()
 	sctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 

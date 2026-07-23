@@ -130,49 +130,59 @@ func (c *Client) Close() error {
 // completeness before committing the ref, so a reported success means the
 // remote ref exists and its whole closure is on the server.
 func (c *Client) Push(ctx context.Context, st *amber.Store, name string, root key.Key) error {
+	_, err := c.PushWithProgress(ctx, st, name, root, nil)
+	return err
+}
+
+// PushWithProgress is Push with a transfer observer: prog (nil is fine)
+// receives objects done/total as want rounds are answered, and the returned
+// stats report what actually moved — 0/0 when the server already had the
+// whole closure.
+func (c *Client) PushWithProgress(ctx context.Context, st *amber.Store, name string, root key.Key, prog ProgressFunc) (XferStats, error) {
 	if err := reference.ValidateName(name); err != nil {
-		return fmt.Errorf("amberclient: push: %w", err)
+		return XferStats{}, fmt.Errorf("amberclient: push: %w", err)
 	}
 	// Fail with a clear message before any traffic: a missing local root
 	// would otherwise surface mid-transfer as a get error inside Send.
 	ok, err := st.Has(root)
 	if err != nil {
-		return fmt.Errorf("amberclient: push %q: %w", name, err)
+		return XferStats{}, fmt.Errorf("amberclient: push %q: %w", name, err)
 	}
 	if !ok {
-		return fmt.Errorf("amberclient: push %q: root %s not in local store", name, root)
+		return XferStats{}, fmt.Errorf("amberclient: push %q: root %s not in local store", name, root)
 	}
 
 	stream, stop, err := c.openStream(ctx)
 	if err != nil {
-		return fmt.Errorf("amberclient: push %q: %w", name, err)
+		return XferStats{}, fmt.Errorf("amberclient: push %q: %w", name, err)
 	}
 	defer stop()
-	defer stream.Close()
+	defer CloseStream(stream)
 
 	// A QUIC stream is invisible to the server until data flows, so the
 	// request goes out before any read. DataConns is omitted (0): the
 	// server answers with plain TWants rounds, no TAccept/token detour.
 	req := protocol.Msg{Type: protocol.TPush, Name: name, Root: root[:]}
 	if err := protocol.WriteMsg(stream, req); err != nil {
-		return fmt.Errorf("amberclient: push %q: %w", name, err)
+		return XferStats{}, fmt.Errorf("amberclient: push %q: %w", name, err)
 	}
-	if err := wantsync.Send(stream, st.Objects(), nil); err != nil {
-		return fmt.Errorf("amberclient: push %q: %w", name, err)
+	mtr := &meter{cb: prog}
+	if err := wantsync.Send(stream, st.Objects(), mtr); err != nil {
+		return mtr.stats(), fmt.Errorf("amberclient: push %q: %w", name, err)
 	}
 	m, err := protocol.ReadMsg(stream)
 	if err != nil {
-		return fmt.Errorf("amberclient: push %q: read commit: %w", name, err)
+		return mtr.stats(), fmt.Errorf("amberclient: push %q: read commit: %w", name, err)
 	}
 	switch m.Type {
 	case protocol.TOK:
 	case protocol.TErr:
-		return fmt.Errorf("amberclient: push %q: %w", name, protocol.RemoteFromMsg(m))
+		return mtr.stats(), fmt.Errorf("amberclient: push %q: %w", name, protocol.RemoteFromMsg(m))
 	default:
-		return fmt.Errorf("amberclient: push %q: %w: type %d, want TOK", name, protocol.ErrProtocol, m.Type)
+		return mtr.stats(), fmt.Errorf("amberclient: push %q: %w: type %d, want TOK", name, protocol.ErrProtocol, m.Type)
 	}
 	c.log.Debug("amberclient push committed", "ref", name, "root", root.String())
-	return nil
+	return mtr.stats(), nil
 }
 
 // Pull fetches the remote ref name and every object below it that st is
@@ -185,54 +195,63 @@ func (c *Client) Push(ctx context.Context, st *amber.Store, name string, root ke
 // invariant). An absent remote ref returns an error satisfying
 // errors.Is(err, ErrRefNotFound).
 func (c *Client) Pull(ctx context.Context, st *amber.Store, name string) (key.Key, error) {
+	root, _, err := c.PullWithProgress(ctx, st, name, nil)
+	return root, err
+}
+
+// PullWithProgress is Pull with a transfer observer: prog (nil is fine)
+// receives objects done/total as want rounds are exchanged, and the returned
+// stats report what actually moved — 0/0 when the closure was already local.
+func (c *Client) PullWithProgress(ctx context.Context, st *amber.Store, name string, prog ProgressFunc) (key.Key, XferStats, error) {
 	if err := reference.ValidateName(name); err != nil {
-		return key.Key{}, fmt.Errorf("amberclient: pull: %w", err)
+		return key.Key{}, XferStats{}, fmt.Errorf("amberclient: pull: %w", err)
 	}
 	stream, stop, err := c.openStream(ctx)
 	if err != nil {
-		return key.Key{}, fmt.Errorf("amberclient: pull %q: %w", name, err)
+		return key.Key{}, XferStats{}, fmt.Errorf("amberclient: pull %q: %w", name, err)
 	}
 	defer stop()
-	defer stream.Close()
+	defer CloseStream(stream)
 
 	if err := protocol.WriteMsg(stream, protocol.Msg{Type: protocol.TPull, Name: name}); err != nil {
-		return key.Key{}, fmt.Errorf("amberclient: pull %q: %w", name, err)
+		return key.Key{}, XferStats{}, fmt.Errorf("amberclient: pull %q: %w", name, err)
 	}
 	m, err := protocol.ReadMsg(stream)
 	if err != nil {
-		return key.Key{}, fmt.Errorf("amberclient: pull %q: read ref: %w", name, err)
+		return key.Key{}, XferStats{}, fmt.Errorf("amberclient: pull %q: read ref: %w", name, err)
 	}
 	switch m.Type {
 	case protocol.TRef:
 	case protocol.TErr:
 		if m.Code == protocol.CodeUnknownRef {
-			return key.Key{}, fmt.Errorf("amberclient: pull %q: %w", name, ErrRefNotFound)
+			return key.Key{}, XferStats{}, fmt.Errorf("amberclient: pull %q: %w", name, ErrRefNotFound)
 		}
-		return key.Key{}, fmt.Errorf("amberclient: pull %q: %w", name, protocol.RemoteFromMsg(m))
+		return key.Key{}, XferStats{}, fmt.Errorf("amberclient: pull %q: %w", name, protocol.RemoteFromMsg(m))
 	default:
-		return key.Key{}, fmt.Errorf("amberclient: pull %q: %w: type %d, want TRef", name, protocol.ErrProtocol, m.Type)
+		return key.Key{}, XferStats{}, fmt.Errorf("amberclient: pull %q: %w: type %d, want TRef", name, protocol.ErrProtocol, m.Type)
 	}
 	rec, err := reference.Decode(m.Record)
 	if err != nil {
-		return key.Key{}, fmt.Errorf("amberclient: pull %q: server ref record: %w", name, err)
+		return key.Key{}, XferStats{}, fmt.Errorf("amberclient: pull %q: server ref record: %w", name, err)
 	}
 	root, err := key.Parse(rec.Key)
 	if err != nil {
-		return key.Key{}, fmt.Errorf("amberclient: pull %q: server ref record key: %w", name, err)
+		return key.Key{}, XferStats{}, fmt.Errorf("amberclient: pull %q: server ref record key: %w", name, err)
 	}
 
 	// Receive verifies every object against its key (WriteParallel with
 	// Verify) and re-walks the frontier until CheckComplete prunes
 	// everything — returning nil IS the completeness proof for root's
 	// whole closure.
-	if _, err := wantsync.Receive([]io.ReadWriter{stream}, st.Objects(), root, 0, nil); err != nil {
-		return key.Key{}, fmt.Errorf("amberclient: pull %q: %w", name, err)
+	mtr := &meter{cb: prog}
+	if _, err := wantsync.Receive([]io.ReadWriter{stream}, st.Objects(), root, 0, mtr); err != nil {
+		return key.Key{}, mtr.stats(), fmt.Errorf("amberclient: pull %q: %w", name, err)
 	}
 	if err := st.PutRef(ctx, name, root); err != nil {
-		return key.Key{}, fmt.Errorf("amberclient: pull %q completed but writing local ref failed: %w", name, err)
+		return key.Key{}, mtr.stats(), fmt.Errorf("amberclient: pull %q completed but writing local ref failed: %w", name, err)
 	}
 	c.log.Debug("amberclient pull complete", "ref", name, "root", root.String())
-	return root, nil
+	return root, mtr.stats(), nil
 }
 
 // Refs lists every reference on the server.
@@ -242,7 +261,7 @@ func (c *Client) Refs(ctx context.Context) ([]RefInfo, error) {
 		return nil, fmt.Errorf("amberclient: refs: %w", err)
 	}
 	defer stop()
-	defer stream.Close()
+	defer CloseStream(stream)
 
 	if err := protocol.WriteMsg(stream, protocol.Msg{Type: protocol.TRefList}); err != nil {
 		return nil, fmt.Errorf("amberclient: refs: %w", err)
@@ -286,4 +305,19 @@ func (c *Client) openStream(ctx context.Context) (net.Conn, func(), error) {
 	}
 	stop := context.AfterFunc(ctx, func() { _ = stream.SetDeadline(time.Now()) })
 	return stream, func() { stop() }, nil
+}
+
+// CloseStream fully terminates a request/response stream: Close finishes the
+// send side (FIN), and CancelRead terminates the receive side, which these
+// protocols never read to EOF — after the final expected frame both peers
+// just stop reading. A QUIC stream is only retired (and its MAX_STREAMS
+// credit returned by the peer) once BOTH directions terminate, so without
+// the cancel every operation leaks a half-open stream and the peer's stream
+// credit eventually runs dry — the 101st OpenStreamSync then blocks forever.
+// Shared by every jobs-iroh client that speaks one-request-per-stream.
+func CloseStream(stream net.Conn) {
+	_ = stream.Close()
+	if cr, ok := stream.(interface{ CancelRead(code uint64) }); ok {
+		cr.CancelRead(0)
+	}
 }

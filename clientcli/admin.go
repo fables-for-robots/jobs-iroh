@@ -36,9 +36,17 @@ func watchCmd() *cli.Command {
 				return err
 			}
 			defer bc.Close()
-			final, err := streamWatch(ctx, bc, c.String("request-id"), c.App.Writer)
+			final, err := streamWatch(ctx, bc, c.String("request-id"), cliLiveView(c))
 			if err != nil {
 				return err
+			}
+			if final.Phase == "failed" {
+				// Same failure UX as remote-build: the failing nodes'
+				// stored log tails, then the one-line summary.
+				printFailureLogs(ctx, bc, final, errWriter(c))
+				if s := failureSummary(final); s != "" {
+					return cli.Exit("request failed: "+s, 1)
+				}
 			}
 			if final.Phase != "done" {
 				return cli.Exit("request "+final.Phase, 1)
