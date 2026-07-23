@@ -5,6 +5,25 @@ endpoint ID and it fetches builds P2P, caching them under `--data-dir`. That
 makes a local instance self-contained — a laptop registry talks to the same
 jobs-server as a cluster one, no tunnels or ingress needed.
 
+## Quickstart (macOS / Docker Desktop)
+
+```sh
+docker volume create jobs-registry-data
+docker run --rm -v jobs-registry-data:/data alpine chown -R 65532:65532 /data
+
+docker run -d --name jobs-registry --restart unless-stopped \
+  --net host \
+  -v jobs-registry-data:/data \
+  dmilhdef/jobs-registry:latest \
+  --server=<jobs-server endpoint id> \
+  --data-dir=/data --listen=:5000 --cache-ttl=24h
+
+docker pull localhost:5000/jobs:<build hash>
+```
+
+On Linux, replace `--net host` with `-p 127.0.0.1:5000:5000`. The sections
+below explain each piece.
+
 ## Prepare the data volume
 
 The image is distroless `nonroot` (uid 65532); a fresh named volume is
