@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.7.0 — 2026-07-23
+
+- **Build output streams by default.** `jobs-client remote-build` and
+  `watch` no longer need `--logs`: the output of the steps a watched
+  request is running streams live alongside the progress display out of
+  the box. Running a build and not seeing its output was the surprise, so
+  visibility is now the default — `--no-logs` opts out (the `--logs` flag
+  is gone). Note the runner must be ≥ v0.6.0 to emit the exec banner and
+  `bash -x` trace; against older runners only the script's own output
+  streams.
+
 ## v0.6.0 — 2026-07-23
 
 - **Executors announce what they actually run.** Every import executor
