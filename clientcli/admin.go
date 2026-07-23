@@ -27,6 +27,7 @@ func watchCmd() *cli.Command {
 		Usage: "stream one build request's progress until it finishes",
 		Flags: append(serverFlags(),
 			&cli.StringFlag{Name: "request-id", Required: true, Usage: "request ID printed at submit time"},
+			&cli.BoolFlag{Name: "logs", Usage: "stream the output of running build steps while watching"},
 		),
 		Action: func(c *cli.Context) error {
 			ctx, stop := signalCtx(c.Context)
@@ -36,14 +37,21 @@ func watchCmd() *cli.Command {
 				return err
 			}
 			defer bc.Close()
-			final, err := streamWatch(ctx, bc, c.String("request-id"), cliLiveView(c))
+			lv := cliLiveView(c) // one shared view: tracker Printlns and the
+			// watch block must go through the same cursor arithmetic
+			var tracker *logTracker
+			if c.Bool("logs") {
+				tracker = newLogTracker(ctx, bc, lv)
+				defer tracker.close()
+			}
+			final, err := streamWatch(ctx, bc, c.String("request-id"), lv, tracker)
 			if err != nil {
 				return err
 			}
 			if final.Phase == "failed" {
 				// Same failure UX as remote-build: the failing nodes'
 				// stored log tails, then the one-line summary.
-				printFailureLogs(ctx, bc, final, errWriter(c))
+				printFailureLogs(ctx, bc, final, errWriter(c), tracker.streamedNodes())
 				fmt.Fprintf(errWriter(c), "full failure report (all attempts, durable): jobs-client diagnose --server %s --request %s\n",
 					c.String("server"), c.String("request-id"))
 				if s := failureSummary(final); s != "" {

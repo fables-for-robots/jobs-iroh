@@ -248,4 +248,24 @@ func TestRemoteBuildEndToEnd(t *testing.T) {
 	if strings.Contains(stOut.String(), "\x1b[") {
 		t.Fatalf("status output must be plain text:\n%q", stOut.String())
 	}
+
+	// One-shot logs against the same server: no runner ever produced output
+	// here, so a valid node yields the empty-view note (the full logs frame
+	// path — request, stored view, terminal close — still runs).
+	lgApp := App()
+	var lgOut, lgErr bytes.Buffer
+	lgApp.Writer = &lgOut
+	lgApp.ErrWriter = &lgErr
+	err = lgApp.RunContext(ctx, []string{"jobs-client", "logs",
+		"--server", serverID, "--addr", serverAddr,
+		"--node", nodeName("buildrun", 1)})
+	if err != nil {
+		t.Fatalf("logs: %v\nstderr:\n%s", err, lgErr.String())
+	}
+	if lgOut.Len() != 0 {
+		t.Fatalf("logs stdout must be empty for a node without output:\n%q", lgOut.String())
+	}
+	if !strings.Contains(lgErr.String(), "(no captured output)") {
+		t.Fatalf("logs stderr missing empty-view note:\n%s", lgErr.String())
+	}
 }

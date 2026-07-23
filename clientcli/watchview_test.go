@@ -154,7 +154,7 @@ func TestPrintFailureLogs(t *testing.T) {
 	}
 
 	var buf bytes.Buffer
-	printFailureLogs(context.Background(), logs, snap, &buf)
+	printFailureLogs(context.Background(), logs, snap, &buf, nil)
 	out := buf.String()
 
 	if !strings.Contains(out, "--- "+hard+" failed (gen 2): exit 1: boom") {
@@ -170,5 +170,20 @@ func TestPrintFailureLogs(t *testing.T) {
 	}
 	if strings.Contains(out, upstream) {
 		t.Fatalf("failed-upstream node must not be tailed:\n%s", out)
+	}
+
+	// A node whose output already streamed live (--logs) keeps its banner but
+	// points at the scroll instead of re-printing the log body.
+	buf.Reset()
+	printFailureLogs(context.Background(), logs, snap, &buf, map[string]bool{hard: true})
+	out = buf.String()
+	if !strings.Contains(out, "--- "+hard+" failed (gen 2): exit 1: boom") {
+		t.Fatalf("streamed node banner missing:\n%s", out)
+	}
+	if !strings.Contains(out, "(output streamed above)") {
+		t.Fatalf("streamed-above note missing:\n%s", out)
+	}
+	if strings.Contains(out, "compiling...") {
+		t.Fatalf("streamed node's log body must not repeat:\n%s", out)
 	}
 }

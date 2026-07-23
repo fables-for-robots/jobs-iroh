@@ -82,6 +82,7 @@ func remoteBuildCmd() *cli.Command {
 			&cli.StringSliceFlag{Name: "param", Usage: "key=value build param (repeatable)"},
 			&cli.StringFlag{Name: "cpu", Usage: "raise the target build's CPU requirement (e.g. 2000m)", Destination: &cfg.cpu},
 			&cli.StringFlag{Name: "memory", Usage: "raise the target build's memory requirement (e.g. 4Gi)", Destination: &cfg.memory},
+			&cli.BoolFlag{Name: "logs", Usage: "stream the output of running build steps while watching"},
 		},
 		Action: cfg.run,
 	}
@@ -184,7 +185,12 @@ func (cfg *remoteConfig) run(c *cli.Context) error {
 		cancel()
 	}()
 
-	final, err := streamWatch(ctx, bc, sub.RequestID, lv)
+	var tracker *logTracker
+	if c.Bool("logs") {
+		tracker = newLogTracker(ctx, bc, lv)
+		defer tracker.close()
+	}
+	final, err := streamWatch(ctx, bc, sub.RequestID, lv, tracker)
 	if err != nil {
 		if ctx.Err() != nil {
 			return cli.Exit("build cancelled", 130)
@@ -196,7 +202,7 @@ func (cfg *remoteConfig) run(c *cli.Context) error {
 	case "done":
 		return cfg.pullHome(ctx, c, ac, cs, k, lv)
 	case "failed":
-		printFailureLogs(ctx, bc, final, ew)
+		printFailureLogs(ctx, bc, final, ew, tracker.streamedNodes())
 		fmt.Fprintf(ew, "re-attach: jobs-client watch --server %s --request-id %s\n", cfg.server, sub.RequestID)
 		fmt.Fprintf(ew, "full failure report (all attempts, durable): jobs-client diagnose --server %s --request %s\n", cfg.server, sub.RequestID)
 		if s := failureSummary(final); s != "" {
@@ -259,8 +265,9 @@ func (cfg *remoteConfig) pullHome(ctx context.Context, c *cli.Context, ac *amber
 // the live view until the terminal snapshot, which it returns after
 // collapsing the block to a one-line verdict. A TTY gets the in-place block
 // (counts header, running rows with server-computed elapsed, failure rows);
-// a non-TTY gets one change-line per snapshot delta.
-func streamWatch(ctx context.Context, bc *apiConn, requestID string, lv *liveView) (api.Snapshot, error) {
+// a non-TTY gets one change-line per snapshot delta. A non-nil tracker
+// follows each snapshot's running nodes' output alongside.
+func streamWatch(ctx context.Context, bc *apiConn, requestID string, lv *liveView, tracker *logTracker) (api.Snapshot, error) {
 	stream, stop, err := bc.openRequest(ctx, api.TWatch, api.WatchRequest{RequestID: requestID})
 	if err != nil {
 		return api.Snapshot{}, err
@@ -270,6 +277,38 @@ func streamWatch(ctx context.Context, bc *apiConn, requestID string, lv *liveVie
 	defer lv.Collapse("")                 // erase any leftover block on every exit path
 
 	start := time.Now()
+
+	// Once-a-second block redraw between snapshots (liveProgress's refresh
+	// pattern): the server pushes snapshots only on state changes, so this is
+	// what keeps elapsed ticking through a long quiet compile and restores
+	// the block after log Printlns scroll it away. blockSnap guards the
+	// redraws: false until the first snapshot and from the terminal one on,
+	// so the refresher can never resurrect a collapsed block.
+	var mu sync.Mutex
+	var lastSnap api.Snapshot
+	var blockSnap bool
+	defer func() { mu.Lock(); blockSnap = false; mu.Unlock() }() // before the Collapse defers (LIFO)
+	if lv.IsTTY() {
+		done := make(chan struct{})
+		defer close(done)
+		go func() {
+			t := time.NewTicker(time.Second)
+			defer t.Stop()
+			for {
+				select {
+				case <-done:
+					return
+				case <-t.C:
+					mu.Lock()
+					if blockSnap {
+						lv.Update(snapshotBlock(lastSnap, time.Since(start)))
+					}
+					mu.Unlock()
+				}
+			}
+		}()
+	}
+
 	var last string
 	for {
 		rt, body, err := api.ReadFrame(stream)
@@ -283,13 +322,18 @@ func streamWatch(ctx context.Context, bc *apiConn, requestID string, lv *liveVie
 		if err := decodeReply(rt, body, api.TSnapshot, &snap); err != nil {
 			return api.Snapshot{}, err
 		}
+		tracker.sync(snap)
 		if lv.IsTTY() {
+			mu.Lock()
+			lastSnap, blockSnap = snap, !snap.Terminal
 			lv.Update(snapshotBlock(snap, time.Since(start)))
+			mu.Unlock()
 		} else if line := snapshotChangeLine(snap); line != last {
 			lv.Println(line)
 			last = line
 		}
 		if snap.Terminal {
+			tracker.close() // drain trailing output above the verdict line
 			lv.Collapse(watchSummary(lv, snap.Phase, time.Since(start)))
 			return snap, nil
 		}
@@ -321,14 +365,20 @@ func (a *apiConn) fetchLogs(ctx context.Context, node string) (api.LogView, erro
 // printFailureLogs fetches and prints the captured output of the terminal
 // snapshot's failing nodes (the hard failures, not the derived
 // failed-upstream ones) — the stored head/gap/tail view, i.e. the log tail
-// of the newest attempt. Best-effort: log fetch problems are reported and
-// swallowed — the build error is the story.
-func printFailureLogs(ctx context.Context, lf logFetcher, snap api.Snapshot, w io.Writer) {
+// of the newest attempt. Nodes in streamed had their output followed live
+// (--logs), so their recap points at the scroll instead of repeating it.
+// Best-effort: log fetch problems are reported and swallowed — the build
+// error is the story.
+func printFailureLogs(ctx context.Context, lf logFetcher, snap api.Snapshot, w io.Writer, streamed map[string]bool) {
 	for _, n := range snap.Nodes {
 		if n.Phase != wire.PhaseFailed {
 			continue
 		}
 		fmt.Fprintf(w, "\n--- %s failed (gen %d): %s\n", n.Node, n.Gen, n.ErrSummary)
+		if streamed[n.Node] {
+			fmt.Fprintln(w, "(output streamed above)")
+			continue
+		}
 		view, err := lf.fetchLogs(ctx, n.Node)
 		if err != nil {
 			fmt.Fprintln(w, "(logs unavailable:", err, ")")

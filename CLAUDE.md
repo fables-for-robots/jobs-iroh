@@ -76,9 +76,13 @@ nix develop -c go build ./...
     whole session).
   - `image -o <tar> [--tag …] [--no-shell] (--source <dir> | <build-K>)` —
     docker-loadable OCI image from a build output (by source or by key).
-  - `remote-build --server <id> --source <dir> [--cpu …] [--memory …]` — push
-    source, submit, watch to terminal, pull output home.
-  - `watch --server <id> --request-id <id>` — re-attach to a build.
+  - `remote-build --server <id> --source <dir> [--cpu …] [--memory …]
+    [--logs]` — push source, submit, watch to terminal, pull output home;
+    `--logs` streams the running steps' output alongside the progress block.
+  - `watch --server <id> --request-id <id> [--logs]` — re-attach to a build.
+  - `logs --server <id> --node <name> [--follow]` — one node's captured
+    output (stored head/gap/tail, raw bytes on stdout); `--follow` keeps
+    streaming live chunks until interrupted.
   - `diagnose --server <id> (--request <id> | --node <name>) [--attempts N]
     [--json] [--logs-dir <dir>]` — durable failure report (all failed
     attempts with origin/class/exit, runner, timing, rusage, captured
