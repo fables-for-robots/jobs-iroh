@@ -14,8 +14,11 @@ is ported from jobs intact.
 
 ## Docs
 
-- `docs/design/2026-07-22-architecture.md` — **design source of truth**. Keep
-  code consistent with it; flag disagreements early.
+- `docs/architecture/architecture.md` — **design source of truth**, written
+  ground-up for this system. Keep code consistent with it; flag
+  disagreements early.
+- `docs/design/*.md` — dated design/implementation specs (historical
+  record).
 - `docs/research/*.md` — subsystem maps of the SOURCE systems the port draws
   from (jobs, amber-store-core, amber-store-iroh, nats-iroh). File:line
   citations point into those upstream trees, not this repo.

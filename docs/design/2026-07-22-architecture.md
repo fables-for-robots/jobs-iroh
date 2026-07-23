@@ -1,5 +1,9 @@
 # jobs-iroh architecture
 
+> **Superseded** by [`../architecture/architecture.md`](../architecture/architecture.md),
+> the standalone description of the implemented system. Kept as the dated
+> implementation draft.
+
 **Status:** draft for implementation, 2026-07-22.
 **Inputs:** the subsystem maps in [`../research/`](../research/) (produced from
 `jobs`, `amber-store-core`, `amber-store-iroh`, `nats-iroh`). File:line citations

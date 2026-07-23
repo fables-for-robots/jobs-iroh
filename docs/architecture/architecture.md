@@ -1,0 +1,501 @@
+# jobs-iroh architecture
+
+**Status:** describes the implemented system as of v0.7.0 (2026-07-23). This
+document is the design source of truth; dated implementation specs live in
+[`../design/`](../design/).
+
+jobs-iroh is a small, self-contained build system: **one server, N runners,
+one client**, connected by exactly one transport — iroh QUIC. There is no
+other infrastructure to operate: no HTTP services, no external database, no
+orchestration layer. The server is a single binary that embeds everything it
+needs (a NATS/JetStream instance for scheduling, a content-addressed object
+store for artifacts); runners and clients each own a private store of the
+same format and synchronize with the server over the wire.
+
+Four pillars carry the whole design:
+
+- **Content-addressed identity.** Every job is identified by the hash of its
+  canonically encoded definition; every artifact by the hash of its content
+  tree. Identical inputs are the same job everywhere — cache joins are a hash
+  lookup, not a protocol.
+- **Doneness = ref existence.** A named reference in the store pointing at a
+  complete output *is* the completion record. There is no build database to
+  keep consistent with reality; crash recovery is a re-scan.
+- **Hermetic execution.** Build scripts run in a rootless Linux namespace
+  sandbox with no network, a read-only dependency store, and a fully static
+  embedded userland. Only import (fetch) steps get the network.
+- **At-least-once scheduling.** Because jobs are idempotent by identity,
+  running one twice is wasteful but never wrong — so delivery only has to be
+  at-least-once, which an embedded JetStream work queue provides for free.
+
+## 1. Topology
+
+```
+        jobs-client                          jobs-runner (×N)
+   private store (flock)                private store + sandbox
+        │ jobs-build/1.0                      │ jobs-runner-nats/1.0
+        │ jobs-admin/1.0                      │ jobs-runner-amber/1.0
+        │ jobs-amber-admin/1.0                │
+        └───────────────┐        ┌────────────┘
+                 iroh QUIC — one server endpoint, five ALPNs
+                          jobs-server
+        scheduler · embedded NATS (JetStream) · embedded amber store
+```
+
+Three binaries:
+
+- **`jobs-server`** — the coordination point. One iroh endpoint (one identity
+  key), five ALPNs dispatched by an iroh router. Embeds a NATS server with
+  JetStream (`DontListen`: no TCP listener — the only ways in are in-process
+  connections and the iroh tunnel), the amber store, the scheduler, and the
+  bootstrap seed artifacts.
+- **`jobs-runner`** — execution. Dials the server twice (NATS tunnel + store
+  sync), owns a private local store as a materialization cache, and runs
+  build stages inside the sandbox.
+- **`jobs-client`** — a fully local build tool (no server needed) *and* the
+  remote client: submit, watch, logs, diagnose, admin, TUI.
+
+| ALPN | Peer | Purpose |
+|---|---|---|
+| `jobs-build/1.0` | client | submit a build, watch progress, fetch logs, cancel |
+| `jobs-runner-nats/1.0` | runner | NATS tunnel — each stream proxies to the embedded NATS server |
+| `jobs-runner-amber/1.0` | runner | store sync (objects + refs) |
+| `jobs-admin/1.0` | client / TUI | requests, fleet, stats, refs browse, cancel/delete, diagnose |
+| `jobs-amber-admin/1.0` | client | store sync — push source trees up, pull outputs home |
+
+Server data dir (`--data-dir`, default `~/.local/share/jobs-iroh/server`):
+`server.key` (hex-encoded iroh secret key, 0600 — deleting it changes the
+endpoint identity), `store/` (object packstore + Pebble refstore), `nats/`
+(JetStream storage). On boot the server seeds the bootstrap artifacts (§7)
+and logs its endpoint ID — the value every `--server` flag consumes.
+
+**Discovery.** Unless `--no-announce`, the server announces itself three
+ways: direct interface addresses (auto-detected and filtered — loopback,
+link-local, and container-bridge interfaces are dropped — or `--advertise-addr`
+verbatim) over **mDNS** on the LAN (re-announced every second) and **pkarr**
+over the internet (re-published ~5 min), with the nearest **relay** as a
+fallback path (the relay probe is best-effort and bounded — an offline host
+still starts). Clients and runners resolve a bare endpoint ID through the
+same stack (mDNS + pkarr + DNS) and race all candidate paths; an explicit
+`--addr` skips discovery entirely.
+
+Sandboxed execution requires Linux; seed artifacts ship for `linux-amd64`
+and `linux-arm64`. The server and the client's observation commands are
+OS-independent; local builds and runners are Linux-only.
+
+## 2. Identity
+
+Two hash families name everything. Both are amber *file keys*: the input
+bytes are chunked with pinned parameters — content-defined byte chunking
+(min 32 KiB / normal 128 KiB / max 256 KiB) and item-chunker bit width 7 —
+and the root hash of the resulting tree is the key. These parameters are
+**identity-critical**: changing them changes every key and breaks
+deduplication between stores. Never change them.
+
+Definitions are hashed as canonical CBOR:
+
+- Definition types encode with fxamacker/cbor `CanonicalEncOptions` (sorted
+  keys, shortest forms). Content trees (fstree) encode with
+  `CoreDetEncOptions` + `NilContainerAsEmpty`.
+- A definition with no params encodes params as CBOR null (`0xf6`), **never**
+  as an empty map — the two hash differently.
+- Inputs are sorted and deduplicated before every encode.
+
+**K — job identity.** `FileKey(canonical CBOR of the definition)`.
+
+- An *import* definition is `{fetcher, params, requiredTags, platform,
+  fetcherDef?}` — a fetch job, pinned to a platform. `fetcherDef` (optional)
+  is the canonical definition of the build that produces the fetcher itself
+  (§7); absent means a named seed fetcher.
+- A *build* definition is `{source input, dir, platform, params, buildJobs?,
+  buildFile?}` where `source input` is a wrapper `{kind ∈ import|build|tree,
+  definition}`. Because a build definition embeds its source input's complete
+  inner definition, K content-addresses the entire transitive definition
+  graph.
+
+**F — build-content identity.** The file key of the *build-from tree*: a
+store tree `{env/ (the source subtree), params, platform, [BUILD.jobs
+override]}` assembled from actual content. The `buildfrom` stage computes
+K → F and records it as the ref `build-from:K`. Everything downstream —
+plugin resolution, pinning, execution — is keyed by F, so two different
+definitions that produce byte-identical source content share all of the
+actual build work.
+
+Scheduler node names use the grammar `<kind>_<hexkey>` (subject-safe,
+parsed fail-closed).
+
+## 3. The build model
+
+### 3.1 Recipes
+
+A build is described by a Starlark file, `BUILD.jobs` by default, at the
+definition's `dir` (an inline override or alternate filename can ride in the
+definition). Evaluation is hermetic: no `load()`, `print` is captured. The
+user defines up to two functions:
+
+- **`plugins()`** (optional) → `{name: input}` of plugin builds, or
+  `struct(plugins = {…}, deps = {…})` where `deps` are resolution-time
+  dependencies readable during `build()`.
+- **`build()`** (required) → `struct(inputs = {name: input}, env = {str:
+  str}, script = str, runtime_deps = [input], caches = {path: id},
+  resources = struct(cpu=, memory=), name = str)` — `caches`, `resources`,
+  and `name` optional; `name` is display-only and never part of identity;
+  `runtime_deps ⊆ inputs` is enforced.
+
+Predeclared symbols:
+
+| Symbol | Meaning |
+|---|---|
+| `platform`, `params` | the build's platform string and decoded params |
+| `source.read(path)` / `source.exists(path)` | read the source tree at evaluation time |
+| `imp(fetcher, params, requiredTags=[], platform?)` | declare an import (fetch) input; `fetcher` is a seed name or a `fetcher(...)` value |
+| `bld(source, dir, platform, params, …)` | declare a build input (build-of-a-build) |
+| `subbuild(dir, …)` | a build input over a strict subdirectory of the same source tree |
+| `fetcher(name, url=, sha256=, build=)` | declare a fetcher that the system builds itself (§7) |
+| `deps[name].read/exists/path()` | resolution deps declared by `plugins()` |
+| `plugins[name](**kwargs)` | call a plugin (available in `build()` only) |
+
+A minimal recipe:
+
+```python
+def build():
+    toolchain = imp(fetcher = "tarball+https",
+                    params = {"url": "https://go.dev/dl/go1.24.linux-amd64.tar.gz"})
+    return struct(
+        inputs       = {"toolchain": toolchain},
+        env          = {"GOFLAGS": "-mod=mod"},
+        script       = "go build -o $out/app .",
+        runtime_deps = [],
+    )
+```
+
+Plugins are sandboxed helper binaries (`./plugin`, CBOR over stdio, exit 75
+= retryable) that expand ecosystem lockfiles into import inputs — e.g. the
+Go plugin turns a `go.sum` into one module-proxy import per dependency, so
+every module is its own cached, content-addressed fetch.
+
+### 3.2 The stage pipeline
+
+Every build value is produced by a fixed pipeline of stages. Five stage
+kinds are *placeable* (schedulable onto runners); a sixth, `buildvalue` (K),
+is a server-internal orchestrator that walks its build's stages sequentially
+— consumers depend on `buildvalue`, never on individual stages.
+
+| Stage | Key | Does | Publishes |
+|---|---|---|---|
+| `import` | K | runs the fetcher in a **network-enabled** sandbox (`JOBS_FETCH_PARAMS`, `JOBS_OUTPUT_DIR`), ingests the result | `import-output:K` |
+| `buildfrom` | K | resolves the source input's content tree, splices `dir` as `env/`, computes F; pure store computation, no sandbox | `build-from:K` + `build-from-tree:F` (one batch) |
+| `pluginresolve` | F | evaluates `plugins()` (no plugins callable there), ingests plugin/dep definitions | `build-plugin-resolved:F` |
+| `pin` | F | materializes resolution deps, evaluates `build()` with **sandboxed** plugin callers, validates | `build-pinned:F` |
+| `buildrun` | F | resolves every input's output + runtime closure, assembles the read-only store union, runs the script hermetically | `[build-cache:…]*, build-output-deps:F, build-output:F` (ordered) |
+
+The *pinned* job (`build-pinned:F`) is the fully resolved description —
+concrete inputs, env, script, runtime-dep keys, caches, resources — the
+thing `buildrun` actually executes.
+
+### 3.3 Ref namespaces
+
+The store's named refs are the entire system state:
+
+| Ref | Points at |
+|---|---|
+| `import:K`, `build:K` | definition-present bookkeeping (the def object itself) |
+| `import-output:K` | an import's fetched tree |
+| `build-from:K` | F (the K→F bridge) |
+| `build-from-tree:<hexF>` | the F-tree itself (F-keyed so F-only stages resolve it by name) |
+| `build-plugin-resolved:F` | plugin-resolution result |
+| `build-pinned:F` | the pinned job |
+| `build-output:F` | the structured output tree (`c/…`) — **the doneness marker** |
+| `build-output-deps:F` | flat store tree of the runtime closure |
+| `build-cache:<id>:<platform>` | mutable persistent cache state (e.g. a module cache) |
+| `fetcher:<name>:<platform>`, `shell:<platform>` | bootstrap seed artifacts |
+| `seed-src:<ref>:<hash8>` | per-blob seeding idempotence marker |
+
+### 3.4 Correctness invariants
+
+- **Doneness = ref existence.** Checked when a scheduler node is created
+  (fast-path done) — which is also the crash-recovery story: on restart the
+  server re-drives live requests and finished subtrees short-circuit.
+- **Objects before ref.** Before any ref is written, the referenced tree is
+  verified complete (`fstree.CheckComplete`) — runner-side after every pull,
+  server-side before every commit. A ref never points at a partial object
+  graph.
+- **The ref gate.** The server commits runner-proposed refs through an exact
+  per-stage allow-table: each stage kind may publish only its own names
+  (§3.2); `build-from:K` and `build-from-tree:F` must appear in the same
+  batch and cross-check; `build-cache:<id>` is accepted only for cache ids
+  declared in the pinned job; batches commit in payload order (caches →
+  `build-output-deps:F` → `build-output:F` last, so the doneness marker is
+  written last); anything else fails closed.
+- **Refs are unsigned** (`{name, key, createdAt}`, last-write-wins). There is
+  no signing or grant layer; transport identity is the iroh endpoint key
+  (§10).
+
+## 4. The store
+
+Every process embeds the same store, built on the `amber-store-core`
+library: an object **packstore** (chunked, deduplicated, content-addressed)
+plus a Pebble-backed **refstore** (name → key), guarded by a flock — one
+process per store; the client additionally serializes its own invocations
+with a store-level flock (exclusive for local builds, shared for
+remote-build).
+
+The store seam (`amber/`) provides: ingest (`IngestFile`, `IngestDir`,
+`IngestSourceDir` — the latter honors `.amberignore` and drops control
+files), pure hashing (`FileKey` computes a key without storing — the same
+code path as ingest, so hash-then-store can never disagree), tree assembly
+(`BuildFromTree`, `BuildStoreTree`, `TreeSubdir`), resolution
+(`ResolveBuildOutput`/`ResolveBuildArtifact` follow `build-from:K` → F →
+output), reads (`Ls`, `ReadFile`, `Tar`), and **materialization** — restoring
+a tree to disk via in-process tar export/extract. There is no FUSE layer;
+inputs are always materialized to real files, then bind-mounted read-only
+into sandboxes.
+
+**Sync.** Object/ref transfer between stores uses the amber sync protocol
+(wire format from the `amber-store-iroh` dependency), mounted on the two
+store ALPNs. The importable client (`amberclient/`) is deliberately simple:
+one QUIC connection, one stream per operation — `Push`/`Pull`
+(`…WithProgress`), `Refs`. Push is force-mode (last-write-wins); Pull
+verifies every object against its key (the peer is untrusted) and writes the
+local ref only after the full closure is present — objects-before-ref holds
+across the wire too.
+
+## 5. Transport
+
+**Client API framing** (`jobs-build/1.0`, `jobs-admin/1.0`): each frame is a
+4-byte big-endian length + a CBOR envelope `{t: string, b: bytes}`; max
+frame 16 MiB; one request per stream, but watch/log streams stay open for
+server-pushed frames. Build-ALPN requests: `submit`, `watch`, `logs`,
+`cancel`. Admin adds: `requests`, `fleet`, `stats`, `refs`, `delete`,
+`diagnose`. Replies: `submitted`, `snapshot`, `logview`/`logchunk`, `ok`,
+`error` (+ the admin `*-reply` frames). While serving a request the server
+watches the stream; anything unexpected from the client (including close)
+cancels the work.
+
+**The NATS tunnel** (`jobs-runner-nats/1.0`, `natsiroh/`): the runner's
+stock NATS client is given a custom dialer that opens an iroh stream and
+returns it as a `net.Conn`; the server side proxies each accepted stream to
+an in-process connection of the embedded NATS server. One wrinkle: a QUIC
+stream does not exist for the peer until the opener sends a byte, but in
+NATS the *server* speaks first — so the dialer writes a single `0x00`
+preamble byte (consumed by the proxy) to force stream creation. The NATS
+client reconnects forever; the connection source re-dials iroh when the
+underlying connection dies.
+
+## 6. The scheduler
+
+The scheduler lives in server memory; JetStream carries the queues and the
+durable trail.
+
+**Node graph.** An in-memory table keyed `(kind, key)`; get-or-create *is*
+the join — two requests needing the same subtree converge on the same node
+with zero coordination. States: `waiting → ready → queued → running →
+publishing → done | failed`. Unfolding is per kind: imports depend on their
+fetcher's build; buildfrom on its source value; pin reads
+`build-plugin-resolved:F`; buildrun reads `build-pinned:F`. Definitions
+travel in-band inside job messages, so a runner never misses a def read.
+Requests hold *interest* in nodes; cancellation drops interest, and a node
+with no interest and no running attempt is dropped from memory. Shared
+subtrees survive as long as anyone needs them.
+
+**Placement.** A placeable node's requirement = max(kind default, pinned
+`resources`, request override), rounded **up** to a fixed size-class ladder:
+`c0.2-m1, c1-m1, c1-m2, c1-m4, c2-m4, c2-m8, c2-m16, c4-m8, c4-m16`
+(`cN` = N cores as millicpu, `mN` = GiB). The job is published to the
+subject for its `(platform, class)`; any runner big enough for that class
+may take it.
+
+**NATS layout** (one embedded server; JetStream streams + KV):
+
+| Piece | Config | Purpose |
+|---|---|---|
+| stream `JOBS` | WorkQueuePolicy, subjects `jobs.<platform>.<class>`, duplicates 10 m | one message per node attempt; payload = `Job{node, kind, key, gen, def, platform, class, pullRefs, cpuMilli, memBytes}`; msg-id `job-<node>-<gen>` |
+| durable consumers `wq-<platform>-<class>` | AckExplicit, AckWait 90 s, MaxDeliver 25, MaxAckPending 4096 | one per (platform, class), **shared** by every runner that fits the class |
+| stream `RESULTS` | LimitsPolicy, `results.<node>`, MaxAge 7 d, duplicates 15 m | terminal attempt reports `Result{class, exit, errSummary, refs[], rusage, scratchRef}`; msg-id `result-<node>-<gen>` dedups redelivery |
+| stream `FAILURES` | LimitsPolicy, `failures.<node>`, MaxAge 7 d, 8 msgs/subject, 1 GiB cap | durable per-attempt failure records (§9) |
+| KV `status` | node keys + `req.<id>` | current phase per node / per request; KV revision is the watch cursor |
+| core `logs.<node>` | no stream | live output chunks, fire-and-forget |
+| core `runners.hello`, `runners.<id>.hb` | no stream | fleet presence + capacity for the admin view |
+
+**Result commit.** The server consumes `RESULTS`: gate-check the proposed
+ref names → `CheckComplete` every key against the server store → write refs
+in payload order → delete the runner's scratch ref → advance the graph →
+update `status`. A gate rejection or completeness failure converts an "ok"
+result into a failure with origin `gate`/`commit`.
+
+**Failure handling.** Result classes: `ok`, `hard`, `retryable`, `control`,
+`cancelled`. One hard failure fails the node. Retryable failures (exit 75 —
+the conventional "try again" exit for fetchers and plugins) get a budget of
+3 with 1 s → 30 s capped backoff; control-class results (infrastructure
+problems, e.g. a pull failure) re-enqueue without burning budget;
+MaxDeliver 25 is the poison-message backstop. `failed-upstream` is derived
+per request from its snapshot. FAILED is memory-only — retry is resubmit
+(doneness-by-ref makes that cheap). Node generations seed from the wall
+clock so JetStream dedup windows survive server restarts. There is no
+runner-reconnect adoption: an orphaned in-flight job simply redelivers after
+its ack deadline lapses — wasteful but never wrong.
+
+## 7. Bootstrap and self-hosting fetchers
+
+A fresh system needs a floor to stand on. Four seed artifacts per platform
+are embedded in the binaries as zstd tarballs and published into the store
+on server boot: `shell:<platform>` (a fully static userland — busybox-style
+tools + bash, no host paths), and the seed fetchers
+`fetcher:tarball+https:<platform>`, `fetcher:hostmusl:<platform>`,
+`fetcher:github:<platform>`. Seeding is idempotent per blob: a
+`seed-src:<ref>:<hash>` marker records exactly which blob was published, so
+restarts skip unchanged seeds and a changed seed re-rolls.
+
+Everything else bootstraps from there. A recipe can declare `fetcher(name,
+url=…, sha256=…)` — sugar for a `tarball+https` import that *builds the
+fetcher itself*; its canonical definition rides inside the import definition
+(`fetcherDef`), making the fetcher an ordinary content-addressed dependency.
+Language plugins bundle companion fetcher pins (a `fetchers.toml` inside the
+plugin artifact), so e.g. Go module fetches use a fetcher the system built.
+In-tree fetchers cover tarballs (https/xz/extract), GitHub sources, host
+toolchain imports (`hostshell`, `hostmusl`), and package ecosystems (Go
+modules, npm, PyPI, crates, RubyGems, Alpine APK) plus the per-language
+plugin companions.
+
+## 8. Execution
+
+### 8.1 Sandbox
+
+Rootless, Linux-only, no daemon. `sandbox.Run` re-execs the current binary
+(`/proc/self/exe`) with a sentinel argv[0] and the sandbox config in the
+environment; **every `main()` (and every sandbox-driving `TestMain`) must
+call `sandbox.Init()` first** — it detects the re-exec'd child, performs
+setup inside the new namespaces, and execs the target command. Namespaces:
+user + mount + PID + net + UTS + IPC — the net namespace means **no network**
+(imports get a network-capable variant). The child makes the mount tree
+private, applies the mount plan (read-only binds need a remount pass),
+mounts a fresh `/proc`, `pivot_root`s, and execs. Cgroups v2 limits
+(`memory.max`, `pids.max`) apply best-effort via `clone3` with a cgroup fd.
+
+Inside a build: the dependency union is materialized and bind-mounted
+read-only at `/jobs/store/<key>`; the source subtree is writable at
+`$SRC=/build/src`; outputs go to `$out=/build/out`; declared caches are
+bound writable at their paths; `/tmp` is a tmpfs; `/dev` is a hermetic
+minimal set; the input name → path map is carried at
+`/build/.jobs-deps.json` and the script at `/build/.jobs-script.sh`. The
+shell is the embedded static userland — nothing from the host leaks in.
+
+### 8.2 The runner daemon
+
+- **Boot self-test.** Before serving, the runner builds a tiny real build
+  (embedded shell seeded under a self-test-only ref, per-boot nonce params
+  so the result is never cached) through the full pin → run pipeline in the
+  real sandbox, then deletes the refs. If the sandbox doesn't actually work
+  here, the runner refuses to start (`--skip-self-test` overrides).
+- **Lanes.** A runner of size S consumes every ladder class that fits within
+  S, binding the shared durable consumer per class. A single sweep loop
+  walks classes largest-first; a job is fetched only after its class's
+  resources are reserved in an admission ledger (Σ held cpu/mem ≤ capacity),
+  so the runner never over-commits.
+- **Per-job flow:** fetch → pull every ref closure in the job's `pullRefs`
+  (skip if present-and-complete; one re-pull on incompleteness, then hard
+  fail) → ingest the in-band definition (verifying its hash equals the
+  node's key) → run the stage driver → push all output roots as one tree
+  under a scratch ref `runner-push/<runner>/<node>-<gen>` → **publish the
+  result, then ack** the job message. Result-before-ack plus JetStream
+  msg-id dedup makes the crash window safe: a redelivered job either finds
+  the result already published (deduped) or re-runs idempotently.
+- While executing, the runner heartbeats the message (`InProgress` every
+  5 s against the 90 s ack window); a dead runner just stops heartbeating
+  and the job redelivers elsewhere. Presence heartbeats
+  (`runners.<id>.hb`, every 5 s, capacity + in-flight) feed the fleet view;
+  `runners.hello` announces on every (re)connect.
+
+## 9. Observability
+
+**Live progress.** Watch streams deliver coalesced snapshots (per-node
+phase, generation, server-computed elapsed, error summaries, counts).
+Runner-side events (exec start/phase/output/heartbeat…) ride core NATS
+through a sink seam; build output is chunked by an output writer (32 KiB
+chunks, flushed at 64 KiB or 100 ms, 16 MiB per stream then truncate-and-
+mark) and published fire-and-forget to `logs.<node>`.
+
+**Log store.** The server folds `logs.>` into per-(node, generation) ring
+buffers — 1 MiB head + 3 MiB tail, newest generation wins. Log fetches
+return head + gap marker + tail, then follow live. Logs are memory-only by
+design — with one exception:
+
+**Durable failure records.** At the moment the scheduler decides an
+attempt's fate (retry or fail), it folds a `FailureRecord` into the
+`FAILURES` stream: origin (`result` — runner-reported; `gate`/`commit` —
+an ok result the server refused; `server` — no runner attempt), disposition,
+the runner's verbatim result (class, exit, rusage, proposed refs), retry
+counters, interested request ids, timing, and a trimmed snapshot of the log
+ring (256 KiB head + 512 KiB tail, sized so one record fits one NATS
+message). Bounded (7 d, 8 attempts/node, 1 GiB) and strictly best-effort —
+losing a record costs observability, never correctness. The admin `diagnose`
+frame (and `jobs-client diagnose`, with `--json` as the machine-friendly
+shape) reads the trail back — per failing node, every recorded attempt with
+its captured output — surviving retries and server restarts.
+
+**Admin surface.** `status` (one-shot tables), `admin
+stats|fleet|requests|refs`, and a bubbletea TUI (builds with watch/logs/
+cancel/delete, fleet, stats, refs browse). TUI rule: never block in
+`Update` — network I/O only inside command goroutines.
+
+## 10. The client
+
+**Local builds** (`build`, `run`, `develop`, `image`) need no server: the
+client drives the stage pipeline in-process against its private store,
+skipping any stage whose output ref already exists. Identity is what makes
+local and remote interchangeable — the same source yields the same K/F
+everywhere, so caches join across machines by construction.
+
+- `run` executes the built artifact's entrypoint (`JOBS.entrypoint` in the
+  output tree) in a run sandbox, passing the exit code through.
+- `develop` opens an interactive bash PTY inside the *exact* build sandbox
+  (script printed, not run) — the store flock is held for the whole session.
+- `image` assembles a reproducible single-layer OCI tarball (epoch-zero
+  timestamps) from the artifact + runtime closure, loadable with
+  `docker load`.
+
+**Remote builds** (`remote-build`): ingest the source tree locally → push it
+under a client scratch ref over `jobs-amber-admin/1.0` → submit the
+canonical definition over `jobs-build/1.0` (remote F equals local F by
+construction) → watch to terminal, rendering an in-place TTY progress block
+(`NO_COLOR`-aware; falls back to append-only lines without a TTY) with the
+running steps' build output streaming alongside by default (`--no-logs` opts
+out) → on success, pull the output and its runtime closure home. SIGINT
+sends a cancel frame and exits 130; a second signal kills. `watch`
+re-attaches to a running request; `logs --follow` streams one node's output.
+
+## 11. Trust model
+
+Whoever knows the server's endpoint ID may connect to any ALPN — the
+deployment model is a LAN, tailnet, or otherwise access-controlled network,
+with the iroh endpoint key as transport identity and QUIC providing
+encryption and authentication of *that key*. The ref gate protects against
+accidents, not malice: a runner could bypass it by writing refs directly
+through the open store ALPN. Accepted for v1; the known follow-ups are
+per-ALPN endpoint allowlists, a name-filter hook on the runner store ALPN,
+secrets and runner tags for placement, and store GC/retention (refs and
+NATS streams age out; the object store currently only grows).
+
+## 12. Repository layout
+
+| Package | What it is |
+|---|---|
+| `amber/` | the store seam (§4) — pinned chunk params live here |
+| `amberclient/` | importable store-sync client (§4) |
+| `natsiroh/` | the NATS-over-iroh tunnel (§5) |
+| `wire/` | frozen scheduler wire contracts: node grammar, phases, Job/Result/FailureRecord CBOR, class ladder, NATS names |
+| `api/` | frozen client API frames for the build/admin ALPNs (§5) |
+| `events/` | build-event schema + output writer + sink seam (§9) |
+| `sched/` | the scheduler (§6): node graph, unfold, ref gate, folds, retries, failure records |
+| `serve/` | jobs-server composition (§1): router × 5 ALPNs, embedded NATS + store, API handlers, seeding |
+| `runnerd/` | the runner daemon (§8.2) |
+| `runner/` | stage drivers, sandbox executors, local pipeline, develop/run/image |
+| `clientcli/` | jobs-client commands (§10), store flock, TTY progress |
+| `tui/` | the admin TUI (§9) |
+| `builddef/`, `importdef/` | definition types + canonical identity (§2) |
+| `recipe/` | Starlark recipe evaluation (§3.1) |
+| `bootstrap/` | embedded seeds + idempotent seeding (§7) |
+| `fetchers/`, `plugins/` | fetcher implementations + the Go plugin (§7, §3.1) |
+| `sandbox/` | the namespace sandbox (§8.1) |
+| `tailbuf/`, `resources/` | small support packages (bounded output tails, resource math) |
+| `cmd/jobs-server`, `cmd/jobs-runner`, `cmd/jobs-client` | the three mains — each calls `sandbox.Init()` first |

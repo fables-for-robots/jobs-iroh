@@ -1,19 +1,13 @@
 # jobs-iroh
 
-A simpler, non-distributed port of jobs: one server, N runners, and a client
-connected only by iroh QUIC. The server embeds NATS (JetStream) for scheduling
-and amber-store-core as the content-addressed store; the build model (Starlark
-recipes, canonical-CBOR identity, hermetic sandbox) is ported from jobs intact.
+A small, self-contained build system: one server, N runners, and a client,
+connected only by iroh QUIC. Builds are hermetic (rootless Linux namespace
+sandbox, no network inside), identified by content (canonical-CBOR
+definitions and a content-addressed amber store), and described by Starlark
+recipes. The server embeds NATS JetStream for scheduling — there is no other
+infrastructure: no HTTP, no database, no container runtime.
 
-**Status:** all milestones done (M1 foundation → M6 admin TUI). Local builds,
-remote builds, develop shell, OCI image export, status/watch/admin CLI and the
-interactive TUI are implemented and green. Design source of truth:
-`docs/design/2026-07-22-architecture.md` (see its trailing implementation-
-status section for the shipped deviations).
-
-Examples matrix (jobs-build/examples): go-build, subbuild, python-build,
-rust-build (build + run, cold and warm), develop/myapp — all pass locally and
-via remote-build.
+Full design: [`docs/architecture/architecture.md`](docs/architecture/architecture.md).
 
 ## Binaries & ALPNs
 
@@ -23,10 +17,31 @@ One server endpoint, five ALPNs:
 | ALPN | Who | What |
 |---|---|---|
 | `jobs-build/1.0` | client | submit builds, watch, logs, cancel |
-| `jobs-runner-nats/1.0` | runner | NATS tunnel to the embedded server |
-| `jobs-runner-amber/1.0` | runner | CAS object/ref sync |
-| `jobs-admin/1.0` | client (TUI) | observe builds, stats, fleet, refs, cancel/delete |
-| `jobs-amber-admin/1.0` | client | push/pull amber refs |
+| `jobs-runner-nats/1.0` | runner | NATS tunnel to the embedded scheduler |
+| `jobs-runner-amber/1.0` | runner | store sync (objects + refs) |
+| `jobs-admin/1.0` | client (TUI) | observe builds, stats, fleet, refs, cancel/delete, diagnose |
+| `jobs-amber-admin/1.0` | client | push source trees up, pull outputs home |
+
+## A build file
+
+A build is a `BUILD.jobs` Starlark file next to your source. Minimal shape:
+
+```python
+def build():
+    toolchain = imp(fetcher = "tarball+https",
+                    params = {"url": "https://go.dev/dl/go1.24.linux-amd64.tar.gz"})
+    return struct(
+        inputs       = {"toolchain": toolchain},
+        env          = {"GOFLAGS": "-mod=mod"},
+        script       = "go build -o $out/app .",
+        runtime_deps = [],
+    )
+```
+
+Imports (fetches) are the only steps with network access; the script runs in
+a sandbox with its inputs mounted read-only, the source at `$SRC`, and the
+output tree collected from `$out`. Language plugins (Go, npm, PyPI, cargo,
+RubyGems, …) expand lockfiles into per-dependency cached imports.
 
 ## Quickstart: local build
 
@@ -34,10 +49,10 @@ No server needed — builds run hermetically against an embedded store under
 `--data-dir` (default `~/.local/share/jobs-iroh`):
 
 ```sh
-jobs-client build --source ./examples/go-build       # build → prints F + output key
-jobs-client run   --source ./examples/go-build -- arg1  # build, then exec JOBS.entrypoint
-jobs-client develop --source ./examples/go-build     # interactive shell in the build sandbox
-jobs-client image  --source ./examples/go-build -o app.tar --tag myapp:dev
+jobs-client build --source ./myapp                  # build → prints F + output key
+jobs-client run   --source ./myapp -- arg1          # build, then exec JOBS.entrypoint
+jobs-client develop --source ./myapp                # interactive shell in the build sandbox
+jobs-client image  --source ./myapp -o app.tar --tag myapp:dev
 docker load -i app.tar
 ```
 
@@ -51,13 +66,19 @@ jobs-server --data-dir /var/lib/jobs-iroh
 jobs-runner --server <endpoint-id> [--addr host:port] [--size c1-m2]
 
 # 3. Client: push source, build remotely, pull the output home:
-jobs-client remote-build --server <endpoint-id> --source ./examples/go-build
+jobs-client remote-build --server <endpoint-id> --source ./myapp
 jobs-client watch  --server <endpoint-id> --request-id <id>   # re-attach
 jobs-client status --server <endpoint-id>                     # one-shot tables
 jobs-client tui    --server <endpoint-id>                     # interactive admin
 ```
 
-Local and remote builds share the same canonical definition, so the same
+`remote-build` streams the running steps' build output alongside the
+progress block by default (`--no-logs` opts out). When something fails,
+`jobs-client diagnose --server <id> --request <id>` prints the durable
+failure trail — every failed attempt with its captured output, surviving
+retries and server restarts (`--json` for the machine-friendly shape).
+
+Local and remote builds share the same canonical definitions, so the same
 source yields the same build identity K/F everywhere — remote outputs pulled
 home join the local cache and vice versa.
 
