@@ -22,7 +22,7 @@ docker run --rm -v jobs-registry-data:/data alpine chown -R 65532:65532 /data
 docker run -d --name jobs-registry --restart unless-stopped \
   -p 127.0.0.1:5000:5000 \
   -v jobs-registry-data:/data \
-  <image> \
+  dmilhdef/jobs-registry:latest \
   --server=<jobs-server endpoint id> \
   --data-dir=/data --listen=:5000 --cache-ttl=24h
 ```
@@ -54,7 +54,7 @@ Two platform quirks:
 docker run -d --name jobs-registry --restart unless-stopped \
   --net host \
   -v jobs-registry-data:/data \
-  <image> \
+  dmilhdef/jobs-registry:latest \
   --server=<jobs-server endpoint id> \
   --data-dir=/data --listen=:5000 --cache-ttl=24h
 ```
