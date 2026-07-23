@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.2.0 — 2026-07-23
 
 - **jobs-server now announces itself for discovery** (ported from
   amber-store-iroh's amber-serve): direct addresses on every interface
