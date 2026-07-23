@@ -166,6 +166,7 @@ client local session):
 | stream `JOBS` | WorkQueuePolicy, subjects `jobs.<platform>.<class>` | one msg per placeable node attempt; payload = job def + in-band defs + resolved requirement; `Nats-Msg-Id = <node>/<gen>` |
 | durable consumers on `JOBS` | one per `(platform, class)` filter subject, **shared** by all runners that fit it | runners pull from every class ≤ their size; `AckWait` 60s + `InProgress` heartbeats every 5s while executing |
 | stream `RESULTS` | LimitsPolicy, `results.<node>`, `MaxAge` 7d, `Duplicates` ≥ AckWait×MaxDeliver | terminal result: exit class, proposed ref batch (name+key), rusage. **Publish result → then ack the job msg**; `Nats-Msg-Id = result-<node>/<gen>` dedups redelivery |
+| stream `FAILURES` | LimitsPolicy, `failures.<node>`, `MaxAge` 7d, `MaxMsgsPerSubject` 8, `MaxBytes` 1GiB | one record per failed/retried attempt, folded at fail/retry decision time: origin + disposition, the runner's verbatim Result, retry counters, request interest, and a trimmed log snapshot (≤256KiB head + 512KiB tail, fits the 1MiB `max_payload`). Diagnostics only, never load-bearing — see [`2026-07-23-failure-diagnostics.md`](2026-07-23-failure-diagnostics.md) |
 | KV `status` | per-node key `<kind>_<hexkey>`, per-request key `req_<id>` | current phase (`waiting|queued|running|publishing|done|failed`); watchable; KV revision = watch cursor |
 | core NATS `logs.<node>` | no stream | live stdout/stderr chunks (≤32KiB, 64KiB/100ms flush — jobs' OutputWriter constants); fire-and-forget |
 | core NATS `runners.<id>.heartbeat` | no stream | capacity, in-flight, rusage for the admin view |
@@ -174,6 +175,8 @@ Build output is durable only as a bounded in-memory head+tail per node on the
 server (1MiB head + 3MiB tail ring, `sched/buildactor/output.go` port), fed by
 subscribing `logs.>` — never JetStream, per the "outputs in server memory only"
 rule. The client/admin log fetch = head + gap marker + tail + live follow.
+One exception: a *failed* attempt's ring is snapshotted (trimmed) into its
+`FAILURES` record at fold time, so failure logs survive retries and restarts.
 
 Runner flow per job: pull → pull missing input objects (`jobs-runner-amber`) →
 execute stage → push output objects → publish `results.<node>` → ack. The
@@ -198,7 +201,8 @@ like jobs' tree-source submit.
 
 `jobs-admin/1.0`: `Requests{}` list, `Watch`, `Logs` (same as build), `Fleet{}`
 (runner heartbeats snapshot), `Stats{}` (store disk usage via `packstore`
-stats, ref count, uptime), `Refs{prefix}` browse, `Cancel/Delete`.
+stats, ref count, uptime), `Refs{prefix}` browse, `Cancel/Delete`,
+`Diagnose{requestId|node}` (the durable failure trail from `FAILURES`).
 
 ## 6. Repository layout
 
@@ -267,6 +271,11 @@ Documented deviations from this draft (all deliberate, spec'd in
   the client drives the ported stage drivers directly (`runner` developDriver
   / `driveFStages`); identity and cache-join are unaffected since refs and
   canonical defs are identical.
+
+Post-milestone addition (2026-07-23): failure diagnostics — the `FAILURES`
+stream, the admin `diagnose` frames and `jobs-client diagnose`, per
+[`2026-07-23-failure-diagnostics.md`](2026-07-23-failure-diagnostics.md)
+(§7 local reproduction of that spec remains open).
 
 Known follow-ups: name-filter hook on the runner amber ALPN (today a runner
 could write refs directly), sharded/parallel amber transfers, secrets + runner

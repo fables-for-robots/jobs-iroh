@@ -4,7 +4,8 @@
 // terminal or the client closes.
 //
 // The build ALPN accepts: submit, watch, logs, cancel.
-// The admin ALPN additionally accepts: requests, fleet, stats, refs, delete.
+// The admin ALPN additionally accepts: requests, fleet, stats, refs, delete,
+// diagnose.
 package api
 
 import (
@@ -32,6 +33,7 @@ const (
 	TStats    = "stats"
 	TRefs     = "refs"
 	TDelete   = "delete"
+	TDiagnose = "diagnose"
 )
 
 // Frame types, server → client.
@@ -46,6 +48,7 @@ const (
 	TFleetReply    = "fleet-reply"
 	TStatsReply    = "stats-reply"
 	TRefsReply     = "refs-reply"
+	TDiagnoseReply = "diagnose-reply"
 )
 
 // frame is the single wire envelope.
@@ -242,4 +245,41 @@ type RefInfo struct {
 	Name      string `cbor:"name"`
 	Key       []byte `cbor:"key"`
 	CreatedNs int64  `cbor:"createdNs"`
+}
+
+// DiagnoseRequest fetches the durable failure trail (admin). Exactly one of
+// RequestID/Node must be set. By request it covers the request's failing
+// nodes — from the live graph, or, after a server restart, by scanning the
+// FAILURES stream for records tagged with the request ID.
+type DiagnoseRequest struct {
+	RequestID   string `cbor:"requestId,omitempty"`
+	Node        string `cbor:"node,omitempty"`
+	MaxAttempts int    `cbor:"maxAttempts,omitempty"` // per node, newest first; server default applies when 0
+	MaxLogBytes int64  `cbor:"maxLogBytes,omitempty"` // per attempt head+tail cap; 0 = record as stored
+}
+
+// DiagnoseReply is the failure report.
+type DiagnoseReply struct {
+	RequestID string          `cbor:"requestId,omitempty"` // set for by-request queries
+	Phase     string          `cbor:"phase,omitempty"`     // request phase, when known
+	Counts    wire.Counts     `cbor:"counts,omitempty"`
+	Nodes     []NodeDiagnosis `cbor:"nodes,omitempty"`
+	Truncated bool            `cbor:"truncated,omitempty"` // node list hit the server cap
+}
+
+// NodeDiagnosis is one failing node's trail, attempts newest first.
+type NodeDiagnosis struct {
+	Node     string          `cbor:"node"`
+	Kind     string          `cbor:"kind"`
+	Platform string          `cbor:"platform,omitempty"`
+	Phase    string          `cbor:"phase,omitempty"` // current phase, when the node is live in memory
+	Gen      uint64          `cbor:"gen,omitempty"`   // current gen, when live
+	Attempts []AttemptReport `cbor:"attempts,omitempty"`
+}
+
+// AttemptReport is one FailureRecord rendered for the client, plus whether
+// MaxLogBytes cut the stored log snapshot.
+type AttemptReport struct {
+	wire.FailureRecord
+	LogTruncated bool `cbor:"logTruncated,omitempty"`
 }

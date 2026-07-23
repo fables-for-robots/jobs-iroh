@@ -42,7 +42,7 @@ nix develop -c go build ./...
 | `wire/` | Frozen scheduler wire contracts: node names, phases, Job/Result CBOR, size-class ladder, NATS subject/stream layout. |
 | `api/` | Frozen client API frames (4-byte BE length + CBOR `{t,b}` envelope) for the build/admin ALPNs. |
 | `events/` | Build-event schema + OutputWriter (32KiB chunks, 64KiB/100ms flush) — events ride core NATS via the Sink seam. |
-| `sched/` | Server scheduler: in-memory node graph (join = get-or-create, doneness = ref existence), unfold, ref gate, JOBS/RESULTS/status-KV folds, retry classes, per-kind PullRefs, log fold rings. |
+| `sched/` | Server scheduler: in-memory node graph (join = get-or-create, doneness = ref existence), unfold, ref gate, JOBS/RESULTS/status-KV folds, retry classes, per-kind PullRefs, log fold rings, durable FAILURES records + Diagnose. |
 | `serve/` | jobs-server composition: iroh Router × 5 ALPNs, embedded NATS + embedded store, build/admin API handlers, bootstrap seeding. |
 | `runnerd/` | jobs-runner daemon: boot self-test build gate, lane consumers per fitting size class, admission accounting, pull-inputs → drive stage → push-outputs → result-before-ack (MsgId dedup). |
 | `amberclient/` | Importable amber sync client: dial by endpoint ID, Push/Pull (+WithProgress), refs list; single-conn v1. |
@@ -79,6 +79,11 @@ nix develop -c go build ./...
   - `remote-build --server <id> --source <dir> [--cpu …] [--memory …]` — push
     source, submit, watch to terminal, pull output home.
   - `watch --server <id> --request-id <id>` — re-attach to a build.
+  - `diagnose --server <id> (--request <id> | --node <name>) [--attempts N]
+    [--json] [--logs-dir <dir>]` — durable failure report (all failed
+    attempts with origin/class/exit, runner, timing, rusage, captured
+    output); survives retries and server restarts. `--json` is the
+    machine/LLM-friendly shape.
   - `status --server <id>` — one-shot plain-text requests + fleet tables.
   - `admin stats|fleet|requests|refs --server <id>` — thin frame calls.
   - `tui --server <id>` — interactive admin TUI.

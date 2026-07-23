@@ -43,6 +43,17 @@ const (
 	logHeadCap = 1 << 20 // per-(node,gen) captured output head
 	logTailCap = 3 << 20 // per-(node,gen) captured output tail ring
 
+	// Durable failure-record bounds. One record is one NATS message, so the
+	// log snapshot must fit the embedded server's default 1MiB max_payload
+	// with room for the Result and CBOR overhead.
+	failureLogHeadCap = 256 << 10 // durable snapshot: first bytes of the head
+	failureLogTailCap = 512 << 10 // durable snapshot: last bytes of the tail
+	failuresPerNode   = 8         // FAILURES MaxMsgsPerSubject: last N failed attempts
+	failuresMaxBytes  = 1 << 30   // whole-stream backstop
+
+	diagnoseDefaultAttempts = 4 // Diagnose: attempts per node when unspecified
+	diagnoseMaxNodes        = 4 // Diagnose: nodes per reply (MaxFrame budget)
+
 	jobsAckWait       = 90 * time.Second // runner heartbeats msg.InProgress every 5s
 	jobsMaxDeliver    = 25               // poison backstop; the node FSM owns retries
 	jobsMaxAckPending = 4096             // slots gate concurrency, not the consumer
@@ -93,8 +104,8 @@ type Sched struct {
 	lastReqKV     map[string]string
 }
 
-// New creates/updates the JOBS work-queue and RESULTS streams and the status
-// KV bucket, then starts the scheduler's background work: the results
+// New creates/updates the JOBS work-queue, RESULTS and FAILURES streams and
+// the status KV bucket, then starts the scheduler's background work: the results
 // consumer, the logs.> fold (per-(node,gen) head+tail ring buffers), the
 // runners.hello / runners.*.hb fleet fold, and the snapshot ticker.
 //
@@ -135,6 +146,19 @@ func New(ctx context.Context, o Options) (*Sched, error) {
 		Duplicates:  15 * time.Minute,
 	}); err != nil {
 		return nil, fmt.Errorf("sched: create %s stream: %w", wire.StreamResults, err)
+	}
+	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+		Name:              wire.StreamFailures,
+		Description:       "jobs-iroh per-attempt failure records (diagnostics, never load-bearing)",
+		Subjects:          []string{wire.SubjectFailuresRoot + ".>"},
+		Retention:         jetstream.LimitsPolicy,
+		MaxAge:            7 * 24 * time.Hour,
+		MaxMsgsPerSubject: failuresPerNode,
+		MaxBytes:          failuresMaxBytes,
+		Discard:           jetstream.DiscardOld,
+		Duplicates:        15 * time.Minute,
+	}); err != nil {
+		return nil, fmt.Errorf("sched: create %s stream: %w", wire.StreamFailures, err)
 	}
 	kv, err := js.CreateOrUpdateKeyValue(ctx, jetstream.KeyValueConfig{
 		Bucket:      wire.KVStatus,

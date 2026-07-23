@@ -22,7 +22,7 @@ import (
 // apiService serves the api frame protocol (4-byte BE length + CBOR
 // {t, b}) of one client ALPN over the scheduler. The build ALPN accepts
 // submit/watch/logs/cancel; the admin ALPN additionally accepts
-// requests/fleet/stats/refs/delete (admin=true).
+// requests/fleet/stats/refs/delete/diagnose (admin=true).
 type apiService struct {
 	log      *slog.Logger
 	sd       *sched.Sched
@@ -219,6 +219,18 @@ func (svc *apiService) dispatch(ctx context.Context, remote, t string, body cbor
 		}
 		svc.log.Info("client delete", "remote", remote, "request", req.RequestID)
 		_ = api.WriteFrame(stream, api.TOK, nil)
+		return nil
+
+	case api.TDiagnose:
+		var req api.DiagnoseRequest
+		if err := api.DecodeBody(body, &req); err != nil {
+			return badFrame(t, err)
+		}
+		reply, err := svc.sd.Diagnose(ctx, req)
+		if err != nil {
+			return err
+		}
+		_ = api.WriteFrame(stream, api.TDiagnoseReply, reply)
 		return nil
 
 	default:

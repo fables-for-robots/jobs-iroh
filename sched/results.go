@@ -109,12 +109,12 @@ func (s *Sched) handleResult(data []byte) {
 		case isGateError(commitErr):
 			// A gate rejection means a broken or hostile runner — hard, one
 			// strike (fail closed; nothing was written).
-			s.failNodeLocked(n, commitErr.Error())
+			s.failNodeAttrLocked(n, &res, wire.FailOriginGate, commitErr.Error())
 		default:
 			// Incomplete closure or a store hiccup: the objects may still be
 			// syncing or the runner crashed mid-push. Retryable — re-run,
 			// never trust an unverified batch.
-			s.retryLocked(n, "commit: "+commitErr.Error(), false)
+			s.retryLocked(n, &res, wire.FailOriginCommit, "commit: "+commitErr.Error(), false)
 		}
 		return
 
@@ -123,27 +123,27 @@ func (s *Sched) handleResult(data []byte) {
 		if summary == "" {
 			summary = fmt.Sprintf("hard failure (exit %d)", res.Exit)
 		}
-		s.failNodeLocked(n, summary)
+		s.failNodeAttrLocked(n, &res, wire.FailOriginResult, summary)
 
 	case wire.ClassRetryable:
-		s.retryLocked(n, res.ErrSummary, false)
+		s.retryLocked(n, &res, wire.FailOriginResult, res.ErrSummary, false)
 
 	case wire.ClassControl:
 		// Control-plane verdicts must not burn the job's retryable budget —
 		// they say nothing about the job (issue #153); own generous cap.
-		s.retryLocked(n, res.ErrSummary, true)
+		s.retryLocked(n, &res, wire.FailOriginResult, res.ErrSummary, true)
 
 	case wire.ClassCancelled:
 		// Runner-side cancel (shutdown, lost duplicate race). Re-enqueue as
 		// long as somebody still wants the node; no budget burned, but the
 		// control cap bounds pathological loops.
 		if len(n.interest) > 0 {
-			s.retryLocked(n, res.ErrSummary, true)
+			s.retryLocked(n, &res, wire.FailOriginResult, res.ErrSummary, true)
 		}
 
 	default:
 		// Unknown class fails closed.
-		s.failNodeLocked(n, "unknown result class "+res.Class)
+		s.failNodeAttrLocked(n, &res, wire.FailOriginResult, "unknown result class "+res.Class)
 	}
 	s.mu.Unlock()
 }
@@ -152,23 +152,26 @@ func (s *Sched) handleResult(data []byte) {
 // consecutive budget of maxConsecRetryable (3) with exponential backoff
 // 1s·2^(n−1) capped at 30s, then escalate to hard ("retry budget
 // exhausted"). Control-class re-runs skip the budget and the backoff but are
-// capped at maxConsecControl (20) consecutive occurrences.
-func (s *Sched) retryLocked(n *node, summary string, control bool) {
+// capped at maxConsecControl (20) consecutive occurrences. Every decision
+// folds a durable FailureRecord (before the re-enqueue that would bump the
+// gen and reset the log ring); res attributes the attempt for that record.
+func (s *Sched) retryLocked(n *node, res *wire.Result, origin, summary string, control bool) {
 	if control {
 		n.consecControl++
 		if n.consecControl > maxConsecControl {
-			s.failNodeLocked(n, "control budget exhausted: "+summary)
+			s.failNodeAttrLocked(n, res, origin, "control budget exhausted: "+summary)
 			return
 		}
 		n.phase = wire.PhaseWaiting
 		n.errSummary = summary
+		s.recordFailureLocked(n, res, origin, wire.FailDispositionRetry, summary, 0)
 		s.enqueueLocked(n)
 		return
 	}
 	n.consecRetry++
 	n.consecControl = 0
 	if n.consecRetry > maxConsecRetryable {
-		s.failNodeLocked(n, "retry budget exhausted: "+summary)
+		s.failNodeAttrLocked(n, res, origin, "retry budget exhausted: "+summary)
 		return
 	}
 	backoff := s.retryBase << (n.consecRetry - 1)
@@ -177,6 +180,7 @@ func (s *Sched) retryLocked(n *node, summary string, control bool) {
 	}
 	n.phase = wire.PhaseWaiting
 	n.errSummary = summary
+	s.recordFailureLocked(n, res, origin, wire.FailDispositionRetry, summary, backoff)
 	s.putNodeStatusLocked(n)
 	s.bumpLocked()
 	s.log.Info("retryable failure; backing off", "node", n.name, "gen", n.gen,

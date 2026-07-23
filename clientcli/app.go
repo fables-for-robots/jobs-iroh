@@ -42,6 +42,7 @@ func App() *cli.App {
 			imageCmd(),
 			remoteBuildCmd(),
 			watchCmd(),
+			diagnoseCmd(),
 			statusCmd(),
 			adminCmd(),
 			tuiCmd(),

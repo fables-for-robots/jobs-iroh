@@ -148,6 +148,16 @@ func TestBuildAndAdminAPI(t *testing.T) {
 		t.Fatalf("refs listing: %+v", refs.Refs)
 	}
 
+	// Diagnose over the admin ALPN: a node that never failed has no records
+	// (proves the FAILURES stream + dispatch wiring, not the trail — the
+	// sched tests own that).
+	var de api.Error
+	request(t, ctx, admin, api.TDiagnose,
+		api.DiagnoseRequest{Node: "buildfrom_" + k.String()}, api.TError, &de)
+	if de.Code != api.CodeNotFound {
+		t.Fatalf("diagnose of an unfailed node: %+v", de)
+	}
+
 	// Logs for a node that produced no output yet: an empty view, not an
 	// error.
 	var view api.LogView
@@ -189,6 +199,10 @@ func TestBuildALPNRejections(t *testing.T) {
 	request(t, ctx, build, api.TStats, nil, api.TError, &e)
 	if e.Code != api.CodeBadRequest {
 		t.Fatalf("stats on build ALPN: %+v", e)
+	}
+	request(t, ctx, build, api.TDiagnose, api.DiagnoseRequest{Node: "x"}, api.TError, &e)
+	if e.Code != api.CodeBadRequest {
+		t.Fatalf("diagnose on build ALPN: %+v", e)
 	}
 
 	// A non-canonical definition is a bad request.

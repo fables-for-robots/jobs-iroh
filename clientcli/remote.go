@@ -198,6 +198,7 @@ func (cfg *remoteConfig) run(c *cli.Context) error {
 	case "failed":
 		printFailureLogs(ctx, bc, final, ew)
 		fmt.Fprintf(ew, "re-attach: jobs-client watch --server %s --request-id %s\n", cfg.server, sub.RequestID)
+		fmt.Fprintf(ew, "full failure report (all attempts, durable): jobs-client diagnose --server %s --request %s\n", cfg.server, sub.RequestID)
 		if s := failureSummary(final); s != "" {
 			return cli.Exit("build FAILED: "+s, 1)
 		}

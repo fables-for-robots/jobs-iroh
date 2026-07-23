@@ -379,13 +379,22 @@ func (s *Sched) onDepDoneLocked(d *node) {
 // failNodeLocked marks a node FAILED — memory-only and sticky while watched
 // (retry is by resubmit; a fresh activation re-derives from the CAS).
 // failed-upstream is derived per request at snapshot time, never stored.
+// Server-side failures (unfold, pull-ref computation, …) have no runner
+// attempt to attribute; result-driven callers use failNodeAttrLocked.
 func (s *Sched) failNodeLocked(n *node, summary string) {
+	s.failNodeAttrLocked(n, nil, wire.FailOriginServer, summary)
+}
+
+// failNodeAttrLocked is failNodeLocked with the failing attempt's Result and
+// origin attached to the durable FailureRecord.
+func (s *Sched) failNodeAttrLocked(n *node, res *wire.Result, origin, summary string) {
 	if n.phase == wire.PhaseFailed || n.phase == wire.PhaseDone {
 		return
 	}
 	n.phase = wire.PhaseFailed
 	n.errSummary = summary
 	n.doneAt = time.Now()
+	s.recordFailureLocked(n, res, origin, wire.FailDispositionFailed, summary, 0)
 	s.putNodeStatusLocked(n)
 	s.bumpLocked()
 	s.log.Warn("node failed", "node", n.name, "error", summary)

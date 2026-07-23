@@ -20,15 +20,17 @@ import (
 
 // Stream, KV bucket and subject roots.
 const (
-	StreamJobs    = "JOBS"
-	StreamResults = "RESULTS"
-	KVStatus      = "status"
+	StreamJobs     = "JOBS"
+	StreamResults  = "RESULTS"
+	StreamFailures = "FAILURES"
+	KVStatus       = "status"
 
-	SubjectJobsRoot    = "jobs"    // jobs.<platform>.<class>
-	SubjectResultsRoot = "results" // results.<node>
-	SubjectLogsRoot    = "logs"    // logs.<node>
-	SubjectRunnerHello = "runners.hello"
-	subjectRunnerHBFmt = "runners.%s.hb"
+	SubjectJobsRoot     = "jobs"     // jobs.<platform>.<class>
+	SubjectResultsRoot  = "results"  // results.<node>
+	SubjectLogsRoot     = "logs"     // logs.<node>
+	SubjectFailuresRoot = "failures" // failures.<node>
+	SubjectRunnerHello  = "runners.hello"
+	subjectRunnerHBFmt  = "runners.%s.hb"
 )
 
 // Node kinds. buildvalue is server-internal (never placed on the queue).
@@ -105,6 +107,9 @@ func JobsSubject(platform string, c Class) string {
 // ResultsSubject carries one node's terminal results.
 func ResultsSubject(node string) string { return SubjectResultsRoot + "." + node }
 
+// FailuresSubject carries one node's durable failure records.
+func FailuresSubject(node string) string { return SubjectFailuresRoot + "." + node }
+
 // LogsSubject carries one node's live output chunks (core NATS, in-memory).
 func LogsSubject(node string) string { return SubjectLogsRoot + "." + node }
 
@@ -117,9 +122,10 @@ func ConsumerName(platform string, c Class) string {
 	return "wq-" + PlatformToken(platform) + "-" + strings.ReplaceAll(string(c), ".", "_")
 }
 
-// JobMsgID / ResultMsgID are Nats-Msg-Id values (JetStream dedup).
-func JobMsgID(node string, gen uint64) string    { return fmt.Sprintf("job-%s-%d", node, gen) }
-func ResultMsgID(node string, gen uint64) string { return fmt.Sprintf("result-%s-%d", node, gen) }
+// JobMsgID / ResultMsgID / FailureMsgID are Nats-Msg-Id values (JetStream dedup).
+func JobMsgID(node string, gen uint64) string     { return fmt.Sprintf("job-%s-%d", node, gen) }
+func ResultMsgID(node string, gen uint64) string  { return fmt.Sprintf("result-%s-%d", node, gen) }
+func FailureMsgID(node string, gen uint64) string { return fmt.Sprintf("failure-%s-%d", node, gen) }
 
 // Job is one work-queue message: everything a runner needs to execute one
 // stage attempt without asking the server anything over a side channel.
@@ -174,6 +180,58 @@ type Result struct {
 	// ScratchRef is the runner-side push ref holding this attempt's output
 	// closure; the server deletes it after committing the real refs.
 	ScratchRef string `cbor:"scratchRef,omitempty"`
+}
+
+// FailureRecord origins: who produced the failing verdict.
+const (
+	FailOriginResult = "result" // runner-reported class (hard/retryable/control)
+	FailOriginCommit = "commit" // ok result whose CheckComplete/ref-write failed
+	FailOriginGate   = "gate"   // ok result whose ref batch the gate refused
+	FailOriginServer = "server" // no runner attempt: unfold, pull-ref computation, …
+)
+
+// FailureRecord dispositions: what the scheduler did about it.
+const (
+	FailDispositionRetry  = "retry"  // re-enqueue scheduled
+	FailDispositionFailed = "failed" // terminal
+)
+
+// FailureRecord is one failed (or budget-burning retried) attempt, folded
+// durable on failures.<node> at the moment the scheduler decides the
+// attempt's fate — the only moment the runner's Result, the node's retry
+// counters, and the attempt's log ring coexist. Written and read by the
+// server only (no runner lockstep); best-effort by contract — losing one
+// costs observability, never correctness. One NATS message per record, so
+// the log snapshot is trimmed to fit the 1MiB default max_payload.
+type FailureRecord struct {
+	Node     string `cbor:"node"`
+	Gen      uint64 `cbor:"gen"`
+	Platform string `cbor:"platform,omitempty"`
+
+	Origin      string `cbor:"origin"`
+	Disposition string `cbor:"disposition"`
+
+	ErrSummary  string   `cbor:"errSummary"` // the folded summary incl. prefixes ("commit: …")
+	ConsecRetry int      `cbor:"consecRetry,omitempty"`
+	ConsecCtrl  int      `cbor:"consecControl,omitempty"`
+	BackoffMs   int64    `cbor:"backoffMs,omitempty"` // when Disposition == retry
+	RequestIDs  []string `cbor:"requestIds,omitempty"`
+
+	// Result is the runner's verbatim report when Origin != server (runner
+	// ID, class, exit, rusage; for commit/gate failures also the proposed
+	// ref batch).
+	Result *Result `cbor:"result,omitempty"`
+
+	EnqueuedNs int64 `cbor:"enqueuedNs,omitempty"`
+	StartedNs  int64 `cbor:"startedNs,omitempty"`
+	FailedNs   int64 `cbor:"failedNs"`
+
+	// Trimmed snapshot of the attempt's captured output (LogMissing when
+	// the in-memory ring was evicted or the attempt never produced output).
+	LogHead    []byte `cbor:"logHead,omitempty"`
+	LogGap     int64  `cbor:"logGap,omitempty"`
+	LogTail    []byte `cbor:"logTail,omitempty"`
+	LogMissing bool   `cbor:"logMissing,omitempty"`
 }
 
 // LogChunk is one live output chunk on logs.<node> (core NATS).

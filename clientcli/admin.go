@@ -44,6 +44,8 @@ func watchCmd() *cli.Command {
 				// Same failure UX as remote-build: the failing nodes'
 				// stored log tails, then the one-line summary.
 				printFailureLogs(ctx, bc, final, errWriter(c))
+				fmt.Fprintf(errWriter(c), "full failure report (all attempts, durable): jobs-client diagnose --server %s --request %s\n",
+					c.String("server"), c.String("request-id"))
 				if s := failureSummary(final); s != "" {
 					return cli.Exit("request failed: "+s, 1)
 				}
