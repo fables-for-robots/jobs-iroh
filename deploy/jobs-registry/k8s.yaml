@@ -1,0 +1,77 @@
+# jobs-registry on Kubernetes: one replica (the amber store dir is flocked —
+# exactly one process per volume). To scale horizontally, deploy additional
+# independent Deployment+PVC pairs (or convert to a StatefulSet with
+# volumeClaimTemplates): each replica owns its own store, and blob digests
+# are reproducible so their caches agree.
+#
+# Fill in: the image, the jobs-server endpoint ID (and optionally direct
+# addresses if the server is not discoverable from the cluster). The registry
+# speaks plain HTTP on :5000 — terminate TLS at an Ingress, or configure the
+# node container runtime to treat this service as an insecure registry.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: jobs-registry
+  labels: {app: jobs-registry}
+spec:
+  replicas: 1
+  strategy: {type: Recreate} # the PVC (flocked store) moves with the pod
+  selector:
+    matchLabels: {app: jobs-registry}
+  template:
+    metadata:
+      labels: {app: jobs-registry}
+    spec:
+      # distroless nonroot runs as 65532; fsGroup makes the PVC writable.
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+      containers:
+        - name: jobs-registry
+          image: jobs-registry:latest # ← your image
+          args:
+            - --server=$(JOBS_SERVER)
+            # - --addr=jobs-server.example.internal:4433  # skip discovery
+            - --data-dir=/data
+            - --listen=:5000
+            - --cache-ttl=24h
+          env:
+            - name: JOBS_SERVER
+              value: "<jobs-server endpoint id>" # printed in its startup log
+          ports:
+            - {name: http, containerPort: 5000}
+          volumeMounts:
+            - {name: data, mountPath: /data}
+          # /v2/ answers whenever the daemon is up — by design the registry
+          # keeps serving cached images while the jobs-server is unreachable,
+          # so probes must not depend on upstream health.
+          readinessProbe:
+            httpGet: {path: /v2/, port: http}
+          livenessProbe:
+            httpGet: {path: /v2/, port: http}
+          resources:
+            requests: {cpu: 100m, memory: 256Mi}
+      volumes:
+        - name: data
+          persistentVolumeClaim: {claimName: jobs-registry-data}
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: jobs-registry-data
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests: {storage: 50Gi} # amber store + blob cache
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: jobs-registry
+  labels: {app: jobs-registry}
+spec:
+  selector: {app: jobs-registry}
+  ports:
+    - {name: http, port: 5000, targetPort: http}

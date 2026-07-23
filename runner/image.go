@@ -17,6 +17,7 @@ import (
 	"github.com/google/go-containerregistry/pkg/v1/empty"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/tarball"
+	"github.com/google/go-containerregistry/pkg/v1/types"
 )
 
 // epoch is the fixed timestamp stamped on every layer entry and on the image
@@ -160,6 +161,113 @@ func assembleImage(ctx context.Context, st *amber.Store, selfBOK key.Key, depBOK
 		return nil, fmt.Errorf("set config: %w", err)
 	}
 	return img, nil
+}
+
+// AssembleOCIImage builds the two-layer OCI-mediatype image that jobs-registry
+// serves: the first layer is the runtime closure (each dep content-addressed
+// under /jobs/store/<BOK>), the second the build artifact at the image root
+// plus a writable /tmp. Keeping the closure in its own layer means every image
+// sharing a dep set shares that layer blob, so registry clients re-pull only
+// the artifact layer. No shell is baked — a registry image is exactly the
+// build and its closure. ep may be nil for outputs without a JOBS.entrypoint;
+// the config then carries no Entrypoint. Both layer streams are deterministic
+// (epoch mtimes, sorted store entries), so blob digests are reproducible.
+func AssembleOCIImage(ctx context.Context, st *amber.Store, artifact key.Key, deps []key.Key, ep *Entrypoint, platform string) (v1.Image, error) {
+	osName, arch, ok := strings.Cut(platform, "/")
+	if !ok || osName == "" || arch == "" {
+		return nil, fmt.Errorf("invalid platform %q (want os/arch, e.g. linux/amd64)", platform)
+	}
+
+	depsLayer, err := ociLayer(func(w io.Writer) error { return writeDepsTar(ctx, st, w, deps) })
+	if err != nil {
+		return nil, fmt.Errorf("build deps layer: %w", err)
+	}
+	artifactLayer, err := ociLayer(func(w io.Writer) error { return writeArtifactTar(ctx, st, w, artifact) })
+	if err != nil {
+		return nil, fmt.Errorf("build artifact layer: %w", err)
+	}
+
+	base := mutate.MediaType(empty.Image, types.OCIManifestSchema1)
+	base = mutate.ConfigMediaType(base, types.OCIConfigJSON)
+	img, err := mutate.AppendLayers(base, depsLayer, artifactLayer)
+	if err != nil {
+		return nil, fmt.Errorf("append layers: %w", err)
+	}
+
+	cf, err := img.ConfigFile()
+	if err != nil {
+		return nil, fmt.Errorf("read config: %w", err)
+	}
+	cf = cf.DeepCopy()
+	cf.OS = osName
+	cf.Architecture = arch
+	cf.Created = v1.Time{Time: epoch}
+	var epEnv map[string]string
+	if ep != nil {
+		cf.Config.Entrypoint = imageEntrypointArgv(*ep)
+		epEnv = ep.Env
+	}
+	cf.Config.Cmd = nil
+	cf.Config.Env = imageEnv(epEnv, key.Key{}, false)
+	cf.Config.WorkingDir = "/"
+
+	img, err = mutate.ConfigFile(img, cf)
+	if err != nil {
+		return nil, fmt.Errorf("set config: %w", err)
+	}
+	return img, nil
+}
+
+// ociLayer wraps a deterministic tar-writing func as an OCI-mediatype layer.
+// The opener re-streams the tar on each call (go-containerregistry reads it
+// once for the diffID and once for the compressed blob), so the write must be
+// repeatable — which every store-backed tar here is.
+func ociLayer(writeTar func(w io.Writer) error) (v1.Layer, error) {
+	opener := func() (io.ReadCloser, error) {
+		pr, pw := io.Pipe()
+		go func() {
+			pw.CloseWithError(writeTar(pw))
+		}()
+		return pr, nil
+	}
+	return tarball.LayerFromOpener(opener, tarball.WithMediaType(types.OCILayer))
+}
+
+// writeDepsTar writes the runtime-closure layer: /jobs/store scaffolding plus
+// each dep tree under /jobs/store/<BOK>. The scaffolding dirs are written even
+// with zero deps so the layer is never an empty tar. The stream is a pure
+// function of the sorted dep set, so images sharing a closure share the blob.
+func writeDepsTar(ctx context.Context, st *amber.Store, w io.Writer, deps []key.Key) error {
+	tw := tar.NewWriter(w)
+	if err := writeDir(tw, "jobs/"); err != nil {
+		return err
+	}
+	if err := writeDir(tw, "jobs/store/"); err != nil {
+		return err
+	}
+	for _, bok := range sortedDedupKeys(deps) {
+		prefix := "jobs/store/" + bok.String() + "/"
+		if err := writeDir(tw, prefix); err != nil {
+			return err
+		}
+		if err := copyTreeInto(ctx, st, tw, bok, prefix); err != nil {
+			return err
+		}
+	}
+	return tw.Close()
+}
+
+// writeArtifactTar writes the build layer: the artifact tree at the image root
+// and a writable /tmp (HOME).
+func writeArtifactTar(ctx context.Context, st *amber.Store, w io.Writer, artifact key.Key) error {
+	tw := tar.NewWriter(w)
+	if err := copyTreeInto(ctx, st, tw, artifact, ""); err != nil {
+		return err
+	}
+	if err := writeDir(tw, "tmp/"); err != nil {
+		return err
+	}
+	return tw.Close()
 }
 
 // storeLayer wraps the runtime-closure tar (writeStoreTar) as a single OCI

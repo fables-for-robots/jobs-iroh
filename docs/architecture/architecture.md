@@ -55,13 +55,18 @@ Three binaries:
 - **`jobs-client`** — a fully local build tool (no server needed) *and* the
   remote client: submit, watch, logs, diagnose, admin, TUI.
 
+A fourth, optional binary — **`jobs-registry`** (§10.1) — is a read-only OCI
+registry that serves build outputs as pullable container images. Like the
+runner it is purely a dial-side peer: a private store synced on demand over
+`jobs-amber-admin/1.0`, plus an HTTP face speaking the Distribution API.
+
 | ALPN | Peer | Purpose |
 |---|---|---|
 | `jobs-build/1.0` | client | submit a build, watch progress, fetch logs, cancel |
 | `jobs-runner-nats/1.0` | runner | NATS tunnel — each stream proxies to the embedded NATS server |
 | `jobs-runner-amber/1.0` | runner | store sync (objects + refs) |
 | `jobs-admin/1.0` | client / TUI | requests, fleet, stats, refs browse, cancel/delete, diagnose |
-| `jobs-amber-admin/1.0` | client | store sync — push source trees up, pull outputs home |
+| `jobs-amber-admin/1.0` | client / registry | store sync — push source trees up, pull outputs (and images-to-be) home |
 
 Server data dir (`--data-dir`, default `~/.local/share/jobs-iroh/server`):
 `server.key` (hex-encoded iroh secret key, 0600 — deleting it changes the
@@ -464,6 +469,43 @@ out) → on success, pull the output and its runtime closure home. SIGINT
 sends a cancel frame and exits 130; a second signal kills. `watch`
 re-attaches to a running request; `logs --follow` streams one node's output.
 
+### 10.1 The registry (`jobs-registry`)
+
+`jobs-registry` serves build outputs on the protocol container platforms
+already speak: a **read-only** OCI Distribution registry (pull only —
+GET/HEAD; push endpoints answer 405) with the jobs-server endpoint ID as its
+one load-bearing configuration (`--server` / `JOBS_SERVER`). Images are
+named `jobs:<K>`: one repository, whose tags are build keys **K** (64
+lowercase hex) — a K is already an immutable content address, so
+`/v2/jobs/tags/list` is the catalog of submitted builds (a bare F from a
+directly pushed `build-output:F` also pulls, but is not listed).
+`docker pull <registry>/jobs:<K>`.
+
+Images have **two layers**: the runtime closure (each dep at
+`/jobs/store/<BOK>`, exactly the layout the artifact was linked against) and
+the artifact (the output `c/` tree at the image root, plus a writable
+`/tmp`). The deps layer is a pure function of the sorted dep set, so builds
+sharing a closure share the blob and clients re-pull only the artifact
+layer. Assembly shares the deterministic tar normalisation with `jobs-client
+image` (epoch mtimes, sorted entries), so blob digests are reproducible; no
+shell is baked, and a missing `JOBS.entrypoint` is tolerated (the image just
+has no entrypoint). The config's os/arch comes from the build's stored
+definition (`build:K`), falling back to `--default-platform`.
+
+On a first pull the registry resolves K→F from the server's **ref listing**
+(the `build-from:K` ref's *value* is F — pulling that ref would drag the
+whole source env in), syncs `build-output:F` / `build-output-deps:F` into
+its own flocked store via `amberclient.Pull` (verified, objects-before-ref),
+assembles the image, and caches every blob in `<data-dir>/blobs`. A blob
+file's **mtime is its last-read time**; a periodic sweep deletes blobs
+unread for `--cache-ttl` (default 24h), reclaiming disk without a database.
+Tiny per-image records under `<data-dir>/repos` persist (they remember the
+manifest digest and F), so an expired image reassembles from the local store
+without the server, and a request for a swept blob recovers by reassembling
+the image that referenced it. Concurrent first pulls of one K singleflight
+into a single assembly. The store itself only grows — the store GC
+follow-up (§11) applies here too.
+
 ## 11. Trust model
 
 Whoever knows the server's endpoint ID may connect to any ALPN — the
@@ -475,6 +517,14 @@ through the open store ALPN. Accepted for v1; the known follow-ups are
 per-ALPN endpoint allowlists, a name-filter hook on the runner store ALPN,
 secrets and runner tags for placement, and store GC/retention (refs and
 NATS streams age out; the object store currently only grows).
+
+The registry adds a boundary of its own: its HTTP face. Object *content* is
+verified against keys on every sync (a MITM cannot forge objects), but
+name→key bindings are only as trustworthy as the server whose endpoint ID
+the registry pins, and the registry's HTTP side authenticates and encrypts
+nothing itself — TLS and access control belong to the ingress in front of
+it, the same access-controlled-network assumption the ALPNs make. OCI
+digests give pull clients end-to-end integrity below the manifest.
 
 ## 12. Repository layout
 
@@ -490,6 +540,7 @@ NATS streams age out; the object store currently only grows).
 | `serve/` | jobs-server composition (§1): router × 5 ALPNs, embedded NATS + store, API handlers, seeding |
 | `runnerd/` | the runner daemon (§8.2) |
 | `runner/` | stage drivers, sandbox executors, local pipeline, develop/run/image |
+| `registryd/` | the OCI registry daemon (§10.1): Distribution API, on-demand sync, blob cache + sweep |
 | `clientcli/` | jobs-client commands (§10), store flock, TTY progress |
 | `tui/` | the admin TUI (§9) |
 | `builddef/`, `importdef/` | definition types + canonical identity (§2) |
@@ -498,4 +549,4 @@ NATS streams age out; the object store currently only grows).
 | `fetchers/`, `plugins/` | fetcher implementations + the Go plugin (§7, §3.1) |
 | `sandbox/` | the namespace sandbox (§8.1) |
 | `tailbuf/`, `resources/` | small support packages (bounded output tails, resource math) |
-| `cmd/jobs-server`, `cmd/jobs-runner`, `cmd/jobs-client` | the three mains — each calls `sandbox.Init()` first |
+| `cmd/jobs-server`, `cmd/jobs-runner`, `cmd/jobs-client`, `cmd/jobs-registry` | the mains — each calls `sandbox.Init()` first |

@@ -11,8 +11,9 @@ Full design: [`docs/architecture/architecture.md`](docs/architecture/architectur
 
 ## Binaries & ALPNs
 
-Three binaries: `jobs-server`, `jobs-runner`, `jobs-client`.
-One server endpoint, five ALPNs:
+Three core binaries: `jobs-server`, `jobs-runner`, `jobs-client` — plus an
+optional `jobs-registry` (an OCI registry serving build outputs as pullable
+images). One server endpoint, five ALPNs:
 
 | ALPN | Who | What |
 |---|---|---|
@@ -20,7 +21,7 @@ One server endpoint, five ALPNs:
 | `jobs-runner-nats/1.0` | runner | NATS tunnel to the embedded scheduler |
 | `jobs-runner-amber/1.0` | runner | store sync (objects + refs) |
 | `jobs-admin/1.0` | client (TUI) | observe builds, stats, fleet, refs, cancel/delete, diagnose |
-| `jobs-amber-admin/1.0` | client | push source trees up, pull outputs home |
+| `jobs-amber-admin/1.0` | client / registry | push source trees up, pull outputs home |
 
 ## A build file
 
@@ -81,6 +82,27 @@ retries and server restarts (`--json` for the machine-friendly shape).
 Local and remote builds share the same canonical definitions, so the same
 source yields the same build identity K/F everywhere — remote outputs pulled
 home join the local cache and vice versa.
+
+## Registry: docker pull a build
+
+`jobs-registry` serves build outputs straight to docker/containerd/k8s — no
+export/load/push hop:
+
+```sh
+jobs-registry --server <endpoint-id> [--addr host:port] --listen :5000
+docker pull my-registry-host:5000/jobs:<build-K>
+```
+
+Images live in a single `jobs` repository whose tags are build keys K (the
+value `remote-build` prints); `/v2/jobs/tags/list` enumerates every
+submitted build (a local build's bare F key also pulls, but is not listed). Images have two layers — the runtime closure under
+`/jobs/store/<key>` and the build artifact at the root — assembled on the
+fly from the registry's own store, which syncs from the jobs-server on
+demand. Blobs are cached on disk and swept after `--cache-ttl` (default
+24h) without a read. The registry is pull-only and speaks plain HTTP:
+terminate TLS at an ingress or mark it insecure in the container runtime.
+A sample k8s Deployment lives in
+[`deploy/jobs-registry/`](deploy/jobs-registry/).
 
 ## Dev setup
 

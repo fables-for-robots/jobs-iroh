@@ -55,6 +55,8 @@ require (
 	github.com/cockroachdb/tokenbucket v0.0.0-20230807174530-cc333fc44b06 // indirect
 	github.com/coder/websocket v1.8.14 // indirect
 	github.com/cpuguy83/go-md2man/v2 v2.0.7 // indirect
+	github.com/docker/cli v29.5.3+incompatible // indirect
+	github.com/docker/docker-credential-helpers v0.9.3 // indirect
 	github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f // indirect
 	github.com/getsentry/sentry-go v0.27.0 // indirect
 	github.com/go-git/gcfg v1.5.1-0.20230307220236-3a3c6141e376 // indirect
@@ -96,6 +98,7 @@ require (
 	github.com/rivo/uniseg v0.4.7 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
 	github.com/russross/blackfriday/v2 v2.1.0 // indirect
+	github.com/sirupsen/logrus v1.9.4 // indirect
 	github.com/x448/float16 v0.8.4 // indirect
 	github.com/xo/terminfo v0.0.0-20220910002029-abceb7e1c41e // indirect
 	github.com/xrash/smetrics v0.0.0-20240521201337-686a1a2994c1 // indirect
@@ -110,5 +113,6 @@ require (
 	golang.org/x/tools v0.46.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect
 	gopkg.in/warnings.v0 v0.1.2 // indirect
+	gotest.tools/v3 v3.5.2 // indirect
 	lukechampine.com/blake3 v1.4.1 // indirect
 )

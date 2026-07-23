@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+- **New binary: `jobs-registry` — docker pull your builds.** A read-only
+  OCI Distribution registry that serves build outputs as pullable images:
+  `docker pull <registry>:5000/jobs:<build-K>` (one `jobs` repository whose
+  tags are build keys). Images have two layers —
+  the runtime closure under `/jobs/store/<key>` and the artifact at the
+  root — assembled on the fly (`runner.AssembleOCIImage`, sharing the
+  deterministic tar machinery with `jobs-client image`, so blob digests are
+  reproducible). The registry owns a private amber store synced on demand
+  from the jobs-server over `jobs-amber-admin/1.0` (K→F resolved from the
+  ref listing, so the source closure never syncs), caches blobs on disk
+  with last-read-based expiry (`--cache-ttl`, default 24h), and reassembles
+  expired images from its local store without the server. Pull-only, plain
+  HTTP (TLS belongs to the ingress); sample k8s manifests in
+  `deploy/jobs-registry/`.
+
 ## v0.7.0 — 2026-07-23
 
 - **Build output streams by default.** `jobs-client remote-build` and

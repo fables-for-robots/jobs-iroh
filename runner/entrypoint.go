@@ -5,10 +5,17 @@ import (
 	"fmt"
 )
 
-// entrypointFile is the JSON file a build writes into its output root to declare
+// EntrypointFile is the JSON file a build writes into its output root to declare
 // how the artifact is run (command + args + env). `jobs-client run` reads it from
-// the build output's c/ tree and executes it.
-const entrypointFile = "JOBS.entrypoint"
+// the build output's c/ tree and executes it; jobs-registry reads it to fill the
+// image config.
+const EntrypointFile = "JOBS.entrypoint"
+
+// entrypointFile is the historical unexported alias.
+const entrypointFile = EntrypointFile
+
+// DecodeEntrypoint parses and validates a JOBS.entrypoint JSON document.
+func DecodeEntrypoint(b []byte) (Entrypoint, error) { return decodeEntrypoint(b) }
 
 // Entrypoint is the decoded JOBS.entrypoint. Command is required; a path without
 // a leading "/" is resolved against the output root, a leading "/" is used
