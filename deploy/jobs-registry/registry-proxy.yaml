@@ -1,0 +1,67 @@
+# Node-local bridge so the kubelet can pull jobs images as localhost:5000/…
+# containerd resolves registries via host DNS, so the jobs-registry Service
+# name is invisible to it; this DaemonSet exposes loopback:5000 on every node
+# (containerd allows plain HTTP for localhost) and forwards to the Service
+# via cluster DNS. See k8s.md. Fill in: the namespace in the backend name if
+# the Service lives outside the DaemonSet's namespace, and tolerations for
+# any tainted nodes that must pull jobs images.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: jobs-registry-proxy
+data:
+  nginx.conf: |
+    worker_processes 1;
+    events { worker_connections 1024; }
+    stream {
+      # kube-dns by name — nginx resolves the resolver address itself at
+      # config load via /etc/resolv.conf, so no cluster-DNS IP is hard-coded
+      resolver kube-dns.kube-system.svc.cluster.local valid=10s;
+      # map forces per-connection resolution through the resolver (a literal
+      # proxy_pass hostname is resolved once at startup and never again)
+      map "" $backend {
+        default jobs-registry.jobs.svc.cluster.local:5000;
+      }
+      server {
+        listen 5000;
+        proxy_pass $backend;
+      }
+    }
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: jobs-registry-proxy
+  labels: {app: jobs-registry-proxy}
+spec:
+  selector:
+    matchLabels: {app: jobs-registry-proxy}
+  template:
+    metadata:
+      labels: {app: jobs-registry-proxy}
+    spec:
+      # tolerations: cover tainted nodes that must pull jobs images
+      containers:
+        - name: proxy
+          image: nginx:1.29-alpine
+          ports:
+            - name: registry
+              containerPort: 5000
+              hostPort: 5000
+              # loopback only — the proxy exists solely for the node's own
+              # containerd; without this the LAN can pull via <node-ip>:5000
+              hostIP: 127.0.0.1
+          volumeMounts:
+            - name: config
+              mountPath: /etc/nginx/nginx.conf
+              subPath: nginx.conf
+              readOnly: true
+          readinessProbe:
+            tcpSocket: {port: registry}
+          livenessProbe:
+            tcpSocket: {port: registry}
+          resources:
+            requests: {cpu: 10m, memory: 32Mi}
+      volumes:
+        - name: config
+          configMap: {name: jobs-registry-proxy}
