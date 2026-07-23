@@ -82,7 +82,7 @@ func remoteBuildCmd() *cli.Command {
 			&cli.StringSliceFlag{Name: "param", Usage: "key=value build param (repeatable)"},
 			&cli.StringFlag{Name: "cpu", Usage: "raise the target build's CPU requirement (e.g. 2000m)", Destination: &cfg.cpu},
 			&cli.StringFlag{Name: "memory", Usage: "raise the target build's memory requirement (e.g. 4Gi)", Destination: &cfg.memory},
-			&cli.BoolFlag{Name: "logs", Usage: "stream the output of running build steps while watching"},
+			&cli.BoolFlag{Name: "no-logs", Usage: "do not stream the output of running build steps"},
 		},
 		Action: cfg.run,
 	}
@@ -186,7 +186,7 @@ func (cfg *remoteConfig) run(c *cli.Context) error {
 	}()
 
 	var tracker *logTracker
-	if c.Bool("logs") {
+	if !c.Bool("no-logs") {
 		tracker = newLogTracker(ctx, bc, lv)
 		defer tracker.close()
 	}

@@ -27,7 +27,7 @@ func watchCmd() *cli.Command {
 		Usage: "stream one build request's progress until it finishes",
 		Flags: append(serverFlags(),
 			&cli.StringFlag{Name: "request-id", Required: true, Usage: "request ID printed at submit time"},
-			&cli.BoolFlag{Name: "logs", Usage: "stream the output of running build steps while watching"},
+			&cli.BoolFlag{Name: "no-logs", Usage: "do not stream the output of running build steps"},
 		),
 		Action: func(c *cli.Context) error {
 			ctx, stop := signalCtx(c.Context)
@@ -40,7 +40,7 @@ func watchCmd() *cli.Command {
 			lv := cliLiveView(c) // one shared view: tracker Printlns and the
 			// watch block must go through the same cursor arithmetic
 			var tracker *logTracker
-			if c.Bool("logs") {
+			if !c.Bool("no-logs") {
 				tracker = newLogTracker(ctx, bc, lv)
 				defer tracker.close()
 			}
