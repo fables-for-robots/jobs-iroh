@@ -53,7 +53,7 @@ nix develop -c go build ./...
 | `runnerd/` | jobs-runner daemon: boot self-test build gate, lane consumers per fitting size class, admission accounting, pull-inputs → drive stage → push-outputs → result-before-ack (MsgId dedup). |
 | `amberclient/` | Importable amber sync client: dial by endpoint ID, Push/Pull (+WithProgress), refs list. Transfers are sharded (`Conns`, default 4): extra QUIC connections attach to the server's transfer token, want rounds deal across all channels; degrades to the single control stream. |
 | `runner/` | Ported stage drivers + sandbox executors; local build/run pipeline (`driveFStages`), develop PTY shell, OCI image export (single-layer docker-load tar + two-layer `AssembleOCIImage` for the registry). |
-| `registryd/` | jobs-registry daemon: read-only OCI Distribution API (images named `jobs:<K>` — one repo, tags are build keys), on-demand K→F resolve + amberclient sync into a private store, two-layer image assembly (shell baked by default like `run`/`image`), disk blob cache with last-read TTL sweep, offline reassembly from records. |
+| `registryd/` | jobs-registry daemon: read-only OCI Distribution API (images named `jobs:<K>` — one repo, tags are build keys), on-demand K→F resolve + amberclient sync into a private store, two-layer image assembly (shell baked by default like `run`/`image`), uncompressed layers streamed from the CAS per request (never cached; the record's layer recipes are the index), manifest/config blob cache with last-read TTL sweep, offline reassembly from records. |
 | `clientcli/` | jobs-client command surface: local + remote commands, store flock, liveView TTY progress (NO_COLOR-aware). |
 | `tui/` | bubbletea admin TUI over `jobs-admin/1.0`: builds (watch/logs/cancel/delete), fleet, stats, refs. Never block in Update — network I/O only inside tea.Cmd goroutines. |
 | `builddef/`, `recipe/` | Build definition identity (canonical CBOR) + Starlark recipe evaluation — ports, seam-swapped. |
@@ -84,9 +84,11 @@ nix develop -c go build ./...
   [--no-shell] [--sync-conns N]` — read-only OCI registry: `docker pull
   <host>:5000/jobs:<build-K>` serves a build output as a two-layer image
   (runtime closure + platform shell, artifact), synced on demand
-  from the server into a private store and cached as blobs on disk; blobs
-  unread for `--cache-ttl` are swept, and expired images reassemble from the
-  local store without the server.
+  from the server into a private store. Layers are **uncompressed**
+  (`…layer.v1.tar`) and streamed straight from the store on every request —
+  never materialised on disk — so only the manifest and config are cached
+  blobs (`--cache-ttl` sweeps those); images reassemble from the local store
+  without the server.
 - `jobs-client`:
   - `build|run|develop --source <dir> [--dir …] [--build-file …] [--platform …]
     [--shell-ref …] [--param k=v]…` — local hermetic build / build-then-exec

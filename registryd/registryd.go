@@ -6,14 +6,19 @@
 // the build on the configured jobs-server (build-from:K → F via the server's
 // ref listing, so the source closure is never synced), pulls build-output:F
 // and build-output-deps:F into its own amber store over the jobs-amber-admin
-// ALPN, assembles a two-layer OCI image (runtime closure + artifact — see
-// runner.AssembleOCIImage), and caches the blobs under <data-dir>/blobs.
+// ALPN, and assembles a two-layer OCI image (runtime closure + artifact — see
+// runner.AssembleOCIImage).
 //
-// A blob file's mtime is bumped on every read and a background sweep deletes
-// blobs not read for CacheTTL, so the layer cache reclaims itself; the tiny
-// per-image records under <data-dir>/repos persist, and together with the
-// amber store they let an expired image be reassembled without the server.
-// The amber store itself only grows (store GC is an upstream follow-up).
+// Layers are uncompressed and never stored: their tars are a pure function of
+// the store plus a runner.LayerSpec, so assembly streams each layer once to
+// measure it and the record keeps the spec, not the bytes. A blob GET
+// regenerates the tar from the store into the response. Only the manifest and
+// the config land in <data-dir>/blobs; a blob file's mtime is bumped on every
+// read and a background sweep deletes blobs not read for CacheTTL. The
+// per-image records under <data-dir>/repos persist and carry the layer specs
+// (rebuilt into the digest→spec index at startup), so together with the amber
+// store they let an expired image be reassembled without the server. The amber
+// store itself only grows (store GC is an upstream follow-up).
 package registryd
 
 import (
@@ -62,7 +67,8 @@ type Options struct {
 	Listen string
 
 	// CacheTTL is how long an unread cached blob survives before the sweep
-	// deletes it. Defaults to 24h.
+	// deletes it. Only manifests and configs are cached (layers stream from
+	// the store), so this bounds a few KB per image. Defaults to 24h.
 	CacheTTL time.Duration
 
 	// DefaultPlatform (os/arch) is used for image configs when a build's
@@ -99,6 +105,7 @@ type registry struct {
 	st              *amber.Store
 	sync            *reconnSync
 	blobs           *blobCache
+	layers          *layerIndex
 	reposDir        string
 	ttl             time.Duration
 	defaultPlatform string
@@ -163,11 +170,17 @@ func Run(ctx context.Context, o Options) error {
 		st:              st,
 		sync:            sc,
 		blobs:           &blobCache{dir: filepath.Join(dataDir, "blobs"), log: log},
+		layers:          newLayerIndex(),
 		reposDir:        filepath.Join(dataDir, "repos"),
 		ttl:             o.CacheTTL,
 		defaultPlatform: o.DefaultPlatform,
 		noShell:         o.NoShell,
 		runCtx:          ctx,
+	}
+	// Layer bytes are never stored, so what makes a previously served image's
+	// blobs answerable after a restart is the recipes in its record.
+	for _, rec := range r.listRecords() {
+		r.layers.put(rec.Layers...)
 	}
 
 	ln, err := net.Listen("tcp", o.Listen)

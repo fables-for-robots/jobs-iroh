@@ -2,6 +2,16 @@
 
 2026-07-23 · implemented in `registryd/` + `cmd/jobs-registry`
 
+> **Layer storage was replaced on 2026-07-24** by uncompressed layers streamed
+> from the CAS — see
+> [`2026-07-24-uncompressed-streamed-layers.md`](2026-07-24-uncompressed-streamed-layers.md).
+> Read every claim below about the blob cache, layer compression, and what
+> `--cache-ttl` reclaims (the "Disk blob cache" bullet, the record/blob split,
+> and the Limits section's "the expiring layer is the blob cache") as history:
+> layers are no longer blobs, and nothing image-sized expires any more. The
+> rest — naming, the two-layer shape, K→F resolution, records, singleflight,
+> the trust boundary — is unchanged.
+
 ## Problem
 
 Build outputs already export as docker-loadable tarballs (`jobs-client

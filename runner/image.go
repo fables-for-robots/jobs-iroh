@@ -175,31 +175,42 @@ func assembleImage(ctx context.Context, st *amber.Store, selfBOK key.Key, depBOK
 // --no-shell shape). ep may be nil for outputs without a JOBS.entrypoint; the
 // config then carries no Entrypoint. Both layer streams are deterministic
 // (epoch mtimes, sorted store entries), so blob digests are reproducible.
-func AssembleOCIImage(ctx context.Context, st *amber.Store, artifact key.Key, deps []key.Key, shell key.Key, ep *Entrypoint, platform string) (v1.Image, error) {
+//
+// Layers are UNCOMPRESSED (application/vnd.oci.image.layer.v1.tar): each
+// layer's digest is the digest of its tar. Assembly therefore streams the
+// content exactly once (to measure it), and the returned ImageLayers carry the
+// spec that re-streams each layer's bytes — see LayerSpec.
+func AssembleOCIImage(ctx context.Context, st *amber.Store, artifact key.Key, deps []key.Key, shell key.Key, ep *Entrypoint, platform string) (v1.Image, []ImageLayer, error) {
 	osName, arch, ok := strings.Cut(platform, "/")
 	if !ok || osName == "" || arch == "" {
-		return nil, fmt.Errorf("invalid platform %q (want os/arch, e.g. linux/amd64)", platform)
+		return nil, nil, fmt.Errorf("invalid platform %q (want os/arch, e.g. linux/amd64)", platform)
 	}
 
-	depsLayer, err := ociLayer(func(w io.Writer) error { return writeDepsTar(ctx, st, w, deps, shell) })
-	if err != nil {
-		return nil, fmt.Errorf("build deps layer: %w", err)
+	specs := []LayerSpec{
+		{Kind: LayerDeps, Deps: deps, Shell: shell},
+		{Kind: LayerArtifact, Artifact: artifact},
 	}
-	artifactLayer, err := ociLayer(func(w io.Writer) error { return writeArtifactTar(ctx, st, w, artifact) })
-	if err != nil {
-		return nil, fmt.Errorf("build artifact layer: %w", err)
+	layers := make([]v1.Layer, 0, len(specs))
+	assembled := make([]ImageLayer, 0, len(specs))
+	for _, spec := range specs {
+		l, err := newTarLayer(ctx, LayerTarOpener(st, spec))
+		if err != nil {
+			return nil, nil, fmt.Errorf("build %s layer: %w", spec.Kind, err)
+		}
+		layers = append(layers, l)
+		assembled = append(assembled, ImageLayer{Digest: l.digest, Size: l.size, Spec: spec})
 	}
 
 	base := mutate.MediaType(empty.Image, types.OCIManifestSchema1)
 	base = mutate.ConfigMediaType(base, types.OCIConfigJSON)
-	img, err := mutate.AppendLayers(base, depsLayer, artifactLayer)
+	img, err := mutate.AppendLayers(base, layers...)
 	if err != nil {
-		return nil, fmt.Errorf("append layers: %w", err)
+		return nil, nil, fmt.Errorf("append layers: %w", err)
 	}
 
 	cf, err := img.ConfigFile()
 	if err != nil {
-		return nil, fmt.Errorf("read config: %w", err)
+		return nil, nil, fmt.Errorf("read config: %w", err)
 	}
 	cf = cf.DeepCopy()
 	cf.OS = osName
@@ -216,24 +227,9 @@ func AssembleOCIImage(ctx context.Context, st *amber.Store, artifact key.Key, de
 
 	img, err = mutate.ConfigFile(img, cf)
 	if err != nil {
-		return nil, fmt.Errorf("set config: %w", err)
+		return nil, nil, fmt.Errorf("set config: %w", err)
 	}
-	return img, nil
-}
-
-// ociLayer wraps a deterministic tar-writing func as an OCI-mediatype layer.
-// The opener re-streams the tar on each call (go-containerregistry reads it
-// once for the diffID and once for the compressed blob), so the write must be
-// repeatable — which every store-backed tar here is.
-func ociLayer(writeTar func(w io.Writer) error) (v1.Layer, error) {
-	opener := func() (io.ReadCloser, error) {
-		pr, pw := io.Pipe()
-		go func() {
-			pw.CloseWithError(writeTar(pw))
-		}()
-		return pr, nil
-	}
-	return tarball.LayerFromOpener(opener, tarball.WithMediaType(types.OCILayer))
+	return img, assembled, nil
 }
 
 // writeDepsTar writes the runtime-closure layer: /jobs/store scaffolding, each

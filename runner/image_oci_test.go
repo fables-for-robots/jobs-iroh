@@ -2,12 +2,30 @@ package runner
 
 import (
 	"archive/tar"
+	"bytes"
 	"context"
+	"io"
 	"testing"
 
 	"github.com/fables-for-robots/amber-store-core/key"
+	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/types"
 )
+
+// readLayerBlob reads the bytes a registry would serve for this layer.
+func readLayerBlob(t *testing.T, l v1.Layer) []byte {
+	t.Helper()
+	rc, err := l.Compressed()
+	if err != nil {
+		t.Fatalf("open layer blob: %v", err)
+	}
+	defer rc.Close()
+	b, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("read layer blob: %v", err)
+	}
+	return b
+}
 
 func TestAssembleOCIImage(t *testing.T) {
 	ctx := context.Background()
@@ -21,7 +39,7 @@ func TestAssembleOCIImage(t *testing.T) {
 
 	ep := Entrypoint{Command: "bin/app", Args: []string{"--addr", ":8080"}, Env: map[string]string{"LOG": "info"}}
 
-	img, err := AssembleOCIImage(ctx, st, self, deps, key.Key{}, &ep, "linux/amd64")
+	img, imgLayers, err := AssembleOCIImage(ctx, st, self, deps, key.Key{}, &ep, "linux/amd64")
 	if err != nil {
 		t.Fatalf("AssembleOCIImage: %v", err)
 	}
@@ -42,9 +60,93 @@ func TestAssembleOCIImage(t *testing.T) {
 			t.Errorf("config media type = %q, want %q", man.Config.MediaType, types.OCIConfigJSON)
 		}
 		for i, l := range man.Layers {
-			if l.MediaType != types.OCILayer {
-				t.Errorf("layer %d media type = %q, want %q", i, l.MediaType, types.OCILayer)
+			if l.MediaType != types.OCIUncompressedLayer {
+				t.Errorf("layer %d media type = %q, want %q", i, l.MediaType, types.OCIUncompressedLayer)
 			}
+		}
+	})
+
+	t.Run("layer blobs are plain uncompressed tars", func(t *testing.T) {
+		layers, err := img.Layers()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for i, l := range layers {
+			blob := readLayerBlob(t, l)
+			if len(blob) >= 2 && blob[0] == 0x1f && blob[1] == 0x8b {
+				t.Errorf("layer %d blob is gzip-compressed", i)
+			}
+			if _, err := tar.NewReader(bytes.NewReader(blob)).Next(); err != nil {
+				t.Errorf("layer %d blob does not read as a tar: %v", i, err)
+			}
+			// Uncompressed: the blob digest IS the diffID, and the manifest's
+			// size is the tar's size.
+			d, err := l.Digest()
+			if err != nil {
+				t.Fatal(err)
+			}
+			diffID, err := l.DiffID()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if d != diffID {
+				t.Errorf("layer %d digest %s != diffID %s", i, d, diffID)
+			}
+			if got, _, err := v1.SHA256(bytes.NewReader(blob)); err != nil || got != d {
+				t.Errorf("layer %d digest %s does not hash its blob (%s, err=%v)", i, d, got, err)
+			}
+			size, err := l.Size()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if size != int64(len(blob)) {
+				t.Errorf("layer %d size = %d, blob is %d bytes", i, size, len(blob))
+			}
+		}
+	})
+
+	t.Run("layer specs re-stream the exact blob", func(t *testing.T) {
+		// The registry stores these specs instead of the bytes, so a spec
+		// regenerating anything but the measured blob would serve a digest
+		// mismatch to every client.
+		layers, err := img.Layers()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(imgLayers) != len(layers) {
+			t.Fatalf("assembled %d layer specs for %d layers", len(imgLayers), len(layers))
+		}
+		for i, il := range imgLayers {
+			d, err := layers[i].Digest()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if il.Digest != d {
+				t.Errorf("spec %d digest %s != layer digest %s", i, il.Digest, d)
+			}
+			var buf bytes.Buffer
+			if err := WriteLayerTar(ctx, st, &buf, il.Spec); err != nil {
+				t.Fatalf("WriteLayerTar(%s): %v", il.Spec.Kind, err)
+			}
+			if int64(buf.Len()) != il.Size {
+				t.Errorf("re-streamed %s layer is %d bytes, recorded %d", il.Spec.Kind, buf.Len(), il.Size)
+			}
+			got, _, err := v1.SHA256(bytes.NewReader(buf.Bytes()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got != il.Digest {
+				t.Errorf("re-streamed %s layer hashes %s, recorded %s", il.Spec.Kind, got, il.Digest)
+			}
+			if !bytes.Equal(buf.Bytes(), readLayerBlob(t, layers[i])) {
+				t.Errorf("re-streamed %s layer differs byte-for-byte from the assembled blob", il.Spec.Kind)
+			}
+		}
+	})
+
+	t.Run("unknown layer kind", func(t *testing.T) {
+		if err := WriteLayerTar(ctx, st, io.Discard, LayerSpec{Kind: "bogus"}); err == nil {
+			t.Error("want error for an unknown layer kind")
 		}
 	})
 
@@ -103,7 +205,7 @@ func TestAssembleOCIImage(t *testing.T) {
 	})
 
 	t.Run("deps layer is shared across images with the same closure", func(t *testing.T) {
-		img2, err := AssembleOCIImage(ctx, st, other, []key.Key{depB, depA, depA}, key.Key{}, nil, "linux/amd64")
+		img2, _, err := AssembleOCIImage(ctx, st, other, []key.Key{depB, depA, depA}, key.Key{}, nil, "linux/amd64")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -140,7 +242,7 @@ func TestAssembleOCIImage(t *testing.T) {
 	})
 
 	t.Run("nil entrypoint", func(t *testing.T) {
-		img2, err := AssembleOCIImage(ctx, st, self, nil, key.Key{}, nil, "linux/arm64")
+		img2, _, err := AssembleOCIImage(ctx, st, self, nil, key.Key{}, nil, "linux/arm64")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -168,7 +270,7 @@ func TestAssembleOCIImage(t *testing.T) {
 	})
 
 	t.Run("reproducible", func(t *testing.T) {
-		again, err := AssembleOCIImage(ctx, st, self, []key.Key{depA, depB}, key.Key{}, &ep, "linux/amd64")
+		again, _, err := AssembleOCIImage(ctx, st, self, []key.Key{depA, depB}, key.Key{}, &ep, "linux/amd64")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -187,7 +289,7 @@ func TestAssembleOCIImage(t *testing.T) {
 
 	t.Run("with shell: /bin/sh + /jobs/shell + PATH, like run and image", func(t *testing.T) {
 		shell := ingestTestDir(t, ctx, st, map[string]string{"bin/sh": "SH", "bin/bash": "BASH"})
-		simg, err := AssembleOCIImage(ctx, st, self, deps, shell, &ep, "linux/amd64")
+		simg, _, err := AssembleOCIImage(ctx, st, self, deps, shell, &ep, "linux/amd64")
 		if err != nil {
 			t.Fatalf("AssembleOCIImage with shell: %v", err)
 		}
@@ -211,7 +313,7 @@ func TestAssembleOCIImage(t *testing.T) {
 
 		// The shell lives in the deps layer: same deps+shell across different
 		// artifacts share the blob; shell-less and shell-ful deps layers differ.
-		simg2, err := AssembleOCIImage(ctx, st, other, deps, shell, nil, "linux/amd64")
+		simg2, _, err := AssembleOCIImage(ctx, st, other, deps, shell, nil, "linux/amd64")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -248,7 +350,7 @@ func TestAssembleOCIImage(t *testing.T) {
 	})
 
 	t.Run("invalid platform", func(t *testing.T) {
-		if _, err := AssembleOCIImage(ctx, st, self, nil, key.Key{}, nil, "weird"); err == nil {
+		if _, _, err := AssembleOCIImage(ctx, st, self, nil, key.Key{}, nil, "weird"); err == nil {
 			t.Error("want error for platform without os/arch")
 		}
 	})

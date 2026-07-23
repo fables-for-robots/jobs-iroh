@@ -100,8 +100,12 @@ Images have two layers — the runtime closure under `/jobs/store/<key>` plus
 the platform shell (script entrypoints need their `#!/bin/sh` shebang;
 `--no-shell` opts out), and the build artifact at the root — assembled on
 the fly from the registry's own store, which syncs from the jobs-server on
-demand. Blobs are cached on disk and swept after `--cache-ttl` (default
-24h) without a read. The registry is pull-only and speaks plain HTTP:
+demand. Layers are **uncompressed** (`…image.layer.v1.tar`) and generated
+straight from that store on every request rather than stored as blobs, so
+serving costs CPU per pull instead of disk, and `--cache-ttl` (default 24h)
+now expires only the small manifest/config blobs. Size the volume for the
+store, which holds every synced build and is never reclaimed.
+The registry is pull-only and speaks plain HTTP:
 terminate TLS at an ingress or mark it insecure in the container runtime.
 A sample k8s Deployment lives in
 [`deploy/jobs-registry/`](deploy/jobs-registry/).

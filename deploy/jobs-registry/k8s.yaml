@@ -51,8 +51,12 @@ spec:
             httpGet: {path: /v2/, port: http}
           livenessProbe:
             httpGet: {path: /v2/, port: http}
+          # Serving a layer regenerates its tar from the store (no compressed
+          # blob to sendfile), so a pull costs CPU rather than disk, and
+          # concurrent pulls of one layer are not coalesced — size the request
+          # for the widest rollout you expect to serve at once.
           resources:
-            requests: {cpu: 100m, memory: 256Mi}
+            requests: {cpu: "1", memory: 512Mi}
       volumes:
         - name: data
           persistentVolumeClaim: {claimName: jobs-registry-data}
@@ -64,7 +68,7 @@ metadata:
 spec:
   accessModes: [ReadWriteOnce]
   resources:
-    requests: {storage: 50Gi} # amber store + blob cache
+    requests: {storage: 50Gi} # the amber store (layers are not cached as blobs)
 ---
 apiVersion: v1
 kind: Service

@@ -195,6 +195,12 @@ func (r *registry) serveBlob(w http.ResponseWriter, req *http.Request, digest st
 		r.writeError(w, http.StatusBadRequest, "DIGEST_INVALID", err.Error())
 		return
 	}
+	// Layers are the big blobs and the registry keeps none of them: a layer
+	// digest is answered by re-generating its tar from the store.
+	if lay, ok := r.layers.get(d); ok {
+		r.streamLayer(w, req, d, lay, start)
+		return
+	}
 	f, size, err := r.blobs.open(d)
 	if err != nil {
 		if !r.recoverDigest(req.Context(), d) {
@@ -222,9 +228,68 @@ func (r *registry) serveBlob(w http.ResponseWriter, req *http.Request, digest st
 		"size", size, "method", req.Method, "elapsed", time.Since(start).Round(time.Millisecond))
 }
 
+// streamLayer serves a layer blob straight out of the content-addressed store:
+// the tar is generated into the response as the client reads it, so a
+// multi-GB layer costs no disk and no compression. ServeContent still handles
+// HEAD, Range and Content-Length over the (never materialised) stream.
+func (r *registry) streamLayer(w http.ResponseWriter, req *http.Request, d v1.Hash, lay layerRecord, start time.Time) {
+	ls, err := newLayerStream(req.Context(), r.st, lay)
+	if err != nil {
+		r.log.Error("layer stream unavailable", "digest", d.String(), "error", err)
+		r.writeError(w, http.StatusNotFound, "BLOB_UNKNOWN", "no blob with digest "+d.String())
+		return
+	}
+	defer ls.Close()
+
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Docker-Content-Digest", d.String())
+	sw := &statusWriter{ResponseWriter: w}
+	// Zero modtime: a layer's content is fixed by its digest, so there is no
+	// content time to expose and nothing for If-Modified-Since to decide.
+	http.ServeContent(sw, singleRange(req), "", time.Time{}, ls)
+
+	elapsed := time.Since(start).Round(time.Millisecond)
+	if err := ls.failure(); err != nil {
+		if req.Context().Err() != nil || r.runCtx.Err() != nil {
+			// A client that walked away mid-layer (or a shutting-down daemon)
+			// tears the generator down by design — classified by context
+			// state, since the tear-down surfaces as a pipe/stream error.
+			r.log.Debug("layer stream abandoned", "digest", d.String(),
+				"sent", sw.bytes, "size", lay.Size, "elapsed", elapsed)
+			return
+		}
+		// The body is already committed with a Content-Length, so a generator
+		// failure can only truncate the response — the client sees a short
+		// read and retries. Log it as the fault it is.
+		r.log.Error("layer stream failed", "digest", d.String(), "kind", lay.Kind,
+			"sent", sw.bytes, "size", lay.Size, "elapsed", elapsed, "error", err)
+		return
+	}
+	r.log.Info("layer served", "digest", d.String(), "kind", lay.Kind, "status", sw.status,
+		"sent", sw.bytes, "size", lay.Size, "method", req.Method, "elapsed", elapsed)
+}
+
+// singleRange drops a Range header asking for more than one range, so
+// http.ServeContent answers the request whole (200) instead of taking its
+// multipart path. Two reasons, both specific to a layer that is generated
+// rather than stored: that path reads the stream from a goroutine it never
+// joins — which would outlive the handler's Close — and it seeks per range,
+// where each backwards seek costs a full regeneration of the layer. RFC 9110
+// lets a server ignore Range, no registry client asks for more than one (a
+// resume is a single `bytes=N-`), and refusing here keeps a request bounded to
+// one pass over the content.
+func singleRange(req *http.Request) *http.Request {
+	if !strings.Contains(req.Header.Get("Range"), ",") {
+		return req
+	}
+	trimmed := req.Clone(req.Context())
+	trimmed.Header.Del("Range")
+	return trimmed
+}
+
 // statusWriter records the status code and body bytes actually sent, for
-// completion logs. ReadFrom forwards to the underlying writer so ServeContent
-// keeps its sendfile path for multi-GB layer blobs.
+// completion logs. ReadFrom forwards to the underlying writer, so a cached
+// blob served from its file still takes ServeContent's sendfile path.
 type statusWriter struct {
 	http.ResponseWriter
 	status int

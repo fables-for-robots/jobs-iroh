@@ -508,19 +508,46 @@ reproducible; a missing `JOBS.entrypoint` is tolerated (the image just has
 no entrypoint). The config's os/arch comes from the build's stored
 definition (`build:K`), falling back to `--default-platform`.
 
+Layers are served **uncompressed** —
+`application/vnd.oci.image.layer.v1.tar`, so a layer's blob digest is also
+its diffID. Gzip bought nothing here and cost twice: a whole extra pass over
+the content at assembly, and a decompression on every client pulling over a
+LAN from a store that already deduplicates. Uncompressed layers also make
+the bytes **derivable**: the tar is a pure function of a `runner.LayerSpec`
+(a dep set + shell, or an artifact key) and the content-addressed store, so
+the registry records the *spec* — a few hundred bytes — instead of the blob,
+and regenerates the tar straight into the response on every request.
+**Layers are never materialised on disk**: assembly streams each layer once
+to measure it (digest + size) and throws the bytes away, and a blob GET is a
+tar generated from the CAS as the client reads it. `http.ServeContent` over
+a seekable view of that generator (arithmetic seeks, restart-and-discard for
+ranges) keeps HEAD, `Range` resumes and `Content-Length` correct.
+
 On a first pull the registry resolves K→F from the server's **ref listing**
 (the `build-from:K` ref's *value* is F — pulling that ref would drag the
 whole source env in), syncs `build-output:F` / `build-output-deps:F` into
 its own flocked store via `amberclient.Pull` (verified, objects-before-ref),
-assembles the image, and caches every blob in `<data-dir>/blobs`. A blob
-file's **mtime is its last-read time**; a periodic sweep deletes blobs
-unread for `--cache-ttl` (default 24h), reclaiming disk without a database.
-Tiny per-image records under `<data-dir>/repos` persist (they remember the
-manifest digest and F), so an expired image reassembles from the local store
-without the server, and a request for a swept blob recovers by reassembling
-the image that referenced it. Concurrent first pulls of one K singleflight
-into a single assembly. The store itself only grows — the store GC
-follow-up (§11) applies here too.
+assembles the image, and caches the only two blobs it keeps — the manifest
+and the config, both small JSON — in `<data-dir>/blobs`. A blob file's
+**mtime is its last-read time**; a periodic sweep deletes blobs unread for
+`--cache-ttl` (default 24h). Per-image records under `<data-dir>/repos`
+persist and now carry each layer's descriptor plus its spec; they are what
+makes a blob answerable, rebuilt into an in-memory digest→spec index at
+startup. So an expired image reassembles from the local store without the
+server, and a request for a swept manifest recovers by reassembling the
+image that referenced it. Concurrent first pulls of one K singleflight into
+a single assembly — but concurrent *layer* pulls do not: each streams its
+own tar, so serving costs CPU proportional to clients where it used to cost
+one `sendfile`. Multi-range blob requests are answered whole, which bounds
+a request to one pass over the content (and keeps the generator off
+`ServeContent`'s unjoined goroutine).
+
+The disk story is now lopsided: `--cache-ttl` expires only manifests and
+configs, a few KB per image, while the store and the per-image records —
+neither of which is ever reclaimed — hold everything that matters. The
+store GC follow-up (§11) is what would fix that; until then the registry's
+volume must be sized for every build it has ever served, and the only
+reclamation is deleting the data dir.
 
 ## 11. Trust model
 
@@ -556,7 +583,7 @@ digests give pull clients end-to-end integrity below the manifest.
 | `serve/` | jobs-server composition (§1): router × 5 ALPNs, embedded NATS + store, API handlers, seeding |
 | `runnerd/` | the runner daemon (§8.2) |
 | `runner/` | stage drivers, sandbox executors, local pipeline, develop/run/image |
-| `registryd/` | the OCI registry daemon (§10.1): Distribution API, on-demand sync, blob cache + sweep |
+| `registryd/` | the OCI registry daemon (§10.1): Distribution API, on-demand sync, layers streamed from the CAS, manifest/config blob cache + sweep |
 | `clientcli/` | jobs-client commands (§10), store flock, TTY progress |
 | `tui/` | the admin TUI (§9) |
 | `builddef/`, `importdef/` | definition types + canonical identity (§2) |

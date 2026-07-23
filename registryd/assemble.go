@@ -18,18 +18,21 @@ import (
 )
 
 // imageRecord is the tiny durable record of an assembled image, one JSON file
-// per K under <data-dir>/repos. It maps the repository to its manifest and
-// remembers F, so a cache-expired image reassembles without asking the server
-// for the K→F ref again. Records are not swept — the blobs are the disk
-// weight, the records are the memory.
+// per K under <data-dir>/repos. It maps the repository to its manifest,
+// remembers F (so a cache-expired image reassembles without asking the server
+// for the K→F ref again) and carries each layer's descriptor plus the store
+// recipe that streams it. Records are not swept — with layer bytes never
+// materialised, the records and the two small JSON blobs (manifest, config)
+// are all the registry keeps outside its store.
 type imageRecord struct {
-	K         string   `json:"k"`
-	F         string   `json:"f"`
-	Platform  string   `json:"platform"`
-	Manifest  string   `json:"manifest"`  // manifest digest, "sha256:<hex>"
-	MediaType string   `json:"mediaType"` // manifest media type
-	Blobs     []string `json:"blobs"`     // config + layer digests the manifest references
-	CreatedNs int64    `json:"createdNs"`
+	K         string        `json:"k"`
+	F         string        `json:"f"`
+	Platform  string        `json:"platform"`
+	Manifest  string        `json:"manifest"`  // manifest digest, "sha256:<hex>"
+	MediaType string        `json:"mediaType"` // manifest media type
+	Config    string        `json:"config"`    // image config digest (a cached blob)
+	Layers    []layerRecord `json:"layers"`    // streamed from the store, never cached
+	CreatedNs int64         `json:"createdNs"`
 }
 
 // imageFor returns a servable record for K, plus whether it had to
@@ -74,7 +77,9 @@ func (r *registry) imageFor(reqCtx context.Context, k key.Key) (imageRecord, boo
 }
 
 // assembleAndCache resolves build K (syncing from the jobs-server as needed),
-// assembles its two-layer OCI image and writes every blob plus the record.
+// assembles its two-layer OCI image and writes the manifest and config blobs
+// plus the record. The layers themselves are only measured — their bytes are
+// streamed straight from the store when a client asks for them.
 func (r *registry) assembleAndCache(ctx context.Context, k key.Key) (imageRecord, error) {
 	start := time.Now()
 	var fHint key.Key
@@ -86,37 +91,22 @@ func (r *registry) assembleAndCache(ctx context.Context, k key.Key) (imageRecord
 		return imageRecord{}, err
 	}
 
-	img, err := runner.AssembleOCIImage(ctx, r.st, res.artifact, res.deps, res.shell, res.ep, res.platform)
+	img, layers, err := runner.AssembleOCIImage(ctx, r.st, res.artifact, res.deps, res.shell, res.ep, res.platform)
 	if err != nil {
 		return imageRecord{}, fmt.Errorf("assemble image for %s: %w", k.String(), err)
 	}
 
-	layers, err := img.Layers()
-	if err != nil {
-		return imageRecord{}, err
+	var layerBytes int64
+	layerRecs := make([]layerRecord, 0, len(layers))
+	for _, l := range layers {
+		layerRecs = append(layerRecs, newLayerRecord(l))
+		layerBytes += l.Size
 	}
+
 	cfgDigest, err := img.ConfigName()
 	if err != nil {
 		return imageRecord{}, err
 	}
-	blobs := []string{cfgDigest.String()}
-	for _, l := range layers {
-		d, err := l.Digest()
-		if err != nil {
-			return imageRecord{}, err
-		}
-		rc, err := l.Compressed()
-		if err != nil {
-			return imageRecord{}, err
-		}
-		err = r.blobs.put(d, rc)
-		rc.Close()
-		if err != nil {
-			return imageRecord{}, fmt.Errorf("cache layer %s: %w", d.String(), err)
-		}
-		blobs = append(blobs, d.String())
-	}
-
 	rawCfg, err := img.RawConfigFile()
 	if err != nil {
 		return imageRecord{}, err
@@ -147,35 +137,56 @@ func (r *registry) assembleAndCache(ctx context.Context, k key.Key) (imageRecord
 		Platform:  res.platform,
 		Manifest:  manDigest.String(),
 		MediaType: string(mt),
-		Blobs:     blobs,
+		Config:    cfgDigest.String(),
+		Layers:    layerRecs,
 		CreatedNs: time.Now().UnixNano(),
 	}
+	// Index before recording: a manifest is only served once this returns, and
+	// the blobs it names must be streamable by then. A crash in between leaves
+	// no record, so the image simply reassembles.
+	r.layers.put(layerRecs...)
 	if err := r.writeRecord(rec); err != nil {
 		return imageRecord{}, err
 	}
 	r.log.Info("image assembled", "k", k.String(), "f", res.f.String(),
 		"manifest", rec.Manifest, "deps", len(res.deps), "platform", res.platform,
+		"layer_bytes", layerBytes,
 		"elapsed", time.Since(start).Round(time.Millisecond))
 	return rec, nil
 }
 
-// recordComplete reports whether every blob the record's manifest references
-// (and the manifest itself) is still in the cache.
+// recordComplete reports whether the record can still be served: its two
+// cached blobs (manifest and config) are present and every layer it names is
+// streamable. A record written by an older registry — one that cached
+// compressed layer blobs and knew no layer recipes — reads as incomplete and
+// is reassembled into the current shape.
 func (r *registry) recordComplete(rec imageRecord) bool {
-	for _, ds := range append([]string{rec.Manifest}, rec.Blobs...) {
+	if rec.Config == "" || len(rec.Layers) == 0 {
+		return false
+	}
+	for _, ds := range []string{rec.Manifest, rec.Config} {
 		d, err := v1.NewHash(ds)
 		if err != nil || !r.blobs.has(d) {
+			return false
+		}
+	}
+	for _, l := range rec.Layers {
+		if _, err := v1.NewHash(l.Digest); err != nil {
+			return false
+		}
+		if _, err := l.spec(); err != nil {
 			return false
 		}
 	}
 	return true
 }
 
-// touchRecord bumps the record's blobs as read: serving a manifest is proof
-// the image is alive, so its layers should not expire out from under the
-// client about to fetch them.
+// touchRecord bumps the record's cached blobs as read: serving a manifest is
+// proof the image is alive, so neither it nor its config should expire out
+// from under the client about to fetch them. (Layers have nothing to touch —
+// they are streamed from the store, which does not expire.)
 func (r *registry) touchRecord(rec imageRecord) {
-	for _, ds := range append([]string{rec.Manifest}, rec.Blobs...) {
+	for _, ds := range []string{rec.Manifest, rec.Config} {
 		if d, err := v1.NewHash(ds); err == nil {
 			r.blobs.touch(d)
 		}
@@ -238,18 +249,15 @@ func (r *registry) listRecords() []imageRecord {
 	return out
 }
 
-// findRecordByDigest locates the image whose manifest references digest d —
-// the recovery path when a client asks for a blob the sweep already deleted.
+// findRecordByDigest locates the image whose manifest or config is d — the
+// recovery path when a client asks for one of the two cached blobs after the
+// sweep deleted it. Layer digests are not searched here: they are answered
+// from the layer index, which never expires.
 func (r *registry) findRecordByDigest(d v1.Hash) (imageRecord, bool) {
 	ds := d.String()
 	for _, rec := range r.listRecords() {
-		if rec.Manifest == ds {
+		if rec.Manifest == ds || rec.Config == ds {
 			return rec, true
-		}
-		for _, b := range rec.Blobs {
-			if b == ds {
-				return rec, true
-			}
 		}
 	}
 	return imageRecord{}, false

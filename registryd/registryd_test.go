@@ -7,6 +7,7 @@ package registryd_test
 
 import (
 	"archive/tar"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -28,7 +29,7 @@ import (
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/mutate"
 	"github.com/google/go-containerregistry/pkg/v1/remote"
-	"github.com/google/go-containerregistry/pkg/v1/validate"
+	"github.com/google/go-containerregistry/pkg/v1/types"
 
 	"github.com/fables-for-robots/jobs-iroh/amber"
 	"github.com/fables-for-robots/jobs-iroh/amberclient"
@@ -80,16 +81,16 @@ func startServer(t *testing.T, ctx context.Context) (*serve.Server, func()) {
 }
 
 // startRegistry runs registryd against srv and returns its HTTP base host
-// (host:port) and data dir.
-func startRegistry(t *testing.T, ctx context.Context, srv *serve.Server, mod func(*registryd.Options)) (string, string) {
+// (host:port), its data dir, and a stop func that shuts it down and waits (so
+// a test can restart a registry over the same data dir — the store is flocked).
+func startRegistry(t *testing.T, ctx context.Context, srv *serve.Server, mod func(*registryd.Options)) (string, string, func()) {
 	t.Helper()
 
-	dataDir := t.TempDir()
 	ready := make(chan net.Addr, 1)
 	o := registryd.Options{
 		ServerID: srv.Endpoint.ID().String(),
 		Addrs:    []string{srv.Endpoint.LocalAddr().String()},
-		DataDir:  dataDir,
+		DataDir:  t.TempDir(),
 		Listen:   "127.0.0.1:0",
 		BindAddr: netip.AddrPortFrom(netip.IPv6Loopback(), 0),
 		Ready:    func(a net.Addr) { ready <- a },
@@ -100,7 +101,12 @@ func startRegistry(t *testing.T, ctx context.Context, srv *serve.Server, mod fun
 
 	done := make(chan error, 1)
 	runCtx, cancel := context.WithCancel(ctx)
-	t.Cleanup(func() {
+	var stopped bool
+	stop := func() {
+		if stopped {
+			return
+		}
+		stopped = true
 		cancel()
 		select {
 		case err := <-done:
@@ -110,15 +116,16 @@ func startRegistry(t *testing.T, ctx context.Context, srv *serve.Server, mod fun
 		case <-time.After(30 * time.Second):
 			t.Error("registry did not shut down")
 		}
-	})
+	}
+	t.Cleanup(stop)
 	go func() { done <- registryd.Run(runCtx, o) }()
 
 	select {
 	case addr := <-ready:
-		return addr.String(), dataDir
+		return addr.String(), o.DataDir, stop
 	case <-time.After(30 * time.Second):
 		t.Fatal("registry not ready")
-		return "", ""
+		return "", "", stop
 	}
 }
 
@@ -233,6 +240,101 @@ func pullImage(t *testing.T, ctx context.Context, host string, k key.Key) v1.Ima
 	return img
 }
 
+// validateImage checks what validate.Image checks — manifest/config/layer
+// digests, sizes and diffIDs all agreeing with the bytes actually served —
+// minus its hard-wired assumption that a layer blob is gzip. These layers are
+// uncompressed OCI tars (application/vnd.oci.image.layer.v1.tar): a layer's
+// blob digest IS its diffID, so gunzipping it is exactly wrong.
+func validateImage(t *testing.T, img v1.Image) {
+	t.Helper()
+
+	rawMan, err := img.RawManifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	manDigest, _, err := v1.SHA256(bytes.NewReader(rawMan))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d, err := img.Digest(); err != nil || d != manDigest {
+		t.Errorf("manifest digest = %v (err=%v), bytes hash %s", d, err, manDigest)
+	}
+
+	man, err := img.Manifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rawCfg, err := img.RawConfigFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfgDigest, cfgSize, err := v1.SHA256(bytes.NewReader(rawCfg))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if man.Config.Digest != cfgDigest || man.Config.Size != cfgSize {
+		t.Errorf("config descriptor %s/%d does not match the served config %s/%d",
+			man.Config.Digest, man.Config.Size, cfgDigest, cfgSize)
+	}
+
+	cf, err := img.ConfigFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	layers, err := img.Layers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(layers) != len(man.Layers) || len(layers) != len(cf.RootFS.DiffIDs) {
+		t.Fatalf("layers=%d, manifest descriptors=%d, diffIDs=%d",
+			len(layers), len(man.Layers), len(cf.RootFS.DiffIDs))
+	}
+	for i, l := range layers {
+		if mt, err := l.MediaType(); err != nil || mt != types.OCIUncompressedLayer {
+			t.Errorf("layer %d media type = %v (err=%v), want %s", i, mt, err, types.OCIUncompressedLayer)
+		}
+		rc, err := l.Compressed()
+		if err != nil {
+			t.Fatalf("layer %d blob: %v", i, err)
+		}
+		blob, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			t.Fatalf("read layer %d blob: %v", i, err)
+		}
+		digest, size, err := v1.SHA256(bytes.NewReader(blob))
+		if err != nil {
+			t.Fatal(err)
+		}
+		if man.Layers[i].Digest != digest || man.Layers[i].Size != size {
+			t.Errorf("layer %d descriptor %s/%d does not match the served blob %s/%d",
+				i, man.Layers[i].Digest, man.Layers[i].Size, digest, size)
+		}
+		if cf.RootFS.DiffIDs[i] != digest {
+			t.Errorf("layer %d diffID %s != blob digest %s (uncompressed layers must agree)",
+				i, cf.RootFS.DiffIDs[i], digest)
+		}
+		if len(blob) >= 2 && blob[0] == 0x1f && blob[1] == 0x8b {
+			t.Errorf("layer %d was served gzip-compressed", i)
+		}
+		seen := map[string]bool{}
+		tr := tar.NewReader(bytes.NewReader(blob))
+		for {
+			h, err := tr.Next()
+			if err == io.EOF {
+				break
+			}
+			if err != nil {
+				t.Fatalf("layer %d is not a readable tar: %v", i, err)
+			}
+			if seen[h.Name] {
+				t.Errorf("layer %d has a duplicate path %q", i, h.Name)
+			}
+			seen[h.Name] = true
+		}
+	}
+}
+
 type fsEntry struct {
 	hdr     *tar.Header
 	content string
@@ -265,7 +367,7 @@ func TestRegistryServesServerBuild(t *testing.T) {
 	st := fixtureStore(t)
 	ac := dialAmber(t, ctx, srv)
 	k, depBOK := pushServerBuild(t, ctx, st, ac, "")
-	host, dataDir := startRegistry(t, ctx, srv, nil)
+	host, dataDir, _ := startRegistry(t, ctx, srv, nil)
 
 	// Ping.
 	resp, err := http.Get("http://" + host + "/v2/")
@@ -279,9 +381,7 @@ func TestRegistryServesServerBuild(t *testing.T) {
 
 	// A real registry client pulls the image; validate digest coherence.
 	img := pullImage(t, ctx, host, k)
-	if err := validate.Image(img); err != nil {
-		t.Fatalf("validate.Image: %v", err)
-	}
+	validateImage(t, img)
 
 	cf, err := img.ConfigFile()
 	if err != nil {
@@ -400,9 +500,7 @@ func TestRegistryServesServerBuild(t *testing.T) {
 	// The server can now go away: the image serves from the blob cache…
 	stopServer()
 	img2 := pullImage(t, ctx, host, k)
-	if err := validate.Image(img2); err != nil {
-		t.Fatalf("validate.Image from cache: %v", err)
-	}
+	validateImage(t, img2)
 
 	// …and even with every cached blob deleted, the registry reassembles
 	// offline from its own amber store (record keeps K→F).
@@ -417,9 +515,7 @@ func TestRegistryServesServerBuild(t *testing.T) {
 		}
 	}
 	img3 := pullImage(t, ctx, host, k)
-	if err := validate.Image(img3); err != nil {
-		t.Fatalf("validate.Image after blob wipe: %v", err)
-	}
+	validateImage(t, img3)
 	d1, _ := img.Digest()
 	d3, _ := img3.Digest()
 	if d1 != d3 {
@@ -441,14 +537,12 @@ func TestRegistryDirectOutputKey(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	host, _ := startRegistry(t, ctx, srv, func(o *registryd.Options) {
+	host, _, _ := startRegistry(t, ctx, srv, func(o *registryd.Options) {
 		o.DefaultPlatform = "linux/riscv64"
 	})
 
 	img := pullImage(t, ctx, host, f)
-	if err := validate.Image(img); err != nil {
-		t.Fatalf("validate.Image: %v", err)
-	}
+	validateImage(t, img)
 	cf, err := img.ConfigFile()
 	if err != nil {
 		t.Fatal(err)
@@ -479,7 +573,7 @@ func TestRegistryNoShellOption(t *testing.T) {
 	ac := dialAmber(t, ctx, srv)
 	k, _ := pushServerBuild(t, ctx, st, ac, "noshell")
 
-	host, _ := startRegistry(t, ctx, srv, func(o *registryd.Options) { o.NoShell = true })
+	host, _, _ := startRegistry(t, ctx, srv, func(o *registryd.Options) { o.NoShell = true })
 
 	img := pullImage(t, ctx, host, k)
 	fs := extractFS(t, img)
@@ -499,10 +593,198 @@ func TestRegistryNoShellOption(t *testing.T) {
 	}
 }
 
+// TestRegistryStreamsLayersFromStore: layer bytes are generated from the amber
+// store on every blob request and never written to the blob cache. What the
+// registry persists per image is the manifest, the config and the tiny record
+// — so a restarted registry with no server in sight still serves the layers.
+func TestRegistryStreamsLayersFromStore(t *testing.T) {
+	ctx := context.Background()
+	srv, stopServer := startServer(t, ctx)
+	st := fixtureStore(t)
+	ac := dialAmber(t, ctx, srv)
+	k, _ := pushServerBuild(t, ctx, st, ac, "streamed")
+	host, dataDir, stopRegistry := startRegistry(t, ctx, srv, nil)
+
+	img := pullImage(t, ctx, host, k)
+	validateImage(t, img)
+	man, err := img.Manifest()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Nothing layer-sized on disk: the cache holds the manifest and the config
+	// and that is all.
+	blobDir := filepath.Join(dataDir, "blobs", "sha256")
+	cached := map[string]int64{}
+	ents, err := os.ReadDir(blobDir)
+	if err != nil {
+		t.Fatalf("read blob dir: %v", err)
+	}
+	for _, e := range ents {
+		fi, err := e.Info()
+		if err != nil {
+			t.Fatal(err)
+		}
+		cached["sha256:"+e.Name()] = fi.Size()
+	}
+	manDigest, err := img.Digest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{manDigest.String(), man.Config.Digest.String()} {
+		if _, ok := cached[want]; !ok {
+			t.Errorf("blob %s not cached; cache holds %v", want, cached)
+		}
+	}
+	var layerSize int64
+	for _, l := range man.Layers {
+		if size, ok := cached[l.Digest.String()]; ok {
+			t.Errorf("layer %s materialised on disk (%d bytes)", l.Digest, size)
+		}
+		layerSize = max(layerSize, l.Size)
+	}
+	if len(cached) != 2 {
+		t.Errorf("blob cache holds %d files, want just the manifest and the config: %v", len(cached), cached)
+	}
+
+	// The deps layer carries the seeded shell, so there is enough of it to
+	// range over meaningfully.
+	big := man.Layers[0]
+	if big.Size != layerSize || big.Size < 4096 {
+		t.Fatalf("expected the deps layer to be the larger one and non-trivial: %d", big.Size)
+	}
+	blobURL := "http://" + host + "/v2/jobs/blobs/" + big.Digest.String()
+
+	full := mustGetRange(t, blobURL, "", http.StatusOK)
+	if int64(len(full)) != big.Size {
+		t.Fatalf("full blob is %d bytes, manifest says %d", len(full), big.Size)
+	}
+	if d, _, err := v1.SHA256(bytes.NewReader(full)); err != nil || d != big.Digest {
+		t.Errorf("streamed blob hashes %s (err=%v), want %s", d, err, big.Digest)
+	}
+
+	// Re-generating is deterministic: a second stream is byte-identical.
+	if again := mustGetRange(t, blobURL, "", http.StatusOK); !bytes.Equal(again, full) {
+		t.Error("two streams of the same layer differ")
+	}
+
+	// Ranged resume — how docker and containerd retry a dropped layer.
+	head := mustHead(t, blobURL)
+	if head.StatusCode != http.StatusOK || head.ContentLength != big.Size {
+		t.Errorf("HEAD layer: status=%d length=%d, want 200/%d", head.StatusCode, head.ContentLength, big.Size)
+	}
+	if got := head.Header.Get("Accept-Ranges"); got != "bytes" {
+		t.Errorf("Accept-Ranges = %q, want bytes", got)
+	}
+	mid := mustGetRange(t, blobURL, fmt.Sprintf("bytes=%d-%d", big.Size/2, big.Size/2+1023), http.StatusPartialContent)
+	if !bytes.Equal(mid, full[big.Size/2:big.Size/2+1024]) {
+		t.Error("mid-blob range does not match the full stream")
+	}
+	tail := mustGetRange(t, blobURL, "bytes=-512", http.StatusPartialContent)
+	if !bytes.Equal(tail, full[big.Size-512:]) {
+		t.Error("suffix range does not match the full stream")
+	}
+	resume := mustGetRange(t, blobURL, fmt.Sprintf("bytes=%d-", big.Size-4096), http.StatusPartialContent)
+	if !bytes.Equal(resume, full[big.Size-4096:]) {
+		t.Error("open-ended range does not match the full stream")
+	}
+	mustGetRange(t, blobURL, fmt.Sprintf("bytes=%d-", big.Size+1), http.StatusRequestedRangeNotSatisfiable)
+
+	// A multi-range ask is answered whole (200), never multipart: ServeContent
+	// would serve those from a goroutine it does not join, which must not
+	// outlive a generator-backed stream — and each range would cost another
+	// full regeneration of the layer.
+	multi := mustGetRange(t, blobURL, fmt.Sprintf("bytes=0-1023,%d-%d", big.Size/2, big.Size/2+1023), http.StatusOK)
+	if !bytes.Equal(multi, full) {
+		t.Errorf("multi-range answered with %d bytes, want the whole %d-byte blob", len(multi), big.Size)
+	}
+
+	// A client that walks away mid-layer must not leave the registry unable to
+	// serve the same blob to the next one.
+	abortMidBody(t, blobURL, "")
+	// Same, but with the multi-range ask that would otherwise put ServeContent
+	// on its unjoined-goroutine path: aborting there used to race the
+	// handler's teardown of the stream.
+	abortMidBody(t, blobURL, fmt.Sprintf("bytes=0-1023,%d-%d", big.Size/2, big.Size/2+1023))
+	if after := mustGetRange(t, blobURL, "", http.StatusOK); !bytes.Equal(after, full) {
+		t.Error("layer served after an aborted pull differs from the original stream")
+	}
+
+	// An unknown digest is still a 404 rather than an empty stream.
+	assertOCIError(t, "http://"+host+"/v2/jobs/blobs/sha256:"+strings.Repeat("ab", 32),
+		http.StatusNotFound, "BLOB_UNKNOWN")
+
+	// Restart with the server gone: the record's layer recipes are rebuilt into
+	// the index at startup, so the same blobs stream out of the local store.
+	stopRegistry()
+	stopServer()
+	host2, _, _ := startRegistry(t, ctx, srv, func(o *registryd.Options) { o.DataDir = dataDir })
+	restarted := mustGetRange(t, "http://"+host2+"/v2/jobs/blobs/"+big.Digest.String(), "", http.StatusOK)
+	if !bytes.Equal(restarted, full) {
+		t.Error("layer served after restart differs from the original stream")
+	}
+	validateImage(t, pullImage(t, ctx, host2, k))
+}
+
+// abortMidBody starts a blob GET, reads a little and drops the connection —
+// the client-walked-away path, which tears the tar generator down mid-write.
+func abortMidBody(t *testing.T, url, rng string) {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rng != "" {
+		req.Header.Set("Range", rng)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := io.CopyN(io.Discard, resp.Body, 4096); err != nil {
+		t.Fatalf("read prefix of %s: %v", url, err)
+	}
+	resp.Body.Close()
+}
+
+// mustGetRange GETs url with an optional Range header, asserts the status and
+// returns the body.
+func mustGetRange(t *testing.T, url, rng string, wantStatus int) []byte {
+	t.Helper()
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rng != "" {
+		req.Header.Set("Range", rng)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read body of %s (range %q): %v", url, rng, err)
+	}
+	if resp.StatusCode != wantStatus {
+		t.Fatalf("GET %s (range %q) status = %d, want %d", url, rng, resp.StatusCode, wantStatus)
+	}
+	if wantStatus == http.StatusPartialContent {
+		if cr := resp.Header.Get("Content-Range"); cr == "" {
+			t.Errorf("206 without a Content-Range header (range %q)", rng)
+		}
+		if int64(len(b)) != resp.ContentLength {
+			t.Errorf("206 body is %d bytes, Content-Length says %d", len(b), resp.ContentLength)
+		}
+	}
+	return b
+}
+
 func TestRegistryErrors(t *testing.T) {
 	ctx := context.Background()
 	srv, _ := startServer(t, ctx)
-	host, _ := startRegistry(t, ctx, srv, nil)
+	host, _, _ := startRegistry(t, ctx, srv, nil)
 	st := fixtureStore(t)
 
 	// A valid key the server has never seen.
@@ -570,7 +852,7 @@ func TestRegistryConcurrentPullsAssembleOnce(t *testing.T) {
 		mu:      &mu,
 		counts:  counts,
 	})
-	host, _ := startRegistry(t, ctx, srv, func(o *registryd.Options) { o.Logger = logger })
+	host, _, _ := startRegistry(t, ctx, srv, func(o *registryd.Options) { o.Logger = logger })
 
 	var wg sync.WaitGroup
 	for range 4 {
@@ -578,9 +860,7 @@ func TestRegistryConcurrentPullsAssembleOnce(t *testing.T) {
 		go func() {
 			defer wg.Done()
 			img := pullImage(t, ctx, host, k)
-			if err := validate.Image(img); err != nil {
-				t.Errorf("validate.Image: %v", err)
-			}
+			validateImage(t, img)
 		}()
 	}
 	wg.Wait()
@@ -605,7 +885,7 @@ func TestRegistryTagsPagination(t *testing.T) {
 	if kA == kB {
 		t.Fatal("fixture keys must differ")
 	}
-	host, _ := startRegistry(t, ctx, srv, nil)
+	host, _, _ := startRegistry(t, ctx, srv, nil)
 
 	var full struct {
 		Tags []string `json:"tags"`

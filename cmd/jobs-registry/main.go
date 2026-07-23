@@ -1,8 +1,9 @@
 // Command jobs-registry is a read-only OCI registry that serves jobs build
 // outputs as pullable container images named jobs:<build-K>. Image content is
 // synced on demand from a jobs-server's store over iroh and assembled into
-// two-layer images (runtime closure + artifact) whose blobs are cached on
-// disk with last-read expiry.
+// two-layer images (runtime closure + artifact). Layers are uncompressed and
+// streamed straight from the store on every pull; only the manifest and config
+// are cached on disk, with last-read expiry.
 package main
 
 import (
@@ -53,7 +54,7 @@ func main() {
 			},
 			&cli.DurationFlag{
 				Name:    "cache-ttl",
-				Usage:   "delete cached blobs not pulled for this long",
+				Usage:   "delete cached manifest/config blobs not read for this long (layers are streamed from the store, never cached)",
 				EnvVars: []string{"JOBS_REGISTRY_CACHE_TTL"},
 				Value:   24 * time.Hour,
 			},
