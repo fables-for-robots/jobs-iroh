@@ -18,6 +18,8 @@ import (
 	"syscall"
 
 	"github.com/urfave/cli/v2"
+
+	"github.com/fables-for-robots/jobs-iroh/version"
 )
 
 // signalCtx derives the command context cancelled on Ctrl-C / SIGTERM so an
@@ -30,8 +32,9 @@ func signalCtx(parent context.Context) (context.Context, context.CancelFunc) {
 // App builds the jobs-client CLI. A bare invocation prints help.
 func App() *cli.App {
 	return &cli.App{
-		Name:  "jobs-client",
-		Usage: "jobs-iroh end-user CLI: hermetic local builds and remote builds against a jobs-server",
+		Name:    "jobs-client",
+		Version: version.Version,
+		Usage:   "jobs-iroh end-user CLI: hermetic local builds and remote builds against a jobs-server",
 		Commands: []*cli.Command{
 			buildCmd(),
 			runCmd(),

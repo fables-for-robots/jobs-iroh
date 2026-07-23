@@ -17,14 +17,16 @@ import (
 
 	"github.com/fables-for-robots/jobs-iroh/sandbox"
 	"github.com/fables-for-robots/jobs-iroh/serve"
+	"github.com/fables-for-robots/jobs-iroh/version"
 )
 
 func main() {
 	sandbox.Init()
 
 	app := &cli.App{
-		Name:  "jobs-server",
-		Usage: "jobs-iroh build server: iroh endpoint + embedded NATS + embedded amber store",
+		Name:    "jobs-server",
+		Version: version.Version,
+		Usage:   "jobs-iroh build server: iroh endpoint + embedded NATS + embedded amber store",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:    "data-dir",

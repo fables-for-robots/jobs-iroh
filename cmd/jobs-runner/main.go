@@ -15,6 +15,7 @@ import (
 
 	"github.com/fables-for-robots/jobs-iroh/runnerd"
 	"github.com/fables-for-robots/jobs-iroh/sandbox"
+	"github.com/fables-for-robots/jobs-iroh/version"
 	"github.com/fables-for-robots/jobs-iroh/wire"
 )
 
@@ -22,8 +23,9 @@ func main() {
 	sandbox.Init()
 
 	app := &cli.App{
-		Name:  "jobs-runner",
-		Usage: "jobs-iroh build runner: pulls jobs from a jobs-server over iroh and executes them",
+		Name:    "jobs-runner",
+		Version: version.Version,
+		Usage:   "jobs-iroh build runner: pulls jobs from a jobs-server over iroh and executes them",
 		Flags: []cli.Flag{
 			&cli.StringFlag{
 				Name:     "server",
