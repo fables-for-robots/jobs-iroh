@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.8.0 — 2026-07-23
 
 - **New binary: `jobs-registry` — docker pull your builds.** A read-only
   OCI Distribution registry that serves build outputs as pullable images:
