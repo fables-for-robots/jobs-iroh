@@ -482,14 +482,17 @@ directly pushed `build-output:F` also pulls, but is not listed).
 `docker pull <registry>/jobs:<K>`.
 
 Images have **two layers**: the runtime closure (each dep at
-`/jobs/store/<BOK>`, exactly the layout the artifact was linked against) and
-the artifact (the output `c/` tree at the image root, plus a writable
-`/tmp`). The deps layer is a pure function of the sorted dep set, so builds
-sharing a closure share the blob and clients re-pull only the artifact
-layer. Assembly shares the deterministic tar normalisation with `jobs-client
-image` (epoch mtimes, sorted entries), so blob digests are reproducible; no
-shell is baked, and a missing `JOBS.entrypoint` is tolerated (the image just
-has no entrypoint). The config's os/arch comes from the build's stored
+`/jobs/store/<BOK>`, exactly the layout the artifact was linked against,
+plus the platform shell with its `/bin/sh` and `/jobs/shell` symlinks —
+script entrypoints carry fixed shebangs, and `run`/`image` provide the shell
+too; `--no-shell` opts out, and an unseeded platform degrades to shell-less)
+and the artifact (the output `c/` tree at the image root, plus a writable
+`/tmp`). The deps layer is a pure function of the sorted dep set + shell, so
+builds sharing a closure share the blob and clients re-pull only the
+artifact layer. Assembly shares the deterministic tar normalisation with
+`jobs-client image` (epoch mtimes, sorted entries), so blob digests are
+reproducible; a missing `JOBS.entrypoint` is tolerated (the image just has
+no entrypoint). The config's os/arch comes from the build's stored
 definition (`build:K`), falling back to `--default-platform`.
 
 On a first pull the registry resolves K→F from the server's **ref listing**

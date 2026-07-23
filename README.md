@@ -95,9 +95,11 @@ docker pull my-registry-host:5000/jobs:<build-K>
 
 Images live in a single `jobs` repository whose tags are build keys K (the
 value `remote-build` prints); `/v2/jobs/tags/list` enumerates every
-submitted build (a local build's bare F key also pulls, but is not listed). Images have two layers — the runtime closure under
-`/jobs/store/<key>` and the build artifact at the root — assembled on the
-fly from the registry's own store, which syncs from the jobs-server on
+submitted build (a local build's bare F key also pulls, but is not listed).
+Images have two layers — the runtime closure under `/jobs/store/<key>` plus
+the platform shell (script entrypoints need their `#!/bin/sh` shebang;
+`--no-shell` opts out), and the build artifact at the root — assembled on
+the fly from the registry's own store, which syncs from the jobs-server on
 demand. Blobs are cached on disk and swept after `--cache-ttl` (default
 24h) without a read. The registry is pull-only and speaks plain HTTP:
 terminate TLS at an ingress or mark it insecure in the container runtime.

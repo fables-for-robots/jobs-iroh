@@ -26,6 +26,7 @@ type resolvedBuild struct {
 	f        key.Key            // build identity: build-from:K's value, or K itself for direct outputs
 	artifact key.Key            // the c/ subtree BOK (the build layer)
 	deps     []key.Key          // runtime-closure BOKs (the deps layer)
+	shell    key.Key            // shell artifact for /bin/sh + /jobs/shell; zero = none baked
 	ep       *runner.Entrypoint // nil when the output has no (valid) JOBS.entrypoint
 	platform string             // os/arch for the image config
 }
@@ -64,13 +65,42 @@ func (r *registry) resolveBuild(ctx context.Context, k key.Key, fHint key.Key) (
 		return resolvedBuild{}, err
 	}
 
+	platform := r.buildPlatform(ctx, k)
+	shell, err := r.resolveShell(ctx, platform)
+	if err != nil {
+		return resolvedBuild{}, err
+	}
+
 	return resolvedBuild{
 		f:        f,
 		artifact: artifact,
 		deps:     deps,
+		shell:    shell,
 		ep:       r.buildEntrypoint(ctx, artifact),
-		platform: r.buildPlatform(ctx, k),
+		platform: platform,
 	}, nil
+}
+
+// resolveShell syncs the platform's shell artifact — script entrypoints carry
+// #!/bin/sh or #!/jobs/shell/bin/bash shebangs, so registry images bake the
+// shell like `run` and `jobs-client image` do. A server that has no shell for
+// the platform is a stable state and yields a shell-less image (zero key,
+// like --no-shell); a transport failure is an error — it must not silently
+// change what the image contains.
+func (r *registry) resolveShell(ctx context.Context, platform string) (key.Key, error) {
+	if r.noShell {
+		return key.Key{}, nil
+	}
+	shellRef := "shell:" + platform
+	shell, ok, err := r.ensureRef(ctx, shellRef)
+	if err != nil {
+		return key.Key{}, err
+	}
+	if !ok {
+		r.log.Warn("no shell on jobs-server; baking image without /bin/sh", "ref", shellRef)
+		return key.Key{}, nil
+	}
+	return shell, nil
 }
 
 // resolveF maps K to the build identity F via the server's ref listing:

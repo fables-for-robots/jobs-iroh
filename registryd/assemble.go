@@ -75,7 +75,7 @@ func (r *registry) assembleAndCache(ctx context.Context, k key.Key) (imageRecord
 		return imageRecord{}, err
 	}
 
-	img, err := runner.AssembleOCIImage(ctx, r.st, res.artifact, res.deps, res.ep, res.platform)
+	img, err := runner.AssembleOCIImage(ctx, r.st, res.artifact, res.deps, res.shell, res.ep, res.platform)
 	if err != nil {
 		return imageRecord{}, fmt.Errorf("assemble image for %s: %w", k.String(), err)
 	}

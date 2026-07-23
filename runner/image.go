@@ -165,20 +165,23 @@ func assembleImage(ctx context.Context, st *amber.Store, selfBOK key.Key, depBOK
 
 // AssembleOCIImage builds the two-layer OCI-mediatype image that jobs-registry
 // serves: the first layer is the runtime closure (each dep content-addressed
-// under /jobs/store/<BOK>), the second the build artifact at the image root
-// plus a writable /tmp. Keeping the closure in its own layer means every image
-// sharing a dep set shares that layer blob, so registry clients re-pull only
-// the artifact layer. No shell is baked — a registry image is exactly the
-// build and its closure. ep may be nil for outputs without a JOBS.entrypoint;
-// the config then carries no Entrypoint. Both layer streams are deterministic
+// under /jobs/store/<BOK>, plus the shell with its /bin/sh and /jobs/shell
+// compat symlinks when shell is non-zero — script entrypoints carry fixed
+// #!/bin/sh or #!/jobs/shell/bin/bash shebangs, exactly like `run` and the
+// single-layer image), the second the build artifact at the image root plus a
+// writable /tmp. Keeping the closure in its own layer means every image
+// sharing a dep set (and shell) shares that layer blob, so registry clients
+// re-pull only the artifact layer. A zero shell key bakes no shell (the
+// --no-shell shape). ep may be nil for outputs without a JOBS.entrypoint; the
+// config then carries no Entrypoint. Both layer streams are deterministic
 // (epoch mtimes, sorted store entries), so blob digests are reproducible.
-func AssembleOCIImage(ctx context.Context, st *amber.Store, artifact key.Key, deps []key.Key, ep *Entrypoint, platform string) (v1.Image, error) {
+func AssembleOCIImage(ctx context.Context, st *amber.Store, artifact key.Key, deps []key.Key, shell key.Key, ep *Entrypoint, platform string) (v1.Image, error) {
 	osName, arch, ok := strings.Cut(platform, "/")
 	if !ok || osName == "" || arch == "" {
 		return nil, fmt.Errorf("invalid platform %q (want os/arch, e.g. linux/amd64)", platform)
 	}
 
-	depsLayer, err := ociLayer(func(w io.Writer) error { return writeDepsTar(ctx, st, w, deps) })
+	depsLayer, err := ociLayer(func(w io.Writer) error { return writeDepsTar(ctx, st, w, deps, shell) })
 	if err != nil {
 		return nil, fmt.Errorf("build deps layer: %w", err)
 	}
@@ -208,7 +211,7 @@ func AssembleOCIImage(ctx context.Context, st *amber.Store, artifact key.Key, de
 		epEnv = ep.Env
 	}
 	cf.Config.Cmd = nil
-	cf.Config.Env = imageEnv(epEnv, key.Key{}, false)
+	cf.Config.Env = imageEnv(epEnv, shell, shell != key.Key{})
 	cf.Config.WorkingDir = "/"
 
 	img, err = mutate.ConfigFile(img, cf)
@@ -233,11 +236,14 @@ func ociLayer(writeTar func(w io.Writer) error) (v1.Layer, error) {
 	return tarball.LayerFromOpener(opener, tarball.WithMediaType(types.OCILayer))
 }
 
-// writeDepsTar writes the runtime-closure layer: /jobs/store scaffolding plus
-// each dep tree under /jobs/store/<BOK>. The scaffolding dirs are written even
-// with zero deps so the layer is never an empty tar. The stream is a pure
-// function of the sorted dep set, so images sharing a closure share the blob.
-func writeDepsTar(ctx context.Context, st *amber.Store, w io.Writer, deps []key.Key) error {
+// writeDepsTar writes the runtime-closure layer: /jobs/store scaffolding, each
+// dep tree (and the shell, when non-zero) under /jobs/store/<BOK>, and — with
+// the shell — the /bin/sh and /jobs/shell compat symlinks. The scaffolding
+// dirs are written even with zero deps so the layer is never an empty tar.
+// The stream is a pure function of the sorted dep set plus the shell, so
+// images sharing a closure share the blob.
+func writeDepsTar(ctx context.Context, st *amber.Store, w io.Writer, deps []key.Key, shell key.Key) error {
+	includeShell := shell != (key.Key{})
 	tw := tar.NewWriter(w)
 	if err := writeDir(tw, "jobs/"); err != nil {
 		return err
@@ -245,12 +251,25 @@ func writeDepsTar(ctx context.Context, st *amber.Store, w io.Writer, deps []key.
 	if err := writeDir(tw, "jobs/store/"); err != nil {
 		return err
 	}
-	for _, bok := range sortedDedupKeys(deps) {
+	storeBOKs := append([]key.Key{}, deps...)
+	if includeShell {
+		storeBOKs = append(storeBOKs, shell)
+	}
+	for _, bok := range sortedDedupKeys(storeBOKs) {
 		prefix := "jobs/store/" + bok.String() + "/"
 		if err := writeDir(tw, prefix); err != nil {
 			return err
 		}
 		if err := copyTreeInto(ctx, st, tw, bok, prefix); err != nil {
+			return err
+		}
+	}
+	if includeShell {
+		shellRoot := storePath(shell)
+		if err := writeSymlink(tw, "bin/sh", shellRoot+"/bin/sh"); err != nil {
+			return err
+		}
+		if err := writeSymlink(tw, "jobs/shell", shellRoot); err != nil {
 			return err
 		}
 	}

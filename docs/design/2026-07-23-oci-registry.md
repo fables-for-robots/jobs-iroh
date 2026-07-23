@@ -31,9 +31,13 @@ one thing that matters: the jobs-server endpoint ID.
   Assembly is `runner.AssembleOCIImage`, sharing the deterministic tar
   normalisation (epoch mtimes, uid/gid 0, sorted store entries) with the
   single-layer `jobs-client image` path; blob digests are therefore
-  reproducible across restarts and hosts. No shell is baked; the entrypoint
-  comes from `JOBS.entrypoint` and is optional here (a build without one is
-  still distributable — `docker run` can name a command).
+  reproducible across restarts and hosts. The platform shell (`shell:<os/arch>`,
+  pulled from the server) is baked into the deps layer with `/bin/sh` and
+  `/jobs/shell` symlinks, because script entrypoints carry fixed shebangs and
+  both `run` and `jobs-client image` provide it — `--no-shell` opts out, and
+  a platform the server has no shell for degrades to a shell-less image. The
+  entrypoint comes from `JOBS.entrypoint` and is optional here (a build
+  without one is still distributable — `docker run` can name a command).
 - **Own amber CAS, synced on demand.** The registry owns a private store
   (`<data-dir>/store`, flocked). On a cache miss it resolves K→F from the
   server's **ref listing** (the `build-from:K` ref's *value* is F — pulling

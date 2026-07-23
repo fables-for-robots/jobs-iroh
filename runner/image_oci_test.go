@@ -21,7 +21,7 @@ func TestAssembleOCIImage(t *testing.T) {
 
 	ep := Entrypoint{Command: "bin/app", Args: []string{"--addr", ":8080"}, Env: map[string]string{"LOG": "info"}}
 
-	img, err := AssembleOCIImage(ctx, st, self, deps, &ep, "linux/amd64")
+	img, err := AssembleOCIImage(ctx, st, self, deps, key.Key{}, &ep, "linux/amd64")
 	if err != nil {
 		t.Fatalf("AssembleOCIImage: %v", err)
 	}
@@ -75,7 +75,7 @@ func TestAssembleOCIImage(t *testing.T) {
 		}
 		for p := range fs {
 			if p == "bin/sh" || p == "jobs/shell" {
-				t.Errorf("shell artifact leaked into a registry image: %s", p)
+				t.Errorf("shell artifact leaked into a no-shell registry image: %s", p)
 			}
 		}
 	})
@@ -103,7 +103,7 @@ func TestAssembleOCIImage(t *testing.T) {
 	})
 
 	t.Run("deps layer is shared across images with the same closure", func(t *testing.T) {
-		img2, err := AssembleOCIImage(ctx, st, other, []key.Key{depB, depA, depA}, nil, "linux/amd64")
+		img2, err := AssembleOCIImage(ctx, st, other, []key.Key{depB, depA, depA}, key.Key{}, nil, "linux/amd64")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -140,7 +140,7 @@ func TestAssembleOCIImage(t *testing.T) {
 	})
 
 	t.Run("nil entrypoint", func(t *testing.T) {
-		img2, err := AssembleOCIImage(ctx, st, self, nil, nil, "linux/arm64")
+		img2, err := AssembleOCIImage(ctx, st, self, nil, key.Key{}, nil, "linux/arm64")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -168,7 +168,7 @@ func TestAssembleOCIImage(t *testing.T) {
 	})
 
 	t.Run("reproducible", func(t *testing.T) {
-		again, err := AssembleOCIImage(ctx, st, self, []key.Key{depA, depB}, &ep, "linux/amd64")
+		again, err := AssembleOCIImage(ctx, st, self, []key.Key{depA, depB}, key.Key{}, &ep, "linux/amd64")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -185,8 +185,70 @@ func TestAssembleOCIImage(t *testing.T) {
 		}
 	})
 
+	t.Run("with shell: /bin/sh + /jobs/shell + PATH, like run and image", func(t *testing.T) {
+		shell := ingestTestDir(t, ctx, st, map[string]string{"bin/sh": "SH", "bin/bash": "BASH"})
+		simg, err := AssembleOCIImage(ctx, st, self, deps, shell, &ep, "linux/amd64")
+		if err != nil {
+			t.Fatalf("AssembleOCIImage with shell: %v", err)
+		}
+		fs := extractImageFS(t, simg)
+		if _, ok := fs["jobs/store/"+shell.String()+"/bin/sh"]; !ok {
+			t.Errorf("shell not under /jobs/store")
+		}
+		if e, ok := fs["bin/sh"]; !ok || e.hdr.Typeflag != tar.TypeSymlink || e.hdr.Linkname != "/jobs/store/"+shell.String()+"/bin/sh" {
+			t.Errorf("/bin/sh symlink missing/wrong: %+v", e.hdr)
+		}
+		if e, ok := fs["jobs/shell"]; !ok || e.hdr.Typeflag != tar.TypeSymlink || e.hdr.Linkname != "/jobs/store/"+shell.String() {
+			t.Errorf("/jobs/shell symlink missing/wrong: %+v", e.hdr)
+		}
+		cf, err := simg.ConfigFile()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !hasEnv(cf.Config.Env, "PATH=/bin:/jobs/store/"+shell.String()+"/bin") {
+			t.Errorf("Env missing shell PATH: %v", cf.Config.Env)
+		}
+
+		// The shell lives in the deps layer: same deps+shell across different
+		// artifacts share the blob; shell-less and shell-ful deps layers differ.
+		simg2, err := AssembleOCIImage(ctx, st, other, deps, shell, nil, "linux/amd64")
+		if err != nil {
+			t.Fatal(err)
+		}
+		sl1, err := simg.Layers()
+		if err != nil {
+			t.Fatal(err)
+		}
+		sl2, err := simg2.Layers()
+		if err != nil {
+			t.Fatal(err)
+		}
+		sd1, err := sl1[0].Digest()
+		if err != nil {
+			t.Fatal(err)
+		}
+		sd2, err := sl2[0].Digest()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sd1 != sd2 {
+			t.Errorf("deps layers differ for identical closure+shell: %s vs %s", sd1, sd2)
+		}
+		noShellLayers, err := img.Layers()
+		if err != nil {
+			t.Fatal(err)
+		}
+		nd, err := noShellLayers[0].Digest()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if nd == sd1 {
+			t.Errorf("shell-less and shell-ful deps layers must differ")
+		}
+	})
+
 	t.Run("invalid platform", func(t *testing.T) {
-		if _, err := AssembleOCIImage(ctx, st, self, nil, nil, "weird"); err == nil {
+		if _, err := AssembleOCIImage(ctx, st, self, nil, key.Key{}, nil, "weird"); err == nil {
 			t.Error("want error for platform without os/arch")
 		}
 	})

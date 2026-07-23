@@ -311,6 +311,27 @@ func TestRegistryServesServerBuild(t *testing.T) {
 		t.Errorf("dep not under /jobs/store")
 	}
 
+	// The server-seeded shell is baked in — script entrypoints (#!/bin/sh,
+	// #!/jobs/shell/bin/bash) must exec under docker exactly as under
+	// `jobs-client run`.
+	shellLink, ok := fs["bin/sh"]
+	if !ok || shellLink.hdr.Typeflag != tar.TypeSymlink || !strings.HasPrefix(shellLink.hdr.Linkname, "/jobs/store/") {
+		t.Errorf("/bin/sh shell symlink missing/wrong: %+v", shellLink.hdr)
+	}
+	if e, ok := fs["jobs/shell"]; !ok || e.hdr.Typeflag != tar.TypeSymlink {
+		t.Errorf("/jobs/shell compat symlink missing: %+v", e.hdr)
+	}
+	shellBin := strings.TrimSuffix(shellLink.hdr.Linkname, "/sh")
+	foundShellPath := false
+	for _, env := range cf.Config.Env {
+		if strings.HasPrefix(env, "PATH=") && strings.Contains(env, shellBin) {
+			foundShellPath = true
+		}
+	}
+	if !foundShellPath {
+		t.Errorf("PATH does not include the shell bin %s: %v", shellBin, cf.Config.Env)
+	}
+
 	// HEAD manifest by tag — how docker resolves a tag before pulling.
 	manDigest, err := img.Digest()
 	if err != nil {
@@ -441,6 +462,40 @@ func TestRegistryDirectOutputKey(t *testing.T) {
 	fs := extractFS(t, img)
 	if e, ok := fs["bin/tool"]; !ok || e.content != "TOOL" {
 		t.Errorf("artifact not at image root: %+v", e)
+	}
+	// No shell:linux/riscv64 exists on the server — the image is tolerated
+	// shell-less rather than failing.
+	if _, ok := fs["bin/sh"]; ok {
+		t.Errorf("unexpected /bin/sh for a platform with no seeded shell")
+	}
+}
+
+// TestRegistryNoShellOption: NoShell opts images out of the shell even when
+// the server has one for the platform.
+func TestRegistryNoShellOption(t *testing.T) {
+	ctx := context.Background()
+	srv, _ := startServer(t, ctx)
+	st := fixtureStore(t)
+	ac := dialAmber(t, ctx, srv)
+	k, _ := pushServerBuild(t, ctx, st, ac, "noshell")
+
+	host, _ := startRegistry(t, ctx, srv, func(o *registryd.Options) { o.NoShell = true })
+
+	img := pullImage(t, ctx, host, k)
+	fs := extractFS(t, img)
+	for _, p := range []string{"bin/sh", "jobs/shell"} {
+		if _, ok := fs[p]; ok {
+			t.Errorf("shell artifact %s baked despite NoShell", p)
+		}
+	}
+	cf, err := img.ConfigFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, env := range cf.Config.Env {
+		if env != "PATH=/bin" && strings.HasPrefix(env, "PATH=") {
+			t.Errorf("PATH = %q, want plain /bin without a shell", env)
+		}
 	}
 }
 

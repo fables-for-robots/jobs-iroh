@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.8.1 — 2026-07-23
+
+- **Registry images bake the shell — script entrypoints run under docker.**
+  v0.8.0 registry images shipped without `/bin/sh` or `/jobs/shell`, so any
+  build whose entrypoint is a script (every Python-style launcher) ran fine
+  under `jobs-client run` but died under `docker run` with
+  `exec …: no such file or directory` (the shebang's interpreter was
+  missing). jobs-registry now pulls `shell:<platform>` from the server and
+  bakes it into the deps layer with the `/bin/sh` + `/jobs/shell` symlinks
+  and shell-aware `PATH`, exactly matching `jobs-client run` and the
+  single-layer `image` default. `--no-shell` opts out; a platform the server
+  has no shell for degrades to a shell-less image instead of failing.
+  Already-cached images reassemble with new digests on their next pull.
+
 ## v0.8.0 — 2026-07-23
 
 - **New binary: `jobs-registry` — docker pull your builds.** A read-only

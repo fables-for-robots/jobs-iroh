@@ -70,6 +70,11 @@ type Options struct {
 	// registry host's platform.
 	DefaultPlatform string
 
+	// NoShell skips baking the platform shell (and its /bin/sh +
+	// /jobs/shell symlinks) into images. Default off: script entrypoints
+	// need the shell, exactly as `jobs-client run` and `image` provide it.
+	NoShell bool
+
 	// BindAddr optionally pins the iroh client UDP bind (tests use
 	// loopback). The port should be 0.
 	BindAddr netip.AddrPort
@@ -92,6 +97,7 @@ type registry struct {
 	reposDir        string
 	ttl             time.Duration
 	defaultPlatform string
+	noShell         bool
 
 	// runCtx outlives individual HTTP requests: assembly triggered by one
 	// client keeps running (and lands in the cache) even if that client
@@ -153,6 +159,7 @@ func Run(ctx context.Context, o Options) error {
 		reposDir:        filepath.Join(dataDir, "repos"),
 		ttl:             o.CacheTTL,
 		defaultPlatform: o.DefaultPlatform,
+		noShell:         o.NoShell,
 		runCtx:          ctx,
 	}
 

@@ -62,6 +62,11 @@ func main() {
 				Usage:   "os/arch stamped on image configs when a build's definition is unavailable (default: host platform)",
 				EnvVars: []string{"JOBS_DEFAULT_PLATFORM"},
 			},
+			&cli.BoolFlag{
+				Name:    "no-shell",
+				Usage:   "do not bake the platform shell (/bin/sh, /jobs/shell) into images; script entrypoints then need no shell",
+				EnvVars: []string{"JOBS_REGISTRY_NO_SHELL"},
+			},
 			&cli.StringFlag{
 				Name:    "log-level",
 				Usage:   "debug, info, warn or error",
@@ -83,6 +88,7 @@ func main() {
 				Listen:          c.String("listen"),
 				CacheTTL:        c.Duration("cache-ttl"),
 				DefaultPlatform: c.String("default-platform"),
+				NoShell:         c.Bool("no-shell"),
 				Logger:          log,
 			})
 		},
