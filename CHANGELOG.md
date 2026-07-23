@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.5.0 — 2026-07-23
+
+- **Remote builds now stream their output live.** `jobs-client remote-build
+  --logs` (and `watch --logs`) follows the output of the steps a watched
+  request is running: each active node gets its own log-follow stream (up
+  to 8, running nodes claiming slots first), and its stdout/stderr prints
+  as `kind:key │ line` scroll above the progress block. Followers attach
+  while a node is still queued — snapshots are coalesced, so a fast job
+  may never be observed running — and linger half a second past completion
+  so trailing chunks drain. When a build fails, the recap prints "(output
+  streamed above)" instead of repeating logs that were already watched.
+  The TTY progress block also redraws once a second now, so elapsed ticks
+  between snapshots and log scroll can no longer push the block off screen
+  for the length of a quiet compile.
+- **`jobs-client logs --server <id> --node <name> [--follow]`** prints one
+  node's captured output: the stored head/gap/tail as raw bytes on stdout
+  (pipeable), and with `--follow` a live stream of new chunks until
+  interrupted, `tail -f`-style (a retried attempt is marked on stderr).
+  The server has spoken `logs{node, follow}` on `jobs-build/1.0` since
+  v0.1.0 for the admin TUI; this is the first plain-CLI surface for it.
+  Full node names come from `jobs-client diagnose`.
+
 ## v0.4.0 — 2026-07-23
 
 - **Build failures are now durably diagnosable.** Every failed (or
