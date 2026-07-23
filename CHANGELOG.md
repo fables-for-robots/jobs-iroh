@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+- **jobs-server now announces itself for discovery** (ported from
+  amber-store-iroh's amber-serve): direct addresses on every interface
+  (auto-detected with container-bridge filtering, or `--advertise-addr`
+  verbatim), re-announced over mDNS on the local link every second, and
+  published via pkarr over the internet together with the nearest built-in
+  relay (`--relay` to pin one; relay connect is best-effort and bounded, so
+  an offline host still starts; `--no-announce` skips the export entirely).
+  Clients resolving by bare endpoint ID — which previously failed with "no
+  address found" — now find the server via mDNS on the LAN and pkarr/DNS
+  elsewhere, racing every candidate.
+- Client dials (amberclient, hence runner, CLI and TUI) bind with relays
+  enabled on the discovery path, so the server's published relay actually
+  works as a fallback when no direct candidate is reachable.
+
 ## v0.1.0 — 2026-07-23
 
 First release. jobs-iroh is a way simpler, **non-distributed** reimplementation

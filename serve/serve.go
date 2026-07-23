@@ -51,6 +51,20 @@ type Options struct {
 	// BindAddr optionally pins the UDP bind address (e.g. loopback in
 	// tests). Zero value binds the default wildcard.
 	BindAddr netip.AddrPort
+	// Announce makes the endpoint discoverable (amber-serve's export
+	// stack): connect to a relay (best-effort, bounded — an offline host
+	// still starts), advertise direct addresses on every interface,
+	// publish them over mDNS on the local link and via pkarr over the
+	// internet. The jobs-server main sets it; loopback tests stay offline
+	// with direct addresses only.
+	Announce bool
+	// AdvertiseAddrs are direct addresses to advertise, ip or ip:port
+	// (bare IPs get the bound port). Non-empty replaces interface
+	// auto-detection. Only meaningful with Announce.
+	AdvertiseAddrs []string
+	// RelayURL pins the relay fallback path; empty probes the built-in
+	// relay map for the nearest one. Only meaningful with Announce.
+	RelayURL string
 	// Logger receives server logs; nil means slog.Default().
 	Logger *slog.Logger
 	// Ready, when non-nil, is closed once the endpoint accepts connections.
@@ -144,11 +158,26 @@ func Run(ctx context.Context, opts Options) error {
 	if opts.BindAddr.IsValid() {
 		bindOpts = append(bindOpts, iroh.WithBindAddr(opts.BindAddr))
 	}
+	if opts.Announce {
+		relayMode, err := serverRelayMode(ctx, opts.RelayURL, log)
+		if err != nil {
+			return err
+		}
+		bindOpts = append(bindOpts, iroh.WithRelayMode(relayMode))
+	}
 	ep, err := iroh.Bind(ctx, bindOpts...)
 	if err != nil {
 		return fmt.Errorf("bind endpoint: %w", err)
 	}
 	defer ep.Shutdown(context.WithoutCancel(ctx))
+
+	if opts.Announce {
+		pub, err := announce(ctx, ep, sk, opts.AdvertiseAddrs, log)
+		if err != nil {
+			return err
+		}
+		defer pub.Close()
+	}
 
 	amberSrv := ambserver.New(log.With("component", "amber"), store.Objects(), store.RefStore())
 
