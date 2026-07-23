@@ -164,21 +164,39 @@ func applyMount(newRoot string, m Mount) error {
 			return fmt.Errorf("bind %s->%s: %w", m.Source, target, err)
 		}
 		// Per-mount-point flags (ro, strictatime) require a second
-		// MS_REMOUNT|MS_BIND pass — the kernel ignores them on the initial bind.
-		if m.ReadOnly {
-			if err := unix.Mount("", target, "", unix.MS_REMOUNT|unix.MS_BIND|unix.MS_RDONLY|unix.MS_REC|m.Flags, ""); err != nil {
-				return fmt.Errorf("remount-ro %s: %w", target, err)
+		// MS_REMOUNT|MS_BIND pass — the kernel ignores them on the initial
+		// bind. That pass must REPEAT the flags the mount already carries: in
+		// a user namespace every flag inherited from the parent namespace is
+		// locked (can_change_locked_flags), and a remount that omits a locked
+		// flag — or the mount's exact atime mode — asks the kernel to clear
+		// it and fails with EPERM. The bind inherited these flags from its
+		// source, so repeating them changes nothing; omitting them broke
+		// remount-ro whenever the bind source sat on a nosuid/nodev/noatime
+		// mount (e.g. TMPDIR on a hardened or nix-shell /tmp).
+		if m.ReadOnly || m.Strictatime {
+			inherited, err := inheritedMountFlags(target)
+			if err != nil {
+				return fmt.Errorf("statfs %s: %w", target, err)
 			}
-		}
-		if m.Strictatime {
-			flags := uintptr(unix.MS_REMOUNT | unix.MS_BIND | unix.MS_REC | unix.MS_STRICTATIME | m.Flags)
 			if m.ReadOnly {
-				flags |= unix.MS_RDONLY
+				flags := unix.MS_REMOUNT | unix.MS_BIND | unix.MS_RDONLY | unix.MS_REC | m.Flags | inherited
+				if err := unix.Mount("", target, "", flags, ""); err != nil {
+					return fmt.Errorf("remount-ro %s: %w", target, err)
+				}
 			}
-			// Best-effort: pre-aged epoch atimes already refresh under default
-			// relatime; strictatime only hardens the noatime-host edge, and a
-			// locked-flags EPERM inside the userns must not fail the build.
-			_ = unix.Mount("", target, "", flags, "")
+			if m.Strictatime {
+				// Strictatime IS a requested atime change, so the inherited
+				// atime mode is stripped, not repeated.
+				const atimeMask = unix.MS_NOATIME | unix.MS_NODIRATIME | unix.MS_RELATIME | unix.MS_STRICTATIME
+				flags := unix.MS_REMOUNT | unix.MS_BIND | unix.MS_REC | unix.MS_STRICTATIME | m.Flags | (inherited &^ atimeMask)
+				if m.ReadOnly {
+					flags |= unix.MS_RDONLY
+				}
+				// Best-effort: pre-aged epoch atimes already refresh under default
+				// relatime; strictatime only hardens the noatime-host edge, and a
+				// locked atime mode inside the userns must not fail the build.
+				_ = unix.Mount("", target, "", flags, "")
+			}
 		}
 		return nil
 	}
@@ -193,6 +211,37 @@ func applyMount(newRoot string, m Mount) error {
 		return fmt.Errorf("mount %s %s: %w", m.FSType, target, err)
 	}
 	return nil
+}
+
+// inheritedMountFlags translates target's current per-mount flags (statfs
+// f_flags) into their MS_* equivalents so a MS_REMOUNT|MS_BIND pass can
+// repeat them (see applyMount — a user namespace may never clear a locked
+// flag). A mount carrying no atime bit at all is strictatime, and that too
+// must be explicit: an atime-flag-less remount requests the kernel's
+// relatime DEFAULT, which mismatches a locked strictatime mode.
+func inheritedMountFlags(target string) (uintptr, error) {
+	var st unix.Statfs_t
+	if err := unix.Statfs(target, &st); err != nil {
+		return 0, err
+	}
+	fl := uintptr(0)
+	for _, f := range [...]struct{ st, ms uintptr }{
+		{unix.ST_RDONLY, unix.MS_RDONLY},
+		{unix.ST_NOSUID, unix.MS_NOSUID},
+		{unix.ST_NODEV, unix.MS_NODEV},
+		{unix.ST_NOEXEC, unix.MS_NOEXEC},
+		{unix.ST_NOATIME, unix.MS_NOATIME},
+		{unix.ST_NODIRATIME, unix.MS_NODIRATIME},
+		{unix.ST_RELATIME, unix.MS_RELATIME},
+	} {
+		if uintptr(st.Flags)&f.st != 0 {
+			fl |= f.ms
+		}
+	}
+	if fl&(unix.MS_NOATIME|unix.MS_RELATIME) == 0 {
+		fl |= unix.MS_STRICTATIME
+	}
+	return fl, nil
 }
 
 // pivot performs the pivot_root dance: chdir into newRoot, pivot_root(".","."),

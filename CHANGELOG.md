@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+- **Sandbox remounts no longer fail on hardened mounts.** The read-only (and
+  strictatime) `MS_REMOUNT|MS_BIND` pass now repeats the flags the bind
+  inherited from its source — nosuid/nodev/noexec/ro plus the exact atime
+  mode, read back via statfs. In a user namespace every inherited flag is
+  locked, and a remount that omitted them was refused: `sandbox child setup:
+  remount-ro …: operation not permitted` on hosts whose TMPDIR sits on a
+  nosuid/nodev/noatime mount (nix-shell or hardened /tmp). Repeating the
+  flags changes nothing — the bind already carried them.
 - **jobs-runner now runs a boot self-test build** before dialing the server:
   it seeds the embedded shell under a self-test-only ref and drives a
   one-script build through the real local pipeline (namespace sandbox
