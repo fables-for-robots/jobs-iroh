@@ -76,6 +76,10 @@ type Options struct {
 	// Slots optionally caps concurrent jobs regardless of resource fit
 	// (0 = resource accounting only).
 	Slots int
+	// SkipSelfTest disables the boot self-test build that gates serving on a
+	// working local sandbox (bootSelfTest). Escape hatch only — a runner that
+	// cannot sandbox-exec hard-fails every job it is handed.
+	SkipSelfTest bool
 	// Logger receives daemon logs; nil means slog.Default().
 	Logger *slog.Logger
 	// BindAddr optionally pins the UDP bind address (e.g. loopback in
@@ -158,6 +162,17 @@ func Run(ctx context.Context, o Options) error {
 		return fmt.Errorf("open store: %w", err)
 	}
 	defer st.Close()
+
+	// Prove the host can execute a sandboxed build before dialing anything —
+	// a runner that would fail every job must never announce capacity.
+	if o.SkipSelfTest {
+		log.Warn("boot self-test skipped by configuration")
+	} else if err := bootSelfTest(ctx, st, platform, cacheDir, log); err != nil {
+		if ctx.Err() != nil {
+			return nil // interrupted mid-test: a shutdown, not a verdict
+		}
+		return err
+	}
 
 	// Both connections dial the same server endpoint; each owns its own
 	// client endpoint (amberclient's one-connection-one-endpoint model — a

@@ -44,7 +44,7 @@ nix develop -c go build ./...
 | `events/` | Build-event schema + OutputWriter (32KiB chunks, 64KiB/100ms flush) — events ride core NATS via the Sink seam. |
 | `sched/` | Server scheduler: in-memory node graph (join = get-or-create, doneness = ref existence), unfold, ref gate, JOBS/RESULTS/status-KV folds, retry classes, per-kind PullRefs, log fold rings. |
 | `serve/` | jobs-server composition: iroh Router × 5 ALPNs, embedded NATS + embedded store, build/admin API handlers, bootstrap seeding. |
-| `runnerd/` | jobs-runner daemon: lane consumers per fitting size class, admission accounting, pull-inputs → drive stage → push-outputs → result-before-ack (MsgId dedup). |
+| `runnerd/` | jobs-runner daemon: boot self-test build gate, lane consumers per fitting size class, admission accounting, pull-inputs → drive stage → push-outputs → result-before-ack (MsgId dedup). |
 | `amberclient/` | Importable amber sync client: dial by endpoint ID, Push/Pull (+WithProgress), refs list; single-conn v1. |
 | `runner/` | Ported stage drivers + sandbox executors; local build/run pipeline (`driveFStages`), develop PTY shell, OCI image export. |
 | `clientcli/` | jobs-client command surface: local + remote commands, store flock, liveView TTY progress (NO_COLOR-aware). |
@@ -65,8 +65,10 @@ nix develop -c go build ./...
   over the internet, nearest relay as fallback (relay connect is best-effort —
   an offline host still starts).
 - `jobs-runner --server <endpoint-id> [--addr host:port]… [--size c1-m2]
-  [--name …] [--data-dir …]` — dials the server twice (NATS tunnel + amber
-  sync), pulls work-queue jobs for every fitting class.
+  [--name …] [--data-dir …] [--skip-self-test]` — runs a boot self-test build
+  (embedded shell, real sandbox) and refuses to start if it fails, then dials
+  the server twice (NATS tunnel + amber sync), pulls work-queue jobs for
+  every fitting class.
 - `jobs-client`:
   - `build|run|develop --source <dir> [--dir …] [--build-file …] [--platform …]
     [--shell-ref …] [--param k=v]…` — local hermetic build / build-then-exec

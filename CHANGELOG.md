@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+- **jobs-runner now runs a boot self-test build** before dialing the server:
+  it seeds the embedded shell under a self-test-only ref and drives a
+  one-script build through the real local pipeline (namespace sandbox
+  included). A host whose sandbox is broken — mount restrictions, missing
+  user namespaces, exotic TMPDIR mounts — previously advertised capacity and
+  hard-failed every job it was handed (e.g. `sandbox child setup: remount-ro
+  …: operation not permitted`); it now refuses to start with the real error.
+  `--skip-self-test` (`JOBS_RUNNER_SKIP_SELF_TEST`) is the escape hatch.
+
 ## v0.2.0 — 2026-07-23
 
 - **jobs-server now announces itself for discovery** (ported from

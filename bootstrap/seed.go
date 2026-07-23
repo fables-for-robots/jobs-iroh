@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"embed"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -117,6 +118,42 @@ func Seed(ctx context.Context, st *amber.Store, platforms []string, log *slog.Lo
 		}
 	}
 	return nil
+}
+
+// ErrNoSeed reports that no seed blob is embedded for the requested
+// artifact/platform (errors.Is-able, so callers can treat it as a skip).
+var ErrNoSeed = errors.New("seed artifact not embedded")
+
+// SeedShellAs ingests the embedded shell artifact for platform and publishes
+// it under ref — NOT under shell:<platform>. The runner's boot self-test
+// needs a locally runnable shell without publishing the real ref: on runners
+// shell:<platform> must keep resolving via pull-from-server (a local publish
+// would shadow the server's shell for every subsequent job). Idempotence is
+// the same blob-marker scheme as Seed; a marker hit re-publishes ref (cheap)
+// in case it was deleted. Returns the shell's content key.
+func SeedShellAs(ctx context.Context, st *amber.Store, platform, ref string) (key.Key, error) {
+	blob, err := seedFS.ReadFile("seed/" + platformDir(platform) + "/shell.tar.zst")
+	if err != nil {
+		return key.Key{}, fmt.Errorf("%w: shell for %s", ErrNoSeed, platform)
+	}
+	marker := seedMarkerRef(ref, blob)
+	if k, ok, err := st.GetKey(ctx, marker); err == nil && ok {
+		if err := st.PutRef(ctx, ref, k); err != nil {
+			return key.Key{}, fmt.Errorf("seed %s: republish: %w", ref, err)
+		}
+		return k, nil
+	}
+	k, err := ingestSeedBlob(ctx, st, blob)
+	if err != nil {
+		return key.Key{}, fmt.Errorf("seed %s: ingest: %w", ref, err)
+	}
+	if err := st.PutRef(ctx, ref, k); err != nil {
+		return key.Key{}, fmt.Errorf("seed %s: publish: %w", ref, err)
+	}
+	if err := st.PutRef(ctx, marker, k); err != nil {
+		return key.Key{}, fmt.Errorf("seed %s: publish marker: %w", ref, err)
+	}
+	return k, nil
 }
 
 // seedMarkerRef names the marker recording that ref was seeded from this exact

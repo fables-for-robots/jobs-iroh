@@ -54,6 +54,11 @@ func main() {
 				Usage:   "display name announced to the server (default: hostname)",
 				EnvVars: []string{"JOBS_RUNNER_NAME"},
 			},
+			&cli.BoolFlag{
+				Name:    "skip-self-test",
+				Usage:   "skip the boot self-test build that verifies this host can execute sandboxed builds",
+				EnvVars: []string{"JOBS_RUNNER_SKIP_SELF_TEST"},
+			},
 			&cli.StringFlag{
 				Name:    "log-level",
 				Usage:   "debug, info, warn or error",
@@ -74,12 +79,13 @@ func main() {
 			ctx, stop := signal.NotifyContext(c.Context, syscall.SIGINT, syscall.SIGTERM)
 			defer stop()
 			return runnerd.Run(ctx, runnerd.Options{
-				ServerID: c.String("server"),
-				Addrs:    c.StringSlice("addr"),
-				DataDir:  c.String("data-dir"),
-				Size:     c.String("size"),
-				Name:     c.String("name"),
-				Logger:   log,
+				ServerID:     c.String("server"),
+				Addrs:        c.StringSlice("addr"),
+				DataDir:      c.String("data-dir"),
+				Size:         c.String("size"),
+				Name:         c.String("name"),
+				SkipSelfTest: c.Bool("skip-self-test"),
+				Logger:       log,
 			})
 		},
 	}
