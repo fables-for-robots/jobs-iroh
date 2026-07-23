@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.6.0 — 2026-07-23
+
+- **Executors announce what they actually run.** Every import executor
+  writes a one-line banner into the job's output stream before exec'ing
+  the fetcher — the resolved `fetch` entrypoint, the `JOBS_FETCH_PARAMS`
+  JSON, and the secrets file path (never contents) — and fetcher stderr
+  now tees to the runner's own stderr, so it shows live in local builds
+  and the daemon log, like build stdout always has.
+- **Build scripts run in shell debug mode.** The recipe script executes
+  under `bash -ex` instead of `-e`: the captured output opens with a
+  banner naming the true command and sandbox layout (`jobs: exec
+  …/bin/bash -ex /build/.jobs-script.sh ($SRC=/build/src,
+  $out=/build/out, net=none)`) followed by a `+ …` trace of every command
+  the build runs. Build stderr tees to the runner's stderr stream too, so
+  the trace is visible in local `jobs-client build` runs and daemon logs,
+  streams live over `remote-build --logs`, and lands in failure tails and
+  `diagnose` reports. Note: chatty scripts get much louder under `-x` —
+  the log pipeline's bounds (lossy fan-out, ring-buffered storage) absorb
+  it, but heavy loops now trace every iteration.
+
 ## v0.5.0 — 2026-07-23
 
 - **Remote builds now stream their output live.** `jobs-client remote-build
