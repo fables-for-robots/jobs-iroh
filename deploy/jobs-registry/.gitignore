@@ -1,2 +1,4 @@
-# the binary copied in by the Dockerfile build step
+# the binaries copied in by the Dockerfile build step
 jobs-registry
+jobs-registry-amd64
+jobs-registry-arm64
