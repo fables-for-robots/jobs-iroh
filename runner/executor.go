@@ -12,6 +12,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"syscall"
 	"time"
 
@@ -52,6 +53,32 @@ type Executor interface {
 	Run(ctx context.Context, spec ExecSpec) (ExecResult, error)
 }
 
+// execBanner is the one-line "what is actually being run" note every import
+// executor writes into the job's stderr stream before exec'ing the fetcher:
+// the resolved entrypoint plus the param/secret surface the process sees
+// (secrets by file path only — never contents).
+func execBanner(spec ExecSpec) string {
+	b := "jobs: exec " + filepath.Join(spec.FetcherDir, "fetch")
+	if p := spec.Env["JOBS_FETCH_PARAMS"]; p != "" {
+		b += " params=" + p
+	}
+	if spec.SecretsFile != "" {
+		b += " secrets=" + spec.SecretsFile
+	}
+	return b + "\n"
+}
+
+// importStderr assembles an import's stderr chain: teed to our own stderr
+// stream (live local/daemon-log visibility, like the build executor), the
+// 4KB failure tail, and the event sink when set.
+func importStderr(spec ExecSpec, tail *tailbuf.Buffer) io.Writer {
+	writers := []io.Writer{os.Stderr, tail}
+	if spec.StderrSink != nil {
+		writers = append(writers, spec.StderrSink)
+	}
+	return io.MultiWriter(writers...)
+}
+
 // Subprocess runs the fetcher's ./fetch as a plain child process — no namespace
 // isolation (imports are network-capable anyway). A non-zero exit is reported in
 // ExecResult, not as a Go error; a Go error means the process could not run
@@ -65,10 +92,8 @@ func (Subprocess) Run(ctx context.Context, spec ExecSpec) (ExecResult, error) {
 	}
 
 	tail := tailbuf.New(4 << 10)
-	var stderr io.Writer = tail
-	if spec.StderrSink != nil {
-		stderr = io.MultiWriter(tail, spec.StderrSink)
-	}
+	stderr := importStderr(spec, tail)
+	io.WriteString(stderr, execBanner(spec))
 
 	// exec can fail ETXTBSY when a concurrently forked child of this process
 	// (another job slot's fork, between its clone and execve) still holds the

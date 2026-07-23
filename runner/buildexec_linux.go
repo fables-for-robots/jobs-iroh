@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/fables-for-robots/jobs-iroh/amber"
@@ -188,8 +189,11 @@ func hermeticDevMounts(newRoot string) ([]sandbox.Mount, error) {
 }
 
 func (NamespaceBuildExecutor) RunBuild(ctx context.Context, st *amber.Store, spec BuildSpec) (BuildResult, error) {
+	// -x on top of -e: the shell traces every script command to stderr, so
+	// the captured output shows what the build actually ran, not just what
+	// it printed.
 	a, err := assembleSandbox(ctx, st, spec,
-		[]string{storeShellDir(spec.ShellBOK) + "/bin/bash", "-e", sandboxScriptFile}, nil)
+		[]string{storeShellDir(spec.ShellBOK) + "/bin/bash", "-ex", sandboxScriptFile}, nil)
 	if err != nil {
 		return BuildResult{ExitCode: -1}, err
 	}
@@ -208,12 +212,19 @@ func (NamespaceBuildExecutor) RunBuild(ctx context.Context, st *amber.Store, spe
 	if spec.StdoutSink != nil {
 		stdout = io.MultiWriter(os.Stderr, spec.StdoutSink)
 	}
-	var stderr io.Writer = tail
+	// Build stderr carries the -x trace now — tee it to our stderr stream
+	// like stdout, so the trace shows live locally and in the daemon log,
+	// not only in the captured tail.
+	var stderr io.Writer = io.MultiWriter(os.Stderr, tail)
 	if spec.StderrSink != nil {
-		stderr = io.MultiWriter(tail, spec.StderrSink)
+		stderr = io.MultiWriter(os.Stderr, tail, spec.StderrSink)
 	}
 	a.cfg.Stdout = stdout
 	a.cfg.Stderr = stderr
+
+	// What is actually being run, ahead of the trace.
+	fmt.Fprintf(stderr, "jobs: exec %s ($SRC=%s, $out=%s, net=none)\n",
+		strings.Join(a.cfg.Command, " "), sandboxSrcDir, sandboxOutDir)
 
 	spec.Events.Phase("building")
 	// Liveness + cgroup usage while the script runs; stop before the deferred

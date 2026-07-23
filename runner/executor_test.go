@@ -94,12 +94,43 @@ func TestSubprocess_Sinks(t *testing.T) {
 	if stdout.String() != "out-line\n" {
 		t.Fatalf("stdout sink got %q", stdout.String())
 	}
-	if stderr.String() != "err-line\n" {
-		t.Fatalf("stderr sink got %q", stderr.String())
+	// The exec banner leads the stderr stream, then the process's own stderr.
+	wantErr := "jobs: exec " + filepath.Join(fdir, "fetch") + "\nerr-line\n"
+	if stderr.String() != wantErr {
+		t.Fatalf("stderr sink got %q, want %q", stderr.String(), wantErr)
 	}
 	// The 4KB tail for the failure path must still work alongside.
 	if !strings.Contains(res.StderrTail, "err-line") {
 		t.Fatalf("StderrTail lost: %q", res.StderrTail)
+	}
+}
+
+// TestSubprocess_ExecBanner: the banner names the resolved entrypoint, the
+// fetch params, and the secrets file PATH (never contents), and lands in
+// both the sink stream and the failure tail.
+func TestSubprocess_ExecBanner(t *testing.T) {
+	fdir := t.TempDir()
+	writeFetch(t, fdir, "#!/bin/sh\nexit 0\n")
+	var stderr bytes.Buffer
+	res, err := Subprocess{}.Run(context.Background(), ExecSpec{
+		FetcherDir:  fdir,
+		Env:         map[string]string{"JOBS_FETCH_PARAMS": `{"name":"x"}`},
+		SecretsFile: "/tmp/secrets.json",
+		StderrSink:  &stderr,
+	})
+	if err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	if res.ExitCode != 0 {
+		t.Fatalf("exit=%d", res.ExitCode)
+	}
+	want := "jobs: exec " + filepath.Join(fdir, "fetch") +
+		` params={"name":"x"} secrets=/tmp/secrets.json` + "\n"
+	if stderr.String() != want {
+		t.Fatalf("stderr sink got %q, want %q", stderr.String(), want)
+	}
+	if !strings.Contains(res.StderrTail, "jobs: exec ") {
+		t.Fatalf("banner missing from tail: %q", res.StderrTail)
 	}
 }
 

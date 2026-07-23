@@ -78,10 +78,8 @@ func (e CgroupExecutor) Run(ctx context.Context, spec ExecSpec) (ExecResult, err
 	}
 
 	tail := tailbuf.New(4 << 10)
-	var stderr io.Writer = tail
-	if spec.StderrSink != nil {
-		stderr = io.MultiWriter(tail, spec.StderrSink)
-	}
+	stderr := importStderr(spec, tail)
+	io.WriteString(stderr, execBanner(spec))
 
 	cfg := sandbox.Config{
 		// Absolute path to the fetcher entrypoint — robust regardless of Dir.

@@ -3,6 +3,7 @@
 package runner_test
 
 import (
+	"bytes"
 	"context"
 	"os"
 	"os/exec"
@@ -112,6 +113,26 @@ var _ = Describe("NamespaceBuildExecutor", func() {
 		got, err := os.ReadFile(filepath.Join(res.OutDir, "result"))
 		Expect(err).NotTo(HaveOccurred())
 		Expect(string(got)).To(Equal("hi world"))
+	})
+
+	It("announces the exec command and traces the script (bash -x) on stderr", func() {
+		sourceKey := ingestDir(map[string]string{"placeholder": "x"})
+
+		var errBuf bytes.Buffer
+		res := runBuild(runner.BuildSpec{
+			StoreKey:   storeOf(shellKey),
+			ShellBOK:   shellKey,
+			SourceKey:  sourceKey,
+			Script:     `echo tracedmarker > "$out/result"`,
+			StderrSink: &errBuf,
+		})
+
+		Expect(res.ExitCode).To(Equal(0), "stderr: "+res.StderrTail)
+		// The banner names the true command (shell in debug mode, script file).
+		Expect(errBuf.String()).To(ContainSubstring("jobs: exec "))
+		Expect(errBuf.String()).To(ContainSubstring("/bin/bash -ex /build/.jobs-script.sh"))
+		// -x echoes every script command into the captured stream.
+		Expect(errBuf.String()).To(ContainSubstring("+ echo tracedmarker"))
 	})
 
 	It("enforces MemoryMaxBytes: a memory hog is OOM-killed (multi-job-runner)", func() {
