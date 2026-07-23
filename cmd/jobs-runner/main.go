@@ -59,6 +59,12 @@ func main() {
 				Usage:   "skip the boot self-test build that verifies this host can execute sandboxed builds",
 				EnvVars: []string{"JOBS_RUNNER_SKIP_SELF_TEST"},
 			},
+			&cli.IntFlag{
+				Name:    "sync-conns",
+				Usage:   "parallel connections per store transfer (1-16; 1 disables sharding)",
+				EnvVars: []string{"JOBS_SYNC_CONNS"},
+				Value:   4,
+			},
 			&cli.StringFlag{
 				Name:    "log-level",
 				Usage:   "debug, info, warn or error",
@@ -85,6 +91,7 @@ func main() {
 				Size:         c.String("size"),
 				Name:         c.String("name"),
 				SkipSelfTest: c.Bool("skip-self-test"),
+				SyncConns:    max(1, c.Int("sync-conns")),
 				Logger:       log,
 			})
 		},

@@ -80,6 +80,10 @@ type Options struct {
 	// working local sandbox (bootSelfTest). Escape hatch only — a runner that
 	// cannot sandbox-exec hard-fails every job it is handed.
 	SkipSelfTest bool
+	// SyncConns is the QUIC connections per store transfer (control +
+	// data shards; see amberclient.Options.Conns). 0 uses the amberclient
+	// default, 1 disables sharding.
+	SyncConns int
 	// Logger receives daemon logs; nil means slog.Default().
 	Logger *slog.Logger
 	// BindAddr optionally pins the UDP bind address (e.g. loopback in
@@ -187,6 +191,7 @@ func Run(ctx context.Context, o Options) error {
 
 	amberOpts := baseOpts
 	amberOpts.ALPN = alpnRunnerAmber
+	amberOpts.Conns = o.SyncConns
 	sync := newReconnSync(amberOpts, st)
 	defer sync.Close()
 

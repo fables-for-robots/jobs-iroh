@@ -13,9 +13,11 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 
 	ambserver "github.com/fables-for-robots/amber-store-iroh/server"
@@ -65,6 +67,13 @@ type Options struct {
 	// RelayURL pins the relay fallback path; empty probes the built-in
 	// relay map for the nearest one. Only meaningful with Announce.
 	RelayURL string
+	// DataEndpoints is how many extra UDP endpoints the amber mounts bind
+	// for sharded transfers (0 = none, max 15): one socket's recv loop
+	// caps well below a fast link, so shards get dedicated server sockets.
+	// The ports are advertised in-band to sharding clients only —
+	// direct-path, never published; a client that cannot reach them falls
+	// back to the control connection's addresses.
+	DataEndpoints int
 	// Logger receives server logs; nil means slog.Default().
 	Logger *slog.Logger
 	// Ready, when non-nil, is closed once the endpoint accepts connections.
@@ -181,6 +190,45 @@ func Run(ctx context.Context, opts Options) error {
 
 	amberSrv := ambserver.New(log.With("component", "amber"), store.Objects(), store.RefStore())
 
+	// Extra data endpoints for sharded transfers, bound with the SAME
+	// secret key so shard dials authenticate the same server identity.
+	// Each carries only the two amber ALPNs; TAttach reaches the one
+	// amberSrv (and its transfer tokens) from any of them.
+	var dataRouters []*iroh.Router
+	if n := min(opts.DataEndpoints, 15); n > 0 {
+		// Bind every endpoint and publish the ports BEFORE any router
+		// accepts: SetDataPorts is an unsynchronized write the handlers
+		// read (ambserver documents "call before Serve").
+		var deps []*iroh.Endpoint
+		var ports []uint16
+		for range n {
+			depOpts := []iroh.Option{iroh.WithSecretKey(sk)}
+			if opts.BindAddr.IsValid() {
+				depOpts = append(depOpts, iroh.WithBindAddr(netip.AddrPortFrom(opts.BindAddr.Addr(), 0)))
+			}
+			dep, err := iroh.Bind(ctx, depOpts...)
+			if err != nil {
+				return fmt.Errorf("bind data endpoint: %w", err)
+			}
+			defer dep.Shutdown(context.WithoutCancel(ctx))
+			deps = append(deps, dep)
+			ports = append(ports, dep.LocalAddr().Port())
+		}
+		amberSrv.SetDataPorts(ports)
+		amberOnly := map[string]iroh.ProtocolHandler{
+			ALPNRunnerAmber: amberConnHandler(amberSrv),
+			ALPNAmberAdmin:  amberConnHandler(amberSrv),
+		}
+		for _, dep := range deps {
+			dr, err := iroh.NewRouter(dep, amberOnly, &iroh.RouterConfig{Logger: log})
+			if err != nil {
+				return fmt.Errorf("data endpoint router: %w", err)
+			}
+			dataRouters = append(dataRouters, dr)
+		}
+		log.Info("amber data endpoints", "ports", ports)
+	}
+
 	storeDir := filepath.Join(opts.DataDir, "store")
 	buildSvc := &apiService{log: log.With("service", "build"), sd: sd, store: store, storeDir: storeDir}
 	adminSvc := &apiService{log: log.With("service", "admin"), sd: sd, store: store, storeDir: storeDir, admin: true}
@@ -213,7 +261,25 @@ func Run(ctx context.Context, opts Options) error {
 	if err := router.Shutdown(shCtx); err != nil {
 		log.Warn("router shutdown", "error", err)
 	}
+	for _, dr := range dataRouters {
+		if err := dr.Shutdown(shCtx); err != nil {
+			log.Warn("data router shutdown", "error", err)
+		}
+	}
 	return nil
+}
+
+// closeTracked wraps a stream so the handler can tell, after HandleStream
+// returns, whether the operation finished with the stream (closed) or handed
+// it to an in-progress sharded transfer (still open — the transfer owns it).
+type closeTracked struct {
+	net.Conn
+	closed atomic.Bool
+}
+
+func (c *closeTracked) Close() error {
+	c.closed.Store(true)
+	return c.Conn.Close()
 }
 
 // amberConnHandler serves the amber-store-iroh sync protocol on every stream
@@ -231,15 +297,25 @@ func amberConnHandler(srv *ambserver.Server) iroh.ProtocolHandler {
 				break // peer closed the connection, or ctx cancelled
 			}
 			g.Go(func() error {
-				srv.HandleStream(conn.RemoteID().String(), stream)
+				tracked := &closeTracked{Conn: stream}
+				srv.HandleStream(conn.RemoteID().String(), tracked)
 				// HandleStream closes only the send side; the sync protocol
 				// never reads the client's FIN after the final frame. Cancel
 				// the receive side so the stream fully terminates — QUIC
 				// returns MAX_STREAMS credit to the client only for fully
 				// closed streams, and without this every operation leaks one
 				// stream until the client's 101st open blocks forever.
-				if cr, ok := stream.(interface{ CancelRead(code uint64) }); ok {
-					cr.CancelRead(0)
+				//
+				// EXCEPT when HandleStream returned without closing: a
+				// TAttach stream changed hands to an in-progress sharded
+				// transfer, which owns and closes it — canceling here would
+				// sever a live data channel mid-transfer. (Attach streams
+				// leak no credit either way: the client tears down their
+				// whole per-shard connection when the transfer ends.)
+				if tracked.closed.Load() {
+					if cr, ok := stream.(interface{ CancelRead(code uint64) }); ok {
+						cr.CancelRead(0)
+					}
 				}
 				return nil
 			})

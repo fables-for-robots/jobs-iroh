@@ -51,7 +51,7 @@ nix develop -c go build ./...
 | `sched/` | Server scheduler: in-memory node graph (join = get-or-create, doneness = ref existence), unfold, ref gate, JOBS/RESULTS/status-KV folds, retry classes, per-kind PullRefs, log fold rings, durable FAILURES records + Diagnose. |
 | `serve/` | jobs-server composition: iroh Router × 5 ALPNs, embedded NATS + embedded store, build/admin API handlers, bootstrap seeding. |
 | `runnerd/` | jobs-runner daemon: boot self-test build gate, lane consumers per fitting size class, admission accounting, pull-inputs → drive stage → push-outputs → result-before-ack (MsgId dedup). |
-| `amberclient/` | Importable amber sync client: dial by endpoint ID, Push/Pull (+WithProgress), refs list; single-conn v1. |
+| `amberclient/` | Importable amber sync client: dial by endpoint ID, Push/Pull (+WithProgress), refs list. Transfers are sharded (`Conns`, default 4): extra QUIC connections attach to the server's transfer token, want rounds deal across all channels; degrades to the single control stream. |
 | `runner/` | Ported stage drivers + sandbox executors; local build/run pipeline (`driveFStages`), develop PTY shell, OCI image export (single-layer docker-load tar + two-layer `AssembleOCIImage` for the registry). |
 | `registryd/` | jobs-registry daemon: read-only OCI Distribution API (images named `jobs:<K>` — one repo, tags are build keys), on-demand K→F resolve + amberclient sync into a private store, two-layer image assembly (shell baked by default like `run`/`image`), disk blob cache with last-read TTL sweep, offline reassembly from records. |
 | `clientcli/` | jobs-client command surface: local + remote commands, store flock, liveView TTY progress (NO_COLOR-aware). |
@@ -65,20 +65,23 @@ nix develop -c go build ./...
 ## Binaries & commands
 
 - `jobs-server --data-dir <dir> [--bind host:port] [--relay url]
-  [--advertise-addr ip[:port]]… [--no-announce] [--log-level …]` — one iroh
-  endpoint, five ALPNs, embedded NATS + amber store. Prints its endpoint ID on
+  [--advertise-addr ip[:port]]… [--no-announce] [--data-endpoints N]
+  [--log-level …]` — one iroh endpoint, five ALPNs, embedded NATS + amber
+  store; `--data-endpoints` (default 3) binds extra UDP sockets for sharded
+  store transfers. Prints its endpoint ID on
   startup and announces it for discovery: direct interface addresses
   (auto-detected unless --advertise-addr) over mDNS on the LAN and via pkarr
   over the internet, nearest relay as fallback (relay connect is best-effort —
   an offline host still starts).
 - `jobs-runner --server <endpoint-id> [--addr host:port]… [--size c1-m2]
-  [--name …] [--data-dir …] [--skip-self-test]` — runs a boot self-test build
+  [--name …] [--data-dir …] [--skip-self-test] [--sync-conns N]` — runs a
+  boot self-test build
   (embedded shell, real sandbox) and refuses to start if it fails, then dials
   the server twice (NATS tunnel + amber sync), pulls work-queue jobs for
   every fitting class.
 - `jobs-registry --server <endpoint-id> [--addr host:port]… [--listen :5000]
   [--data-dir …] [--cache-ttl 24h] [--default-platform os/arch]
-  [--no-shell]` — read-only OCI registry: `docker pull
+  [--no-shell] [--sync-conns N]` — read-only OCI registry: `docker pull
   <host>:5000/jobs:<build-K>` serves a build output as a two-layer image
   (runtime closure + platform shell, artifact), synced on demand
   from the server into a private store and cached as blobs on disk; blobs
@@ -92,7 +95,7 @@ nix develop -c go build ./...
   - `image -o <tar> [--tag …] [--no-shell] (--source <dir> | <build-K>)` —
     docker-loadable OCI image from a build output (by source or by key).
   - `remote-build --server <id> --source <dir> [--cpu …] [--memory …]
-    [--no-logs]` — push source, submit, watch to terminal, pull output
+    [--no-logs] [--conns N]` — push source, submit, watch to terminal, pull output
     home; the running steps' output streams alongside the progress block
     by default (`--no-logs` opts out).
   - `watch --server <id> --request-id <id> [--no-logs]` — re-attach to a

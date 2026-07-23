@@ -258,12 +258,25 @@ into sandboxes.
 
 **Sync.** Object/ref transfer between stores uses the amber sync protocol
 (wire format from the `amber-store-iroh` dependency), mounted on the two
-store ALPNs. The importable client (`amberclient/`) is deliberately simple:
-one QUIC connection, one stream per operation — `Push`/`Pull`
-(`…WithProgress`), `Refs`. Push is force-mode (last-write-wins); Pull
-verifies every object against its key (the peer is untrusted) and writes the
-local ref only after the full closure is present — objects-before-ref holds
-across the wire too.
+store ALPNs. The importable client (`amberclient/`) keeps one control QUIC
+connection with one stream per operation — `Push`/`Pull` (`…WithProgress`),
+`Refs` — and **shards transfers**: with `Conns` > 1 (default 4, max 16) a
+push or pull requests `DataConns` extra channels, the server answers with a
+transfer token, and the client attaches one stream per extra QUIC
+connection — each on its own endpoint and UDP socket, since one socket's
+loop caps throughput — so the want loop deals every round across all
+channels. The server can bind dedicated data endpoints
+(`--data-endpoints`, default 3, same identity key) whose ports are offered
+in-band; unreachable data ports, failed attaches, or a server without
+sharding all degrade the transfer toward the single control stream. Each
+shard's attach runs under a budget safely below the server's 5s gather
+window (a late attach would be a dead channel), a connection that attaches
+zero shards demotes itself to single-channel for its lifetime, and a failed
+sharded transfer is retried once unsharded (push is force-mode, pull
+resumable — running twice is never wrong) before the error surfaces. Push is
+force-mode (last-write-wins); Pull verifies every object against its key
+(the peer is untrusted) and writes the local ref only after the full
+closure is present — objects-before-ref holds across the wire too.
 
 ## 5. Transport
 

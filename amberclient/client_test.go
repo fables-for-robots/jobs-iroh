@@ -25,6 +25,12 @@ import (
 
 // startServer runs a jobs-server on loopback and returns its handle.
 func startServer(t *testing.T, ctx context.Context) *serve.Server {
+	return startServerData(t, ctx, 0)
+}
+
+// startServerData is startServer with extra amber data endpoints for
+// sharded-transfer tests.
+func startServerData(t *testing.T, ctx context.Context, dataEndpoints int) *serve.Server {
 	t.Helper()
 
 	ready := make(chan *serve.Server, 1)
@@ -43,9 +49,10 @@ func startServer(t *testing.T, ctx context.Context) *serve.Server {
 	})
 	go func() {
 		done <- serve.Run(runCtx, serve.Options{
-			DataDir:  t.TempDir(),
-			BindAddr: netip.AddrPortFrom(netip.IPv6Loopback(), 0),
-			Ready:    func(s *serve.Server) { ready <- s },
+			DataDir:       t.TempDir(),
+			BindAddr:      netip.AddrPortFrom(netip.IPv6Loopback(), 0),
+			DataEndpoints: dataEndpoints,
+			Ready:         func(s *serve.Server) { ready <- s },
 		})
 	}()
 

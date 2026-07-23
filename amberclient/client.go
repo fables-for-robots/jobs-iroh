@@ -5,13 +5,17 @@
 // (jobs-runner-amber/1.0, jobs-amber-admin/1.0). The wire protocol itself is
 // amber-store-iroh's protocol + wantsync packages, unchanged.
 //
-// v1 is deliberately single-connection: one QUIC connection, one stream per
-// operation, DataConns always 0 — the sharded TAttach transfer path of the
-// upstream CLI is dropped (perf follow-up). What is kept is everything that
-// matters for correctness: the resumable want-loop (an interrupted transfer
-// resumes where it stopped, because wantsync prunes only CheckComplete
-// subtrees), verified writes on pull (the peer is untrusted), and pack
-// draining through TDataEnd so streams stay frame-aligned between rounds.
+// Transfers are sharded: with Conns > 1 (DefaultConns is 4) each push and
+// pull asks the server for extra data channels and attaches one stream per
+// extra QUIC connection — each on its own endpoint and UDP socket, since one
+// socket's loop caps throughput — and the want loop deals every round across
+// all of them (the upstream TAttach path, see shard.go). A server without
+// sharding support, or a failed attach, degrades to the single control
+// stream. Unchanged is everything that matters for correctness: the
+// resumable want-loop (an interrupted transfer resumes where it stopped,
+// because wantsync prunes only CheckComplete subtrees), verified writes on
+// pull (the peer is untrusted), and pack draining through TDataEnd so
+// streams stay frame-aligned between rounds.
 //
 // Pushes are force-mode (no CAS, no remote-tracking refs): jobs-iroh pushes
 // scratch/output refs it owns, so last-write-wins is the intended semantic
@@ -26,6 +30,7 @@ import (
 	"log/slog"
 	"net"
 	"net/netip"
+	"sync/atomic"
 	"time"
 
 	"github.com/fables-for-robots/amber-store-core/key"
@@ -34,6 +39,7 @@ import (
 	"github.com/fables-for-robots/amber-store-iroh/wantsync"
 	"github.com/tmc/go-iroh/iroh"
 	irohkey "github.com/tmc/go-iroh/key"
+	"github.com/tmc/go-iroh/netaddr"
 
 	"github.com/fables-for-robots/jobs-iroh/amber"
 )
@@ -60,8 +66,30 @@ type Options struct {
 	// BindAddr optionally pins the client's UDP bind address (e.g.
 	// loopback in tests). Zero value binds the default wildcard.
 	BindAddr netip.AddrPort
+	// Conns is the QUIC connections used per transfer: one control
+	// connection plus Conns-1 data shards attached to it. 0 means
+	// DefaultConns; other values are clamped to [1, 16], and 1 disables
+	// sharding. A server without sharding support falls back to the
+	// single control stream.
+	Conns int
 	// Logger receives client logs; nil means slog.Default().
 	Logger *slog.Logger
+}
+
+// DefaultConns is the connections per transfer when Options.Conns is 0.
+const DefaultConns = 4
+
+// clampConns maps Options.Conns onto the usable range.
+func clampConns(n int) int {
+	switch {
+	case n == 0:
+		return DefaultConns
+	case n < 1:
+		return 1
+	case n > 16:
+		return 16
+	}
+	return n
 }
 
 // RefInfo is one reference in a Refs listing.
@@ -72,14 +100,65 @@ type RefInfo struct {
 	User      string
 }
 
-// Client is a connected amber sync client: one QUIC connection on its own
-// ephemeral endpoint, one stream per operation. Methods are safe for
-// concurrent use — each opens its own stream and the protocol is
-// stream-scoped. Close releases the connection and the endpoint.
+// Client is a connected amber sync client: one control QUIC connection on
+// its own ephemeral endpoint, one stream per operation, plus short-lived
+// per-transfer shard connections (torn down when the operation ends).
+// Methods are safe for concurrent use — each opens its own stream and the
+// protocol is stream-scoped. Close releases the control connection and the
+// endpoint.
 type Client struct {
 	conn *iroh.Conn
 	ep   *iroh.Endpoint
 	log  *slog.Logger
+
+	// Sharding needs to reach the same server again: identity, ALPN and
+	// the candidate set of the control dial, plus the pinned bind (if any)
+	// for shard endpoints.
+	id       irohkey.EndpointID
+	alpn     string
+	cands    []netaddr.TransportAddr
+	bindAddr netip.AddrPort
+	conns    int
+
+	// demoted latches when this connection proves unable to shard (no
+	// attach landed in budget, or a sharded transfer failed that then
+	// succeeded unsharded) — every later transfer skips the shard attempt.
+	// A redial probes afresh.
+	demoted atomic.Bool
+}
+
+// transferConns is the connection count for the next transfer: the
+// configured Conns until the connection demotes itself to 1.
+func (c *Client) transferConns() int {
+	if c.demoted.Load() {
+		return 1
+	}
+	return c.conns
+}
+
+// demote permanently disables sharding on this connection. Logged once: the
+// usual causes — relay-only reachability, filtered data ports, a server
+// whose stream handler predates attach handoff — are properties of the
+// path, not of one transfer.
+func (c *Client) demote(reason string) {
+	if c.demoted.CompareAndSwap(false, true) {
+		c.log.Info("amberclient: sharded transfers disabled for this connection", "reason", reason)
+	}
+}
+
+// retrySingle decides whether a failed sharded transfer deserves one
+// immediate single-channel retry, demoting the connection first. A missing
+// ref is a definitive verdict and a cancelled context will not improve;
+// anything else — transport faults, but also a server-side TErr from a
+// jobs-server release whose handler severs attached shard streams
+// mid-transfer — is worth one unsharded attempt: push is force-mode and
+// pull is resumable, so running twice is wasteful but never wrong.
+func (c *Client) retrySingle(ctx context.Context, op, name string, err error) bool {
+	if errors.Is(err, ErrRefNotFound) || ctx.Err() != nil {
+		return false
+	}
+	c.demote(fmt.Sprintf("sharded %s %q failed: %v", op, name, err))
+	return true
 }
 
 // Dial connects to the amber server described by o: direct addresses when
@@ -111,7 +190,11 @@ func Dial(ctx context.Context, o Options) (*Client, error) {
 		return nil, fmt.Errorf("amberclient: connect %s: %w", id, err)
 	}
 	log.Debug("amberclient connected", "endpoint", id.String(), "alpn", alpn)
-	return &Client{conn: conn, ep: ep, log: log}, nil
+	return &Client{
+		conn: conn, ep: ep, log: log,
+		id: id, alpn: alpn, cands: cands, bindAddr: o.BindAddr,
+		conns: clampConns(o.Conns),
+	}, nil
 }
 
 // Close tears down the connection and shuts down the client endpoint.
@@ -152,37 +235,54 @@ func (c *Client) PushWithProgress(ctx context.Context, st *amber.Store, name str
 		return XferStats{}, fmt.Errorf("amberclient: push %q: root %s not in local store", name, root)
 	}
 
+	// One meter across both attempts: the want loop resumes where a failed
+	// sharded attempt stopped, so counters stay monotonic for the callback
+	// and the stats cover the whole operation.
+	conns := c.transferConns()
+	mtr := &meter{cb: prog}
+	err = c.pushOnce(ctx, st, name, root, mtr, conns)
+	if err != nil && conns > 1 && c.retrySingle(ctx, "push", name, err) {
+		err = c.pushOnce(ctx, st, name, root, mtr, 1)
+	}
+	return mtr.stats(), err
+}
+
+// pushOnce runs one push attempt with the given connection count.
+func (c *Client) pushOnce(ctx context.Context, st *amber.Store, name string, root key.Key, mtr *meter, conns int) error {
 	stream, stop, err := c.openStream(ctx)
 	if err != nil {
-		return XferStats{}, fmt.Errorf("amberclient: push %q: %w", name, err)
+		return fmt.Errorf("amberclient: push %q: %w", name, err)
 	}
 	defer stop()
 	defer CloseStream(stream)
 
 	// A QUIC stream is invisible to the server until data flows, so the
-	// request goes out before any read. DataConns is omitted (0): the
-	// server answers with plain TWants rounds, no TAccept/token detour.
+	// request goes out before any read. DataConns > 0 makes a sharding
+	// server answer TAccept with a transfer token before its want rounds;
+	// runSenders handles both that and the plain single-channel reply.
 	req := protocol.Msg{Type: protocol.TPush, Name: name, Root: root[:]}
-	if err := protocol.WriteMsg(stream, req); err != nil {
-		return XferStats{}, fmt.Errorf("amberclient: push %q: %w", name, err)
+	if conns > 1 {
+		req.DataConns = conns - 1
 	}
-	mtr := &meter{cb: prog}
-	if err := wantsync.Send(stream, st.Objects(), mtr); err != nil {
-		return mtr.stats(), fmt.Errorf("amberclient: push %q: %w", name, err)
+	if err := protocol.WriteMsg(stream, req); err != nil {
+		return fmt.Errorf("amberclient: push %q: %w", name, err)
+	}
+	if err := c.runSenders(ctx, stream, st, mtr, conns); err != nil {
+		return fmt.Errorf("amberclient: push %q: %w", name, err)
 	}
 	m, err := protocol.ReadMsg(stream)
 	if err != nil {
-		return mtr.stats(), fmt.Errorf("amberclient: push %q: read commit: %w", name, err)
+		return fmt.Errorf("amberclient: push %q: read commit: %w", name, err)
 	}
 	switch m.Type {
 	case protocol.TOK:
 	case protocol.TErr:
-		return mtr.stats(), fmt.Errorf("amberclient: push %q: %w", name, protocol.RemoteFromMsg(m))
+		return fmt.Errorf("amberclient: push %q: %w", name, protocol.RemoteFromMsg(m))
 	default:
-		return mtr.stats(), fmt.Errorf("amberclient: push %q: %w: type %d, want TOK", name, protocol.ErrProtocol, m.Type)
+		return fmt.Errorf("amberclient: push %q: %w: type %d, want TOK", name, protocol.ErrProtocol, m.Type)
 	}
 	c.log.Debug("amberclient push committed", "ref", name, "root", root.String())
-	return mtr.stats(), nil
+	return nil
 }
 
 // Pull fetches the remote ref name and every object below it that st is
@@ -206,52 +306,82 @@ func (c *Client) PullWithProgress(ctx context.Context, st *amber.Store, name str
 	if err := reference.ValidateName(name); err != nil {
 		return key.Key{}, XferStats{}, fmt.Errorf("amberclient: pull: %w", err)
 	}
+	// One meter across both attempts: the want loop resumes where a failed
+	// sharded attempt stopped, so counters stay monotonic for the callback
+	// and the stats cover the whole operation.
+	conns := c.transferConns()
+	mtr := &meter{cb: prog}
+	root, err := c.pullOnce(ctx, st, name, mtr, conns)
+	if err != nil && conns > 1 && c.retrySingle(ctx, "pull", name, err) {
+		root, err = c.pullOnce(ctx, st, name, mtr, 1)
+	}
+	return root, mtr.stats(), err
+}
+
+// pullOnce runs one pull attempt with the given connection count.
+func (c *Client) pullOnce(ctx context.Context, st *amber.Store, name string, mtr *meter, conns int) (key.Key, error) {
 	stream, stop, err := c.openStream(ctx)
 	if err != nil {
-		return key.Key{}, XferStats{}, fmt.Errorf("amberclient: pull %q: %w", name, err)
+		return key.Key{}, fmt.Errorf("amberclient: pull %q: %w", name, err)
 	}
 	defer stop()
 	defer CloseStream(stream)
 
-	if err := protocol.WriteMsg(stream, protocol.Msg{Type: protocol.TPull, Name: name}); err != nil {
-		return key.Key{}, XferStats{}, fmt.Errorf("amberclient: pull %q: %w", name, err)
+	req := protocol.Msg{Type: protocol.TPull, Name: name}
+	if conns > 1 {
+		req.DataConns = conns - 1
+	}
+	if err := protocol.WriteMsg(stream, req); err != nil {
+		return key.Key{}, fmt.Errorf("amberclient: pull %q: %w", name, err)
 	}
 	m, err := protocol.ReadMsg(stream)
 	if err != nil {
-		return key.Key{}, XferStats{}, fmt.Errorf("amberclient: pull %q: read ref: %w", name, err)
+		return key.Key{}, fmt.Errorf("amberclient: pull %q: read ref: %w", name, err)
 	}
 	switch m.Type {
 	case protocol.TRef:
 	case protocol.TErr:
 		if m.Code == protocol.CodeUnknownRef {
-			return key.Key{}, XferStats{}, fmt.Errorf("amberclient: pull %q: %w", name, ErrRefNotFound)
+			return key.Key{}, fmt.Errorf("amberclient: pull %q: %w", name, ErrRefNotFound)
 		}
-		return key.Key{}, XferStats{}, fmt.Errorf("amberclient: pull %q: %w", name, protocol.RemoteFromMsg(m))
+		return key.Key{}, fmt.Errorf("amberclient: pull %q: %w", name, protocol.RemoteFromMsg(m))
 	default:
-		return key.Key{}, XferStats{}, fmt.Errorf("amberclient: pull %q: %w: type %d, want TRef", name, protocol.ErrProtocol, m.Type)
+		return key.Key{}, fmt.Errorf("amberclient: pull %q: %w: type %d, want TRef", name, protocol.ErrProtocol, m.Type)
 	}
 	rec, err := reference.Decode(m.Record)
 	if err != nil {
-		return key.Key{}, XferStats{}, fmt.Errorf("amberclient: pull %q: server ref record: %w", name, err)
+		return key.Key{}, fmt.Errorf("amberclient: pull %q: server ref record: %w", name, err)
 	}
 	root, err := key.Parse(rec.Key)
 	if err != nil {
-		return key.Key{}, XferStats{}, fmt.Errorf("amberclient: pull %q: server ref record key: %w", name, err)
+		return key.Key{}, fmt.Errorf("amberclient: pull %q: server ref record key: %w", name, err)
+	}
+
+	// A sharding-aware server put a transfer token in the ref frame; a
+	// server without support omits it and the transfer stays
+	// single-channel. Shard channels read under a watchdog — a shard the
+	// server never gathered would otherwise park the want loop forever.
+	channels := []io.ReadWriter{stream}
+	if len(m.Token) > 0 && conns > 1 {
+		extras, closeExtras := c.attachExtras(ctx, m.Token, m.DataPorts, conns-1)
+		defer closeExtras()
+		for _, ex := range extras {
+			channels = append(channels, &watchdogConn{Conn: ex, ctx: ctx})
+		}
 	}
 
 	// Receive verifies every object against its key (WriteParallel with
 	// Verify) and re-walks the frontier until CheckComplete prunes
 	// everything — returning nil IS the completeness proof for root's
 	// whole closure.
-	mtr := &meter{cb: prog}
-	if _, err := wantsync.Receive([]io.ReadWriter{stream}, st.Objects(), root, 0, mtr); err != nil {
-		return key.Key{}, mtr.stats(), fmt.Errorf("amberclient: pull %q: %w", name, err)
+	if _, err := wantsync.Receive(channels, st.Objects(), root, 0, mtr); err != nil {
+		return key.Key{}, fmt.Errorf("amberclient: pull %q: %w", name, err)
 	}
 	if err := st.PutRef(ctx, name, root); err != nil {
-		return key.Key{}, mtr.stats(), fmt.Errorf("amberclient: pull %q completed but writing local ref failed: %w", name, err)
+		return key.Key{}, fmt.Errorf("amberclient: pull %q completed but writing local ref failed: %w", name, err)
 	}
 	c.log.Debug("amberclient pull complete", "ref", name, "root", root.String())
-	return root, mtr.stats(), nil
+	return root, nil
 }
 
 // Refs lists every reference on the server.

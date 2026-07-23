@@ -52,6 +52,12 @@ func main() {
 				Name:  "no-announce",
 				Usage: "skip discovery export entirely (no relay, no mDNS, no pkarr; clients must dial --addr)",
 			},
+			&cli.IntFlag{
+				Name:    "data-endpoints",
+				Usage:   "extra UDP endpoints for sharded store transfers (0 disables; one socket caps well below fast links)",
+				EnvVars: []string{"JOBS_DATA_ENDPOINTS"},
+				Value:   3,
+			},
 			&cli.StringFlag{
 				Name:    "log-level",
 				Usage:   "debug, info, warn or error",
@@ -69,6 +75,7 @@ func main() {
 				Announce:       !c.Bool("no-announce"),
 				AdvertiseAddrs: c.StringSlice("advertise-addr"),
 				RelayURL:       c.String("relay"),
+				DataEndpoints:  c.Int("data-endpoints"),
 				Logger:         log,
 			}
 			if bind := c.String("bind"); bind != "" {

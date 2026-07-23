@@ -64,6 +64,7 @@ type remoteConfig struct {
 	platform  string
 	cpu       string
 	memory    string
+	conns     int
 }
 
 func remoteBuildCmd() *cli.Command {
@@ -83,6 +84,7 @@ func remoteBuildCmd() *cli.Command {
 			&cli.StringFlag{Name: "cpu", Usage: "raise the target build's CPU requirement (e.g. 2000m)", Destination: &cfg.cpu},
 			&cli.StringFlag{Name: "memory", Usage: "raise the target build's memory requirement (e.g. 4Gi)", Destination: &cfg.memory},
 			&cli.BoolFlag{Name: "no-logs", Usage: "do not stream the output of running build steps"},
+			&cli.IntFlag{Name: "conns", Value: 4, Usage: "parallel connections for the push/pull transfers (1-16; 1 disables sharding)", Destination: &cfg.conns},
 		},
 		Action: cfg.run,
 	}
@@ -123,8 +125,10 @@ func (cfg *remoteConfig) run(c *cli.Context) error {
 		return err
 	}
 
+	// max(1, …): an explicit --conns 0 means "off", never the library's
+	// 0-means-default (which would silently shard 4-way).
 	ac, err := amberclient.Dial(ctx, amberclient.Options{
-		EndpointID: cfg.server, Addrs: addrs, ALPN: alpnAmberAdmin,
+		EndpointID: cfg.server, Addrs: addrs, ALPN: alpnAmberAdmin, Conns: max(1, cfg.conns),
 	})
 	if err != nil {
 		return err

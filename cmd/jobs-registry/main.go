@@ -67,6 +67,12 @@ func main() {
 				Usage:   "do not bake the platform shell (/bin/sh, /jobs/shell) into images; script entrypoints then need no shell",
 				EnvVars: []string{"JOBS_REGISTRY_NO_SHELL"},
 			},
+			&cli.IntFlag{
+				Name:    "sync-conns",
+				Usage:   "parallel connections per store transfer (1-16; 1 disables sharding)",
+				EnvVars: []string{"JOBS_SYNC_CONNS"},
+				Value:   4,
+			},
 			&cli.StringFlag{
 				Name:    "log-level",
 				Usage:   "debug, info, warn or error",
@@ -89,6 +95,7 @@ func main() {
 				CacheTTL:        c.Duration("cache-ttl"),
 				DefaultPlatform: c.String("default-platform"),
 				NoShell:         c.Bool("no-shell"),
+				SyncConns:       max(1, c.Int("sync-conns")),
 				Logger:          log,
 			})
 		},
