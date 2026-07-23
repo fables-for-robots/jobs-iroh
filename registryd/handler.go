@@ -5,12 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/fables-for-robots/amber-store-core/key"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 )
 
@@ -88,31 +90,58 @@ func (r *registry) serveManifest(w http.ResponseWriter, req *http.Request, ref s
 		return
 	}
 
-	// Two rounds: a torn first round means the sweep expired a blob between
-	// imageFor's completeness check and the read — the second imageFor sees
-	// the incomplete record and reassembles.
+	r.log.Info("image requested", "k", k.String(), "method", req.Method, "remote", req.RemoteAddr)
+	start := time.Now()
+	b, rec, assembled, err := r.manifestFor(req.Context(), k)
+	elapsed := time.Since(start).Round(time.Millisecond)
+	if err != nil {
+		switch {
+		case req.Context().Err() != nil || r.runCtx.Err() != nil ||
+			errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded):
+			// The client departed (or the daemon is shutting down) while the
+			// singleflighted assembly keeps running — nothing failed here.
+			// Classified by context state, not error identity: a cancelled
+			// pull surfaces as a stream-deadline error, and ensureRef's %v
+			// wrapping strips errors.Is-ability either way.
+			r.log.Debug("image request abandoned", "k", k.String(), "elapsed", elapsed, "error", err)
+		case errors.Is(err, errNotFound):
+			// An unknown build key is an ordinary 404, not a daemon fault.
+			r.log.Info("image request failed", "k", k.String(), "elapsed", elapsed, "error", err)
+		default:
+			r.log.Warn("image request failed", "k", k.String(), "elapsed", elapsed, "error", err)
+		}
+		r.mapError(w, req, err)
+		return
+	}
+	r.touchRecord(rec)
+	r.writeManifest(w, req, b, rec.MediaType, rec.Manifest)
+	r.log.Info("image served", "k", k.String(), "cached", !assembled, "elapsed", elapsed)
+}
+
+// manifestFor resolves K to its manifest bytes, in two rounds: a torn first
+// round means the sweep expired a blob between imageFor's completeness check
+// and the read — the second imageFor sees the incomplete record and
+// reassembles. assembled reports whether serving took a (re)assembly rather
+// than the intact cache.
+func (r *registry) manifestFor(ctx context.Context, k key.Key) (b []byte, rec imageRecord, assembled bool, err error) {
 	var lastErr error
 	for range 2 {
-		rec, err := r.imageFor(req.Context(), k)
+		rec, assembled, err = r.imageFor(ctx, k)
 		if err != nil {
-			r.mapError(w, req, err)
-			return
+			return nil, imageRecord{}, assembled, err
 		}
 		d, err := v1.NewHash(rec.Manifest)
 		if err != nil {
-			r.mapError(w, req, err)
-			return
+			return nil, imageRecord{}, assembled, err
 		}
-		b, err := r.blobs.get(d)
+		b, err = r.blobs.get(d)
 		if err != nil {
 			lastErr = fmt.Errorf("manifest blob vanished: %w", err)
 			continue
 		}
-		r.touchRecord(rec)
-		r.writeManifest(w, req, b, rec.MediaType, rec.Manifest)
-		return
+		return b, rec, assembled, nil
 	}
-	r.mapError(w, req, lastErr)
+	return nil, imageRecord{}, true, lastErr
 }
 
 // serveManifestByDigest serves a manifest by digest — the second request of
@@ -121,6 +150,7 @@ func (r *registry) serveManifest(w http.ResponseWriter, req *http.Request, ref s
 // are multi-GB streams served by the blobs route, not JSON to buffer). An
 // expired manifest is reassembled from its record.
 func (r *registry) serveManifestByDigest(w http.ResponseWriter, req *http.Request, ref string) {
+	start := time.Now()
 	d, err := v1.NewHash(ref)
 	if err != nil {
 		r.writeError(w, http.StatusBadRequest, "DIGEST_INVALID", err.Error())
@@ -144,6 +174,8 @@ func (r *registry) serveManifestByDigest(w http.ResponseWriter, req *http.Reques
 	}
 	r.touchRecord(rec)
 	r.writeManifest(w, req, b, rec.MediaType, d.String())
+	r.log.Info("manifest served", "k", rec.K, "digest", d.String(), "method", req.Method,
+		"elapsed", time.Since(start).Round(time.Millisecond))
 }
 
 func (r *registry) writeManifest(w http.ResponseWriter, req *http.Request, b []byte, mediaType, digest string) {
@@ -157,18 +189,19 @@ func (r *registry) writeManifest(w http.ResponseWriter, req *http.Request, b []b
 }
 
 func (r *registry) serveBlob(w http.ResponseWriter, req *http.Request, digest string) {
+	start := time.Now()
 	d, err := v1.NewHash(digest)
 	if err != nil {
 		r.writeError(w, http.StatusBadRequest, "DIGEST_INVALID", err.Error())
 		return
 	}
-	f, _, err := r.blobs.open(d)
+	f, size, err := r.blobs.open(d)
 	if err != nil {
 		if !r.recoverDigest(req.Context(), d) {
 			r.writeError(w, http.StatusNotFound, "BLOB_UNKNOWN", "no blob with digest "+digest)
 			return
 		}
-		if f, _, err = r.blobs.open(d); err != nil {
+		if f, size, err = r.blobs.open(d); err != nil {
 			r.mapError(w, req, err)
 			return
 		}
@@ -180,7 +213,53 @@ func (r *registry) serveBlob(w http.ResponseWriter, req *http.Request, digest st
 	// Zero modtime: mtime is our last-read clock, not a content time, so it
 	// must not drive Last-Modified/If-Modified-Since. ServeContent still
 	// handles HEAD, Content-Length and Range.
-	http.ServeContent(w, req, "", time.Time{}, f)
+	sw := &statusWriter{ResponseWriter: w}
+	http.ServeContent(sw, req, "", time.Time{}, f)
+	// status and sent make the line honest: ServeContent reports failures
+	// (416, a client that dropped mid-layer) only through the writer, and
+	// elapsed spans the client-paced body transfer.
+	r.log.Info("blob served", "digest", d.String(), "status", sw.status, "sent", sw.bytes,
+		"size", size, "method", req.Method, "elapsed", time.Since(start).Round(time.Millisecond))
+}
+
+// statusWriter records the status code and body bytes actually sent, for
+// completion logs. ReadFrom forwards to the underlying writer so ServeContent
+// keeps its sendfile path for multi-GB layer blobs.
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+	bytes  int64
+}
+
+func (w *statusWriter) WriteHeader(code int) {
+	if w.status == 0 {
+		w.status = code
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *statusWriter) Write(b []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	n, err := w.ResponseWriter.Write(b)
+	w.bytes += int64(n)
+	return n, err
+}
+
+func (w *statusWriter) ReadFrom(src io.Reader) (int64, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	var n int64
+	var err error
+	if rf, ok := w.ResponseWriter.(io.ReaderFrom); ok {
+		n, err = rf.ReadFrom(src)
+	} else {
+		n, err = io.Copy(w.ResponseWriter, src)
+	}
+	w.bytes += n
+	return n, err
 }
 
 // recoverDigest reassembles the image whose manifest references d after the
@@ -197,7 +276,7 @@ func (r *registry) recoverDigest(reqCtx context.Context, d v1.Hash) bool {
 	if !ok {
 		return false
 	}
-	if _, err := r.imageFor(reqCtx, k); err != nil {
+	if _, _, err := r.imageFor(reqCtx, k); err != nil {
 		r.log.Warn("blob recovery failed", "digest", d.String(), "k", rec.K, "error", err)
 		return false
 	}

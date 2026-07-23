@@ -32,16 +32,17 @@ type imageRecord struct {
 	CreatedNs int64    `json:"createdNs"`
 }
 
-// imageFor returns a servable record for K: the cached one when every blob is
-// still present, otherwise a (re)assembly. Assembly is singleflighted per K
-// and runs under the daemon context, so a departing HTTP client neither
-// duplicates nor cancels the work its neighbours are waiting on.
-func (r *registry) imageFor(reqCtx context.Context, k key.Key) (imageRecord, error) {
+// imageFor returns a servable record for K, plus whether it had to
+// (re)assemble it — false means the intact cache answered. Assembly is
+// singleflighted per K and runs under the daemon context, so a departing HTTP
+// client neither duplicates nor cancels the work its neighbours are waiting
+// on.
+func (r *registry) imageFor(reqCtx context.Context, k key.Key) (imageRecord, bool, error) {
 	if rec, ok := r.readRecord(k.String()); ok && r.recordComplete(rec) {
-		return rec, nil
+		return rec, false, nil
 	}
 	if r.runCtx.Err() != nil {
-		return imageRecord{}, fmt.Errorf("%w: registry shutting down", errUpstream)
+		return imageRecord{}, false, fmt.Errorf("%w: registry shutting down", errUpstream)
 	}
 	ch := r.group.DoChan("assemble:"+k.String(), func() (any, error) {
 		// Tracked so Run can wait assemblies out before closing the store.
@@ -50,22 +51,32 @@ func (r *registry) imageFor(reqCtx context.Context, k key.Key) (imageRecord, err
 		// goroutine-startup scale.)
 		r.assemblies.Add(1)
 		defer r.assemblies.Done()
-		return r.assembleAndCache(r.runCtx, k)
+		start := time.Now()
+		rec, err := r.assembleAndCache(r.runCtx, k)
+		if err != nil {
+			// Detail line only: request-level outcome (and Warn severity,
+			// where deserved — an unknown K is an ordinary 404) is logged
+			// once per waiter in serveManifest.
+			r.log.Debug("image assembly failed", "k", k.String(),
+				"elapsed", time.Since(start).Round(time.Millisecond), "error", err)
+		}
+		return rec, err
 	})
 	select {
 	case res := <-ch:
 		if res.Err != nil {
-			return imageRecord{}, res.Err
+			return imageRecord{}, true, res.Err
 		}
-		return res.Val.(imageRecord), nil
+		return res.Val.(imageRecord), true, nil
 	case <-reqCtx.Done():
-		return imageRecord{}, reqCtx.Err()
+		return imageRecord{}, true, reqCtx.Err()
 	}
 }
 
 // assembleAndCache resolves build K (syncing from the jobs-server as needed),
 // assembles its two-layer OCI image and writes every blob plus the record.
 func (r *registry) assembleAndCache(ctx context.Context, k key.Key) (imageRecord, error) {
+	start := time.Now()
 	var fHint key.Key
 	if rec, ok := r.readRecord(k.String()); ok {
 		fHint, _ = parseHexKey(rec.F)
@@ -143,7 +154,8 @@ func (r *registry) assembleAndCache(ctx context.Context, k key.Key) (imageRecord
 		return imageRecord{}, err
 	}
 	r.log.Info("image assembled", "k", k.String(), "f", res.f.String(),
-		"manifest", rec.Manifest, "deps", len(res.deps), "platform", res.platform)
+		"manifest", rec.Manifest, "deps", len(res.deps), "platform", res.platform,
+		"elapsed", time.Since(start).Round(time.Millisecond))
 	return rec, nil
 }
 

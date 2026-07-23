@@ -3,7 +3,9 @@ package registryd
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/fables-for-robots/amber-store-core/key"
 	"github.com/fables-for-robots/amber-store-iroh/protocol"
@@ -20,22 +22,47 @@ import (
 type reconnSync struct {
 	opts amberclient.Options
 	st   *amber.Store
+	log  *slog.Logger
 
 	mu  sync.Mutex
 	cur *amberclient.Client
 }
 
-func newReconnSync(opts amberclient.Options, st *amber.Store) *reconnSync {
-	return &reconnSync{opts: opts, st: st}
+func newReconnSync(opts amberclient.Options, st *amber.Store, log *slog.Logger) *reconnSync {
+	return &reconnSync{opts: opts, st: st, log: log}
 }
 
 func (r *reconnSync) Pull(ctx context.Context, name string) (key.Key, error) {
+	start := time.Now()
 	var root key.Key
+	var stats amberclient.XferStats
 	err := r.do(ctx, func(c *amberclient.Client) error {
 		var err error
-		root, err = c.Pull(ctx, r.st, name)
+		var st amberclient.XferStats
+		root, st, err = c.PullWithProgress(ctx, r.st, name, nil)
+		// Accumulate across a redial retry: the want loop resumes where the
+		// dropped attempt stopped, so the session's transfer is the sum and
+		// stays consistent with elapsed, which spans both attempts.
+		stats.Objects += st.Objects
+		stats.Bytes += st.Bytes
 		return err
 	})
+	elapsed := time.Since(start).Round(time.Millisecond)
+	switch {
+	case err == nil:
+		r.log.Info("amber pull", "ref", name,
+			"objects", stats.Objects, "bytes", stats.Bytes, "elapsed", elapsed)
+	case errors.Is(err, amberclient.ErrRefNotFound):
+		// An absent ref is a normal answer (optional deps/shell/definition
+		// refs), not a transfer failure.
+		r.log.Debug("amber pull: ref not on server", "ref", name, "elapsed", elapsed)
+	case ctx.Err() != nil:
+		// Cancellation surfaces as a stream-deadline error, not ctx.Err —
+		// classify by context state so shutdown does not read as failure.
+		r.log.Debug("amber pull cancelled", "ref", name, "elapsed", elapsed)
+	default:
+		r.log.Warn("amber pull failed", "ref", name, "elapsed", elapsed, "error", err)
+	}
 	return root, err
 }
 
@@ -71,6 +98,7 @@ func (r *reconnSync) do(ctx context.Context, op func(*amberclient.Client) error)
 		if attempt >= 1 {
 			return err
 		}
+		r.log.Warn("amber sync connection dropped; redialing", "error", err)
 	}
 }
 

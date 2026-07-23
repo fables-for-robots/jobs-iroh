@@ -142,13 +142,14 @@ func Run(ctx context.Context, o Options) error {
 	}
 	defer st.Close()
 
+	syncLog := log.With("component", "amber-sync")
 	sc := newReconnSync(amberclient.Options{
 		EndpointID: o.ServerID,
 		Addrs:      o.Addrs,
 		ALPN:       alpnAmberAdmin,
 		BindAddr:   o.BindAddr,
-		Logger:     log.With("component", "amber-sync"),
-	}, st)
+		Logger:     syncLog,
+	}, st, syncLog)
 	defer sc.Close()
 
 	r := &registry{
