@@ -132,24 +132,3 @@ func TestAmberRefListOverAdminALPN(t *testing.T) {
 		t.Fatalf("ref %q not in listing (%d refs)", "smoke", len(msg.Refs))
 	}
 }
-
-func TestBuildALPNRefusesUntilWired(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
-	defer cancel()
-
-	_, dial := startServer(t, ctx)
-	conn := dial(ALPNBuild)
-
-	// The placeholder handler closes the connection; opening a stream and
-	// reading from it must fail promptly rather than hang.
-	sc, err := conn.OpenStreamConn(ctx)
-	if err != nil {
-		return // connection already closed — fine
-	}
-	defer sc.Close()
-	sc.SetReadDeadline(time.Now().Add(10 * time.Second))
-	buf := make([]byte, 1)
-	if _, err := sc.Read(buf); err == nil {
-		t.Fatal("expected read to fail on the unwired build ALPN")
-	}
-}

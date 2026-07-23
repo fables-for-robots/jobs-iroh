@@ -1,10 +1,12 @@
 // Package clientcli wires the jobs-client command surface: hermetic LOCAL
 // builds (`build`) and build-then-execute (`run`) over the embedded
-// amber-store-core store under --data-dir. It is the jobs-iroh port of jobs'
-// internal/jobscli local path with the store seam swapped (methods on
-// *amber.Store) and the signing/grant plumbing deleted — local refs are plain
-// unsigned refstore records. The remote commands (remote build, status,
-// admin) arrive with the server milestone.
+// amber-store-core store under --data-dir, plus the remote surface against a
+// jobs-server — `remote-build` (push source, submit, watch, pull outputs
+// home), `watch`, and the thin `admin` frame calls (stats/fleet/requests/
+// refs). It is the jobs-iroh port of jobs' internal/jobscli with the store
+// seam swapped (methods on *amber.Store) and the signing/grant plumbing
+// deleted — refs are plain unsigned refstore records; transport identity is
+// the server's iroh endpoint key.
 package clientcli
 
 import (
@@ -27,10 +29,13 @@ func signalCtx(parent context.Context) (context.Context, context.CancelFunc) {
 func App() *cli.App {
 	return &cli.App{
 		Name:  "jobs-client",
-		Usage: "jobs-iroh end-user CLI: hermetic local builds over the embedded store",
+		Usage: "jobs-iroh end-user CLI: hermetic local builds and remote builds against a jobs-server",
 		Commands: []*cli.Command{
 			buildCmd(),
 			runCmd(),
+			remoteBuildCmd(),
+			watchCmd(),
+			adminCmd(),
 		},
 	}
 }

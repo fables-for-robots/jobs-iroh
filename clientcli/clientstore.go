@@ -44,6 +44,12 @@ type clientStore struct {
 // own flock is non-blocking and would fail instead of waiting) and opens the
 // embedded store. Callers must defer Close.
 func openClientStore(dataDir string, mode lockMode) (*clientStore, error) {
+	// Absolutize: the fetcher cache under this dir becomes sandbox exec
+	// targets, and the sandbox child chdirs before exec'ing — a cwd-relative
+	// --data-dir would make those command paths resolve wrong (ENOENT).
+	if abs, err := filepath.Abs(dataDir); err == nil {
+		dataDir = abs
+	}
 	cacheDir := filepath.Join(dataDir, "cache")
 	if err := os.MkdirAll(cacheDir, 0o755); err != nil {
 		return nil, fmt.Errorf("create cache dir: %w", err)

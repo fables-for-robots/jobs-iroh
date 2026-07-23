@@ -20,11 +20,14 @@ import (
 
 	ambserver "github.com/fables-for-robots/amber-store-iroh/server"
 	natsserver "github.com/nats-io/nats-server/v2/server"
+	"github.com/nats-io/nats.go"
 	"github.com/tmc/go-iroh/iroh"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/fables-for-robots/jobs-iroh/amber"
+	"github.com/fables-for-robots/jobs-iroh/bootstrap"
 	"github.com/fables-for-robots/jobs-iroh/natsiroh"
+	"github.com/fables-for-robots/jobs-iroh/sched"
 )
 
 // The five service ALPNs of a jobs-server endpoint.
@@ -61,6 +64,7 @@ type Server struct {
 	Endpoint *iroh.Endpoint
 	Store    *amber.Store
 	NATS     *natsserver.Server
+	Sched    *sched.Sched
 }
 
 // Run starts the server and blocks until ctx is cancelled, then shuts down
@@ -73,6 +77,11 @@ func Run(ctx context.Context, opts Options) error {
 	}
 	if opts.DataDir == "" {
 		return errors.New("serve: DataDir is required")
+	}
+	// Absolutize so logged paths and JetStream/store state never depend on
+	// the launch cwd (mirrors runnerd/clientcli).
+	if abs, err := filepath.Abs(opts.DataDir); err == nil {
+		opts.DataDir = abs
 	}
 	if err := os.MkdirAll(opts.DataDir, 0o700); err != nil {
 		return fmt.Errorf("create data dir: %w", err)
@@ -88,6 +97,14 @@ func Run(ctx context.Context, opts Options) error {
 		return fmt.Errorf("open store: %w", err)
 	}
 	defer store.Close()
+
+	// Self-seed the bootstrap floor (shell:<p>, fetcher:*:<p>) for every
+	// embedded platform: runners own no seeds — they pull fetchers and the
+	// shell from this store, so a fresh server must publish them before the
+	// first job lands.
+	if err := bootstrap.Seed(ctx, store, bootstrap.SeededPlatforms(), log.With("component", "bootstrap")); err != nil {
+		return fmt.Errorf("seed bootstrap artifacts: %w", err)
+	}
 
 	ns, err := natsserver.NewServer(&natsserver.Options{
 		ServerName: "jobs-server",
@@ -105,6 +122,24 @@ func Run(ctx context.Context, opts Options) error {
 		return errors.New("embedded nats server not ready")
 	}
 
+	// The scheduler rides an in-process NATS connection — no TCP listener
+	// exists; runners reach the same server through the iroh tunnel.
+	nc, err := nats.Connect("", nats.InProcessServer(ns))
+	if err != nil {
+		return fmt.Errorf("in-process nats connect: %w", err)
+	}
+	defer nc.Close()
+
+	sd, err := sched.New(ctx, sched.Options{
+		Store: store,
+		NC:    nc,
+		Log:   log.With("component", "sched"),
+	})
+	if err != nil {
+		return fmt.Errorf("start scheduler: %w", err)
+	}
+	defer sd.Close()
+
 	bindOpts := []iroh.Option{iroh.WithSecretKey(sk)}
 	if opts.BindAddr.IsValid() {
 		bindOpts = append(bindOpts, iroh.WithBindAddr(opts.BindAddr))
@@ -117,12 +152,16 @@ func Run(ctx context.Context, opts Options) error {
 
 	amberSrv := ambserver.New(log.With("component", "amber"), store.Objects(), store.RefStore())
 
+	storeDir := filepath.Join(opts.DataDir, "store")
+	buildSvc := &apiService{log: log.With("service", "build"), sd: sd, store: store, storeDir: storeDir}
+	adminSvc := &apiService{log: log.With("service", "admin"), sd: sd, store: store, storeDir: storeDir, admin: true}
+
 	handlers := map[string]iroh.ProtocolHandler{
 		ALPNRunnerNATS:  logConns(log, "runner-nats", natsiroh.Handler(ns)),
 		ALPNRunnerAmber: logConns(log, "runner-amber", amberConnHandler(amberSrv)),
 		ALPNAmberAdmin:  logConns(log, "amber-admin", amberConnHandler(amberSrv)),
-		ALPNBuild:       logConns(log, "build", unavailableHandler()),
-		ALPNAdmin:       logConns(log, "admin", unavailableHandler()),
+		ALPNBuild:       logConns(log, "build", buildSvc.handler()),
+		ALPNAdmin:       logConns(log, "admin", adminSvc.handler()),
 	}
 	router, err := iroh.NewRouter(ep, handlers, &iroh.RouterConfig{Logger: log})
 	if err != nil {
@@ -135,7 +174,7 @@ func Run(ctx context.Context, opts Options) error {
 		"data-dir", opts.DataDir,
 	)
 	if opts.Ready != nil {
-		opts.Ready(&Server{Endpoint: ep, Store: store, NATS: ns})
+		opts.Ready(&Server{Endpoint: ep, Store: store, NATS: ns, Sched: sd})
 	}
 
 	<-ctx.Done()
@@ -179,13 +218,5 @@ func logConns(log *slog.Logger, service string, h iroh.ProtocolHandler) iroh.Pro
 		err := h.Accept(ctx, conn)
 		l.Info("disconnected", "error", err)
 		return err
-	})
-}
-
-// unavailableHandler closes connections to ALPNs whose protocol layer is not
-// wired yet (build/admin land with the scheduler milestone).
-func unavailableHandler() iroh.ProtocolHandler {
-	return iroh.ProtocolHandlerFunc(func(ctx context.Context, conn *iroh.Conn) error {
-		return conn.CloseWithError(1, "service not available yet")
 	})
 }
