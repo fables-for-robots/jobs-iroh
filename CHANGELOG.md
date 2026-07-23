@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.3.0 — 2026-07-23
 
 - **Sandbox remounts no longer fail on hardened mounts.** The read-only (and
   strictatime) `MS_REMOUNT|MS_BIND` pass now repeats the flags the bind
