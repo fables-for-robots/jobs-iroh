@@ -57,9 +57,13 @@ nix develop -c go build ./...
 
 ## Binaries & commands
 
-- `jobs-server --data-dir <dir> [--bind host:port] [--log-level …]` — one iroh
+- `jobs-server --data-dir <dir> [--bind host:port] [--relay url]
+  [--advertise-addr ip[:port]]… [--no-announce] [--log-level …]` — one iroh
   endpoint, five ALPNs, embedded NATS + amber store. Prints its endpoint ID on
-  startup.
+  startup and announces it for discovery: direct interface addresses
+  (auto-detected unless --advertise-addr) over mDNS on the LAN and via pkarr
+  over the internet, nearest relay as fallback (relay connect is best-effort —
+  an offline host still starts).
 - `jobs-runner --server <endpoint-id> [--addr host:port]… [--size c1-m2]
   [--name …] [--data-dir …]` — dials the server twice (NATS tunnel + amber
   sync), pulls work-queue jobs for every fitting class.

@@ -17,6 +17,7 @@ import (
 	"github.com/tmc/go-iroh/iroh/mdns"
 	irohkey "github.com/tmc/go-iroh/key"
 	"github.com/tmc/go-iroh/netaddr"
+	"github.com/tmc/go-iroh/relay"
 )
 
 // bindAndResolve binds the client endpoint and produces the candidate
@@ -61,9 +62,14 @@ func bindAndResolve(ctx context.Context, id irohkey.EndpointID, addrs []string, 
 	services.AddResolver(pkarrResolver)
 	services.AddResolver(iroh.N0DNSAddressLookup(nil))
 
+	// Relays must be enabled explicitly: this go-iroh build defaults to
+	// relay.ModeDisabled, under which the relay candidate in the server's
+	// published record can never be dialed and the relay fallback below
+	// would be dead weight.
 	ep, err := iroh.Bind(ctx, append(bindOpts,
 		iroh.WithSecretKey(sk),
 		iroh.WithAddressLookup(&services),
+		iroh.WithRelayMode(relay.ModeDefault()),
 	)...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("amberclient: bind: %w", err)

@@ -40,6 +40,19 @@ func main() {
 				EnvVars: []string{"JOBS_BIND"},
 			},
 			&cli.StringFlag{
+				Name:    "relay",
+				Usage:   "relay server URL to use as the fallback path (default: nearest of the built-in relays)",
+				EnvVars: []string{"JOBS_RELAY"},
+			},
+			&cli.StringSliceFlag{
+				Name:  "advertise-addr",
+				Usage: "direct address to advertise, ip or ip:port (repeatable; replaces interface auto-detection)",
+			},
+			&cli.BoolFlag{
+				Name:  "no-announce",
+				Usage: "skip discovery export entirely (no relay, no mDNS, no pkarr; clients must dial --addr)",
+			},
+			&cli.StringFlag{
 				Name:    "log-level",
 				Usage:   "debug, info, warn or error",
 				EnvVars: []string{"JOBS_LOG_LEVEL"},
@@ -52,8 +65,11 @@ func main() {
 				return err
 			}
 			opts := serve.Options{
-				DataDir: c.String("data-dir"),
-				Logger:  log,
+				DataDir:        c.String("data-dir"),
+				Announce:       !c.Bool("no-announce"),
+				AdvertiseAddrs: c.StringSlice("advertise-addr"),
+				RelayURL:       c.String("relay"),
+				Logger:         log,
 			}
 			if bind := c.String("bind"); bind != "" {
 				addr, err := netip.ParseAddrPort(bind)
