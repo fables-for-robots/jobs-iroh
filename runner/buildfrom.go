@@ -12,10 +12,14 @@ import (
 	"github.com/fables-for-robots/jobs-iroh/builddef"
 )
 
-// RunBuildFrom executes one build-from job (build-from design §3): pull build:K,
-// resolve the source content tree, splice the dir subtree into env/, normalize
-// the buildJobs override, assemble + ingest the F-tree, and publish
-// build-from:K → F. Hermetic, network-free, tagless, platform-independent.
+// RunBuildFrom executes one build-from job (build-from design §3;
+// sibling-sources design §3.2): pull build:K, resolve the source content
+// tree, normalize the buildJobs override against the build root, assemble +
+// ingest the F-tree, and publish build-from:K → F. For a legacy def the dir
+// subtree is spliced as env/ (byte-identical F to before); for a CtxWidened
+// def env/ is the WHOLE context tree and dir rides as an F-tree entry, so
+// the eval stages see siblings. Hermetic, network-free, tagless,
+// platform-independent.
 func RunBuildFrom(ctx context.Context, st *amber.Store, rw RefWriter, brc BuildRunCfg, k key.Key) Outcome {
 	if o := ensureBuildDef(ctx, st, k); o != nil {
 		return *o
@@ -24,22 +28,31 @@ func RunBuildFrom(ctx context.Context, st *amber.Store, rw RefWriter, brc BuildR
 	if out != nil {
 		return *out
 	}
+	if err := builddef.ValidateCtx(def.Ctx); err != nil {
+		return hard("resolving", err.Error(), 0)
+	}
 
 	contentTree, out := resolveSourceContentTree(ctx, st, def.Source)
 	if out != nil {
 		return *out
 	}
-	envKey, err := resolveSubtreeKey(ctx, st, contentTree, def.Dir)
+	// Both modes resolve the build root: legacy splices it as env/; widened
+	// validates dir exists and anchors the override comparison there.
+	buildRoot, err := resolveSubtreeKey(ctx, st, contentTree, def.Dir)
 	if err != nil {
 		return hard("resolving", "dir not found in source: "+err.Error(), 0)
 	}
 
-	override, rerr := resolveRecipeOverride(ctx, st, envKey, def.BuildFile, def.BuildJobs)
+	override, rerr := resolveRecipeOverride(ctx, st, buildRoot, def.BuildFile, def.BuildJobs)
 	if rerr != nil {
 		return hard("resolving", rerr.Error(), 0)
 	}
 
-	f, err := st.BuildFromTree(ctx, envKey, def.Params, def.Platform, override)
+	envKey, dirEntry := buildRoot, ""
+	if def.Ctx == builddef.CtxWidened {
+		envKey, dirEntry = contentTree, def.Dir
+	}
+	f, err := st.BuildFromTree(ctx, envKey, dirEntry, def.Params, def.Platform, override)
 	if err != nil {
 		return retryable("assembling", err)
 	}
@@ -60,15 +73,18 @@ func RunBuildFrom(ctx context.Context, st *amber.Store, rw RefWriter, brc BuildR
 }
 
 // resolveRecipeOverride computes the build-from override recipe: the bytes to
-// splice as the F-tree's top-level BUILD.jobs, or nil to leave env/BUILD.jobs as
-// the effective recipe. Shared by RunBuildFrom (server) and localBuildFrom (local)
-// so both compute an IDENTICAL F for the same environment (the cache-join
-// invariant). The effective recipe is the inline override if set, else
-// env/<buildFile> when buildFile != "" (which MUST exist — no silent fallback),
-// else env/BUILD.jobs. It is spliced only when it differs from env/BUILD.jobs
-// (absent counts as differing) — that omission is what makes equivalent builds
-// JOIN. buildJobs and a non-empty buildFile are mutually exclusive and rejected
-// earlier (recipe builtins / submit handler).
+// splice as the F-tree's top-level BUILD.jobs, or nil to leave the build
+// root's BUILD.jobs as the effective recipe. Shared by RunBuildFrom (server)
+// and localBuildFrom (local) so both compute an IDENTICAL F for the same
+// environment (the cache-join invariant). envKey is the BUILD ROOT subtree —
+// the dir subtree in both modes (a widened caller resolves it from the whole
+// context solely for this comparison; file reads here are build-root-relative
+// either way). The effective recipe is the inline override if set, else
+// <root>/<buildFile> when buildFile != "" (which MUST exist — no silent
+// fallback), else <root>/BUILD.jobs. It is spliced only when it differs from
+// <root>/BUILD.jobs (absent counts as differing) — that omission is what
+// makes equivalent builds JOIN. buildJobs and a non-empty buildFile are
+// mutually exclusive and rejected earlier (recipe builtins / submit handler).
 func resolveRecipeOverride(ctx context.Context, st *amber.Store, envKey key.Key, buildFile string, inline []byte) ([]byte, error) {
 	effective := inline
 	if len(effective) == 0 && buildFile != "" {

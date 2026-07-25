@@ -162,8 +162,8 @@ func TestPrepareDevelopBuildsDependencies(t *testing.T) {
 			t.Errorf("dep %s path %q not under /jobs/store", name, dp)
 		}
 	}
-	if spec.SourceDir != "env" {
-		t.Errorf("SourceDir should be 'env' (build-from tree's env/ subtree), got %q", spec.SourceDir)
+	if spec.SourceDir != "src" {
+		t.Errorf("SourceDir should be 'src' (the KP tree's covered source — sibling-sources §9), got %q", spec.SourceDir)
 	}
 	// Progress output must contain the build-from and pin steps.
 	progressOut := progressBuf.String()

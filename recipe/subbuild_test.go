@@ -14,7 +14,7 @@ func TestSubbuild_ConstructsTreeSourcedBuild(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sb := makeSubbuild("linux/amd64", root)
+	sb := makeSubbuild("linux/amd64", root, key.Key{})
 	v := callBuiltin(t, sb, []starlark.Tuple{{starlark.String("dir"), starlark.String("rust")}})
 	in, ok := v.(*Input)
 	if !ok {
@@ -47,7 +47,7 @@ func TestSubbuild_ConstructsTreeSourcedBuild(t *testing.T) {
 
 func TestSubbuild_RejectsNonDescendant(t *testing.T) {
 	root, _ := amber.FileKey([]byte("r"))
-	sb := makeSubbuild("linux/amd64", root)
+	sb := makeSubbuild("linux/amd64", root, key.Key{})
 	for _, bad := range []string{"", ".", "..", "/abs", "a/../b", "a//b", "a/."} {
 		_, err := starlark.Call(newThread(), sb, nil, []starlark.Tuple{{starlark.String("dir"), starlark.String(bad)}})
 		if err == nil {
@@ -57,7 +57,7 @@ func TestSubbuild_RejectsNonDescendant(t *testing.T) {
 }
 
 func TestSubbuild_UnavailableWhenNoSourceKey(t *testing.T) {
-	sb := makeSubbuild("linux/amd64", key.Key{})
+	sb := makeSubbuild("linux/amd64", key.Key{}, key.Key{})
 	_, err := starlark.Call(newThread(), sb, nil, []starlark.Tuple{{starlark.String("dir"), starlark.String("rust")}})
 	if err == nil {
 		t.Fatal("subbuild must error when source content key is unset")
@@ -66,7 +66,7 @@ func TestSubbuild_UnavailableWhenNoSourceKey(t *testing.T) {
 
 func TestSubbuild_BuildJobsOverride(t *testing.T) {
 	root, _ := amber.FileKey([]byte("r"))
-	sb := makeSubbuild("linux/amd64", root)
+	sb := makeSubbuild("linux/amd64", root, key.Key{})
 	v := callBuiltin(t, sb, []starlark.Tuple{
 		{starlark.String("dir"), starlark.String("rust")},
 		{starlark.String("build_jobs"), starlark.String("def build(): pass\n")},
@@ -82,7 +82,7 @@ func TestSubbuild_BuildJobsOverride(t *testing.T) {
 
 func TestSubbuild_buildFile(t *testing.T) {
 	root, _ := amber.FileKey([]byte("r"))
-	sb := makeSubbuild("linux/amd64", root)
+	sb := makeSubbuild("linux/amd64", root, key.Key{})
 	v := callBuiltin(t, sb, []starlark.Tuple{
 		{starlark.String("dir"), starlark.String("rust")},
 		{starlark.String("build_file"), starlark.String("server.jobs")},

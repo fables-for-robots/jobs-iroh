@@ -22,12 +22,14 @@ import (
 // signing plumbing; --tags-file (fetcher tag secrets) returns in a later
 // milestone when a credentialed fetcher needs it.
 type localConfig struct {
-	dataDir   string
-	source    string
-	dir       string
-	buildFile string
-	platform  string
-	shellRef  string
+	dataDir    string
+	source     string
+	dir        string
+	buildFile  string
+	platform   string
+	shellRef   string
+	sourceRoot string
+	noRepoRoot bool
 }
 
 // flags returns the shared flag set, destinations bound to cfg.
@@ -37,6 +39,8 @@ func (cfg *localConfig) flags() []cli.Flag {
 		&cli.StringFlag{Name: "source", Required: true, Usage: "source directory to ingest as the build source", Destination: &cfg.source},
 		&cli.StringFlag{Name: "dir", Usage: "build root within the source (where BUILD.jobs lives)", Destination: &cfg.dir},
 		&cli.StringFlag{Name: "build-file", Usage: "recipe path relative to dir (default BUILD.jobs)", Destination: &cfg.buildFile},
+		&cli.StringFlag{Name: "source-root", Usage: "explicit context root (--source must live under it); default: the git repo root above --source", Destination: &cfg.sourceRoot},
+		&cli.BoolFlag{Name: "no-repo-root", Usage: "disable the git-root context default (ingest --source itself)", Destination: &cfg.noRepoRoot},
 		&cli.StringFlag{Name: "platform", EnvVars: []string{"JOBS_PLATFORM"}, Value: runner.Platform(), Usage: "target platform, e.g. linux/amd64", Destination: &cfg.platform},
 		&cli.StringFlag{Name: "shell-ref", EnvVars: []string{"JOBS_SHELL_REF"}, Usage: "amber ref for the vendored shell artifact (default shell:<platform>)", Destination: &cfg.shellRef},
 		&cli.StringSliceFlag{Name: "param", Usage: "key=value build param (repeatable)"},
@@ -51,6 +55,18 @@ func (cfg *localConfig) effectiveShellRef() string {
 		return cfg.shellRef
 	}
 	return "shell:" + cfg.platform
+}
+
+// resolveContext applies the repo-root context default in place
+// (sibling-sources design §11.1) — must run before any ingest, and the rule
+// is identical on the remote path (the local↔remote F join depends on it).
+func (cfg *localConfig) resolveContext() error {
+	root, dir, err := resolveContextRoot(cfg.source, cfg.dir, cfg.sourceRoot, cfg.noRepoRoot)
+	if err != nil {
+		return err
+	}
+	cfg.source, cfg.dir = root, dir
+	return nil
 }
 
 // developConfig assembles the runner config shared by build and run. Secrets
@@ -130,6 +146,9 @@ func buildCmd() *cli.Command {
 // and the output tree key; the refs land in the embedded store under
 // <data-dir>/store.
 func (cfg *localConfig) runBuild(c *cli.Context) error {
+	if err := cfg.resolveContext(); err != nil {
+		return err
+	}
 	ctx, stop := signalCtx(c.Context)
 	defer stop()
 
@@ -194,6 +213,9 @@ func runCmd() *cli.Command {
 // the entrypoint's exit code through. Positional args are appended to the
 // entrypoint's args.
 func (cfg *localConfig) runRun(c *cli.Context) error {
+	if err := cfg.resolveContext(); err != nil {
+		return err
+	}
 	ctx, stop := signalCtx(c.Context)
 	defer stop()
 
@@ -253,6 +275,9 @@ func developCmd() *cli.Command {
 // the WHOLE interactive session — jobs' `jobs develop` contract: cs.Close
 // (flock release) runs only after RunDevelop returns.
 func (cfg *localConfig) runDevelop(c *cli.Context) error {
+	if err := cfg.resolveContext(); err != nil {
+		return err
+	}
 	ctx, stop := signalCtx(c.Context)
 	defer stop()
 

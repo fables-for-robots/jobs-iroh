@@ -126,6 +126,15 @@ func buildDirFiltered(dir string, m *amberignore.Matcher, emit fstree.Emit) (key
 		if !isDir && name == amberignore.FileName {
 			continue
 		}
+		// VCS metadata is never build source (sibling-sources design §11.1
+		// [INV]): .git — dir or worktree/submodule gitfile — is excluded
+		// unconditionally at every level. Without this, repo-root contexts
+		// would push packfiles (and config, which can carry credentials) into
+		// the CAS and every plugin sandbox, and F would churn on every git
+		// command (amber hashes mtimes; git status rewrites .git/index).
+		if name == ".git" {
+			continue
+		}
 		if m.Ignored(name, isDir) {
 			continue
 		}

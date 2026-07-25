@@ -68,6 +68,13 @@ type PinnedInput struct {
 // subset of Inputs. Caches are the build's persistent cache declarations
 // (build-cache design §4); omitempty keeps a cache-less Pinned byte-identical
 // to the pre-cache encoding.
+//
+// Sources/Dir/Generated carry the covered source closure of a widened-context
+// build (sibling-sources design §3.3): Sources is the sorted list of
+// root-relative covered paths, Dir the build dir within the context (sandbox
+// CWD), Generated the pin-synthesized files overlaid onto the covered tree
+// (root-relative path → content, ≤ GeneratedMaxBytes total). All omitempty so
+// legacy pins stay byte-identical.
 type Pinned struct {
 	Inputs      []PinnedInput     `cbor:"inputs"`
 	Env         map[string]string `cbor:"env"`
@@ -75,12 +82,21 @@ type Pinned struct {
 	RuntimeDeps [][]byte          `cbor:"runtimeDeps"`
 	Caches      []PinnedCache     `cbor:"caches,omitempty"`
 	Resources   *PinnedResources  `cbor:"resources,omitempty"`
+	Sources     []string          `cbor:"sources,omitempty"`
+	Dir         string            `cbor:"dir,omitempty"`
+	Generated   map[string][]byte `cbor:"generated,omitempty"`
 }
 
+// GeneratedMaxBytes caps the total inline size of Pinned.Generated (the
+// contract of the sibling-sources arc, design §7): pin hard-fails above it.
+const GeneratedMaxBytes = 1 << 20
+
 // PinnedResources is the recipe-declared CPU/RAM requirement carried in Pinned
-// (multi-job-runner design). Deterministic from F (it rides build-pinned:F), so
-// it never affects build identity or joins. A nil pointer (the common case)
-// encodes to nothing, keeping resource-less pins byte-identical to the
+// (multi-job-runner design). Deterministic from F (it rides build-pinned:F).
+// Note: since the sibling-sources arc, the pinned bytes are part of KP — a
+// resource change re-keys the buildrun memo (it always re-keyed F via the
+// recipe text, so this is no behavioral change). A nil pointer (the common
+// case) encodes to nothing, keeping resource-less pins byte-identical to the
 // pre-resources encoding.
 type PinnedResources struct {
 	CPUMilli int64 `cbor:"cpu_milli,omitempty"`

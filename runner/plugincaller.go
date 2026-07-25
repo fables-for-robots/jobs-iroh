@@ -49,11 +49,16 @@ var respDec = func() cbor.DecMode {
 // pluginRequest is the CBOR stdin payload (build.md §6): the call kwargs, the
 // in-sandbox path of the read-only source tree, and — when the recipe declared
 // resolution deps — their in-sandbox mount paths by name (resolution-deps
-// design §3.3). omitempty keeps dep-less requests byte-identical.
+// design §3.3). Dir is the build dir within the source tree (sibling-sources
+// design §9): for a widened build /jobs/source is the WHOLE context and Dir
+// tells the plugin where the consumer package lives; legacy builds omit it
+// (source root == build root). omitempty keeps old-shaped requests
+// byte-identical.
 type pluginRequest struct {
 	Call   map[string]any    `cbor:"call"`
 	Source string            `cbor:"source"`
 	Deps   map[string]string `cbor:"deps,omitempty"`
+	Dir    string            `cbor:"dir,omitempty"`
 }
 
 // SandboxedPluginCaller runs a plugin BINARY hermetically and exchanges CBOR over
@@ -83,6 +88,9 @@ type SandboxedPluginCaller struct {
 	// bind-mounted read-only at /jobs/deps/<name> and announced to the plugin
 	// via the request's deps map (resolution-deps design §3.3).
 	DepDirs map[string]string
+	// Dir is the build dir within the mounted source tree (sibling-sources
+	// design §9); "" for legacy narrow builds.
+	Dir string
 }
 
 var _ recipe.PluginCaller = SandboxedPluginCaller{}
@@ -111,7 +119,7 @@ func (p SandboxedPluginCaller) Call(kwargs map[string]any) (any, error) {
 		}
 	}
 
-	reqBytes, err := cbor.Marshal(pluginRequest{Call: kwargs, Source: pluginSourceDir, Deps: reqDeps})
+	reqBytes, err := cbor.Marshal(pluginRequest{Call: kwargs, Source: pluginSourceDir, Deps: reqDeps, Dir: p.Dir})
 	if err != nil {
 		return nil, fmt.Errorf("encode plugin request: %w", err)
 	}

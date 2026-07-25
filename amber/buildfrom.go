@@ -12,12 +12,14 @@ import (
 )
 
 // BuildFromTree assembles the build-from environment tree (build-from design
-// §4): an env/ directory referencing the source subtree by key, plus params and
-// platform files, and (only when override != nil) a top-level BUILD.jobs
-// override. Only the new directory + small file objects are emitted; env/ is
-// shared by key, never re-ingested. Deterministic: the same inputs yield a
-// byte-identical F.
-func (s *Store) BuildFromTree(ctx context.Context, env key.Key, params []byte, platform string, override []byte) (key.Key, error) {
+// §4; widened by the sibling-sources design §3.2): an env/ directory
+// referencing the source subtree by key, plus params and platform files, a
+// dir file (only when dir != "" — a CtxWidened def carries its build dir in
+// F; legacy narrow defs pass "" and keep their pre-field F byte-identical),
+// and (only when override != nil) a top-level BUILD.jobs override. Only the
+// new directory + small file objects are emitted; env/ is shared by key,
+// never re-ingested. Deterministic: the same inputs yield a byte-identical F.
+func (s *Store) BuildFromTree(ctx context.Context, env key.Key, dir string, params []byte, platform string, override []byte) (key.Key, error) {
 	type ent struct {
 		name string
 		data []byte // nil => directory referenced by subKey
@@ -28,6 +30,9 @@ func (s *Store) BuildFromTree(ctx context.Context, env key.Key, params []byte, p
 		{name: "env", sub: env, dir: true},
 		{name: "params", data: params},
 		{name: "platform", data: []byte(platform)},
+	}
+	if dir != "" {
+		entries = append(entries, ent{name: "dir", data: []byte(dir)})
 	}
 	if override != nil {
 		entries = append(entries, ent{name: "BUILD.jobs", data: override})

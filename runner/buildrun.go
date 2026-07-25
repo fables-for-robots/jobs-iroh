@@ -14,23 +14,24 @@ import (
 	"github.com/fables-for-robots/jobs-iroh/builddef"
 )
 
-// assembleBuildSpec reads build-pinned:F and assembles the hermetic build
-// sandbox spec (build-from design §7, §8): the /jobs/store union (every input's
-// closure + the shell), the JOBS_DEPS name→path map, and $SRC = the F-tree's
-// env/ subtree (SourceKey: f, SourceDir: "env"). Shared by RunBuild and the
-// local jobs-develop shell. Also returns the decoded Pinned so RunBuild reuses it
+// assembleBuildSpec reads build-pinned:<KP> and assembles the hermetic build
+// sandbox spec (build-from design §7, §8; sibling-sources design §9): the
+// /jobs/store union (every input's closure + the shell), the JOBS_DEPS
+// name→path map, and the covered source — the KP tree's src/ subtree
+// (SourceKey: kp, SourceDir: "src"), with $SRC/CWD at the pinned Dir. Since
+// the sibling-sources arc EVERY buildrun is KP-keyed (root builds cover the
+// whole env, normalized); the build-pinned:<KP> alias is written at pin
+// commit (server) / KP derivation (local). Shared by RunBuild and the local
+// jobs-develop shell. Also returns the decoded Pinned so RunBuild reuses it
 // for runtimeDeps. Returns a *Outcome on failure (runner convention).
-func assembleBuildSpec(ctx context.Context, st *amber.Store, brc BuildRunCfg, f key.Key) (BuildSpec, builddef.Pinned, *Outcome) {
-	if o := ensureBuildFromTree(ctx, st, f); o != nil {
-		return BuildSpec{}, builddef.Pinned{}, o
-	}
-	pinnedKey, ok, err := st.GetKey(ctx, "build-pinned:"+f.String())
+func assembleBuildSpec(ctx context.Context, st *amber.Store, brc BuildRunCfg, kp key.Key) (BuildSpec, builddef.Pinned, *Outcome) {
+	pinnedKey, ok, err := st.GetKey(ctx, "build-pinned:"+kp.String())
 	if err != nil {
 		o := retryable("pulling", err)
 		return BuildSpec{}, builddef.Pinned{}, &o
 	}
 	if !ok {
-		o := retryable("pulling", errors.New("build-pinned:"+f.String()+" not found (not pinned yet)"))
+		o := retryable("pulling", errors.New("build-pinned:"+kp.String()+" not found (not pinned yet)"))
 		return BuildSpec{}, builddef.Pinned{}, &o
 	}
 	pinnedBytes, err := pullFileBytes(ctx, st, pinnedKey)
@@ -63,8 +64,9 @@ func assembleBuildSpec(ctx context.Context, st *amber.Store, brc BuildRunCfg, f 
 		StoreKey:       storeKey,
 		ShellBOK:       brc.ShellKey,
 		JobsDeps:       jobsDeps,
-		SourceKey:      f,
-		SourceDir:      "env",
+		SourceKey:      kp,
+		SourceDir:      "src",
+		Workdir:        pinned.Dir,
 		Env:            pinned.Env,
 		Script:         pinned.Script,
 		Caches:         caches,
@@ -72,14 +74,17 @@ func assembleBuildSpec(ctx context.Context, st *amber.Store, brc BuildRunCfg, f 
 	}, pinned, nil
 }
 
-// RunBuild executes one build run job, keyed by F (build-from design §7, §8):
-// pull build-pinned:F, resolve inputs (two-hop for build inputs), assemble the
-// /jobs/store union + JOBS_DEPS, run the hermetic script with $SRC = the F-tree
-// env/, and publish build-output:F ({c/}) and build-output-deps:F.
-func RunBuild(ctx context.Context, st *amber.Store, rw RefWriter, brc BuildRunCfg, ex BuildExecutor, f key.Key) Outcome {
+// RunBuild executes one build run job, keyed by KP (sibling-sources design
+// §10.1): pull build-pinned:<KP>, resolve inputs (two-hop for build inputs),
+// assemble the /jobs/store union + JOBS_DEPS, run the hermetic script with
+// $SRC/CWD at the covered tree's build dir, and publish
+// build-output-deps:<KP> then build-output:<KP> ({c/}) — deps strictly first:
+// build-output:<KP> alone is the doneness marker AND the cross-context memo,
+// so it must never become visible before its runtime closure.
+func RunBuild(ctx context.Context, st *amber.Store, rw RefWriter, brc BuildRunCfg, ex BuildExecutor, kp key.Key) Outcome {
 	ev := brc.Events
 	ev.Phase("assembling")
-	spec, pinned, out := assembleBuildSpec(ctx, st, brc, f)
+	spec, pinned, out := assembleBuildSpec(ctx, st, brc, kp)
 	if out != nil {
 		return *out
 	}
@@ -91,7 +96,7 @@ func RunBuild(ctx context.Context, st *amber.Store, rw RefWriter, brc BuildRunCf
 	spec.Events = ev
 	// Key the job-cgroup registry for live process snapshots (issue #97); the
 	// scheduler offers builds by F, so the node string is F-keyed.
-	spec.Node = "build|" + f.String()
+	spec.Node = "build|" + kp.String()
 	if ow := ev.Output("stdout", "building"); ow != nil {
 		spec.StdoutSink = ow
 		defer ow.Close()
@@ -149,8 +154,8 @@ func RunBuild(ctx context.Context, st *amber.Store, rw RefWriter, brc BuildRunCf
 	// build whose runtime closure is missing. Cache refs go first: they gate
 	// nothing, and output-visible ⇒ everything else landed.
 	refs := append(cacheRefs,
-		Ref{Name: "build-output-deps:" + f.String(), Key: depsKey},
-		Ref{Name: "build-output:" + f.String(), Key: r},
+		Ref{Name: "build-output-deps:" + kp.String(), Key: depsKey},
+		Ref{Name: "build-output:" + kp.String(), Key: r},
 	)
 	ev.Phase("pushing")
 	pt, err := rw.WriteRefs(ctx, refs)

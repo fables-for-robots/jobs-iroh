@@ -75,11 +75,17 @@ func encodeJobsDeps(deps map[string]string) string {
 // is merged over the sandbox-provided SRC/out/PATH/HOME. MemoryMaxBytes and
 // PIDsMax are best-effort cgroup v2 caps (0 => no limit / undelegated).
 type BuildSpec struct {
-	StoreKey       key.Key
-	ShellBOK       key.Key
-	JobsDeps       map[string]string
-	SourceKey      key.Key
-	SourceDir      string
+	StoreKey  key.Key
+	ShellBOK  key.Key
+	JobsDeps  map[string]string
+	SourceKey key.Key
+	SourceDir string
+	// Workdir is the build dir within the extracted source (sibling-sources
+	// design §9): when set, $SRC and the sandbox CWD point at
+	// <src>/<Workdir> and $SRC_ROOT at the source root, so relative sibling
+	// paths (../lib) resolve exactly as they do in the repo. "" = legacy
+	// layout ($SRC = the source root, CWD = /).
+	Workdir        string
 	Env            map[string]string
 	Script         string
 	MemoryMaxBytes int64

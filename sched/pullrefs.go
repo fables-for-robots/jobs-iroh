@@ -18,6 +18,20 @@ import (
 // runners can always pull an F closure by ref.
 func FTreeRef(f key.Key) string { return "f-tree/" + f.String() }
 
+// healCarrierLocked writes a missing name==value carrier ref (f-tree/<F>,
+// kp-tree/<KP>): a crash between a stage's gated commit and the server-side
+// carrier write used to leave the next stage's pull failing retryably until
+// budget-exhausted-hard, forever (the latent f-tree window the
+// sibling-sources arc fixed — design §6.3). The carrier's value IS its name
+// key and the closure provably exists once the stage is done, so the heal is
+// a single idempotent PutRef.
+func (s *Sched) healCarrierLocked(name string, k key.Key) error {
+	if _, ok, err := s.store.GetKey(s.ctx, name); err != nil || ok {
+		return err
+	}
+	return s.store.PutRef(s.ctx, name, k)
+}
+
 // computePullRefsLocked derives the exact set of refs whose closures the
 // runner must pull before running the node's stage driver — everything the
 // driver resolves locally (docs/research/jobs-runner-stages.md), computed
@@ -138,9 +152,15 @@ func (s *Sched) computePullRefsLocked(n *node) ([]string, error) {
 		}
 
 	case wire.KindPluginResolve:
+		if err := s.healCarrierLocked(FTreeRef(n.id.key), n.id.key); err != nil {
+			return nil, err
+		}
 		add(FTreeRef(n.id.key))
 
 	case wire.KindPin:
+		if err := s.healCarrierLocked(FTreeRef(n.id.key), n.id.key); err != nil {
+			return nil, err
+		}
 		add(FTreeRef(n.id.key), "build-plugin-resolved:"+n.id.key.String())
 		if err := addIfPresent("shell:" + n.platform); err != nil {
 			return nil, err
@@ -154,7 +174,13 @@ func (s *Sched) computePullRefsLocked(n *node) ([]string, error) {
 		}
 
 	case wire.KindBuildRun:
-		add(FTreeRef(n.id.key), "build-pinned:"+n.id.key.String())
+		// KP-keyed (sibling-sources design §10.1): the runner pulls the
+		// covered closure by its kp-tree carrier — never the monorepo — plus
+		// the build-pinned:<KP> alias written at KP derivation.
+		if err := s.healCarrierLocked(KPTreeRef(n.id.key), n.id.key); err != nil {
+			return nil, err
+		}
+		add(KPTreeRef(n.id.key), "build-pinned:"+n.id.key.String())
 		if err := addIfPresent("shell:" + n.platform); err != nil {
 			return nil, err
 		}

@@ -14,6 +14,7 @@ import (
 	"github.com/fables-for-robots/amber-store-core/key"
 	"github.com/fables-for-robots/jobs-iroh/amber"
 	"github.com/fables-for-robots/jobs-iroh/builddef"
+	"github.com/fables-for-robots/jobs-iroh/cover"
 	"github.com/fables-for-robots/jobs-iroh/importdef"
 	"github.com/fables-for-robots/jobs-iroh/runner"
 	"github.com/fables-for-robots/jobs-iroh/sandbox"
@@ -247,10 +248,12 @@ func mkImportInputWithOutput(t *testing.T, ctx context.Context, st *amber.Store,
 }
 
 // putPinnedBuild assembles build:K (the pre-pinning definition) for the given
-// source input, runs RunBuildFrom to get F, then ingests+publishes a
-// build-pinned:F with the given inputs/env/script/runtimeDeps. Returns
-// (buildK, F, defBytes).
-func putPinnedBuild(t *testing.T, ctx context.Context, st *amber.Store, sourceInput builddef.Input, platform string, pinned builddef.Pinned) (buildK key.Key, f key.Key, defBytes []byte) {
+// source input, runs RunBuildFrom to get F, ingests+publishes build-pinned:F
+// with the given inputs/env/script/runtimeDeps, then derives KP the production
+// way (cover.Derive + the build-pinned:<KP> alias — sibling-sources design
+// §10.1: RunBuild is KP-keyed). Returns (buildK, KP, defBytes) — the returned
+// key is what RunBuild consumes and what build-output is published under.
+func putPinnedBuild(t *testing.T, ctx context.Context, st *amber.Store, sourceInput builddef.Input, platform string, pinned builddef.Pinned) (buildK key.Key, kp key.Key, defBytes []byte) {
 	t.Helper()
 	defBytes, buildK = makeBuildDef(t, ctx, st, sourceInput, platform)
 
@@ -260,7 +263,7 @@ func putPinnedBuild(t *testing.T, ctx context.Context, st *amber.Store, sourceIn
 	if bfOut.Failed || bfOut.Decline || bfOut.Cancelled {
 		t.Fatalf("RunBuildFrom: %+v", bfOut)
 	}
-	f = bfOut.OutputKey
+	f := bfOut.OutputKey
 
 	// Ingest each pinned input's definition (objects-before-ref, as RunPin does).
 	for _, in := range pinned.Inputs {
@@ -280,7 +283,19 @@ func putPinnedBuild(t *testing.T, ctx context.Context, st *amber.Store, sourceIn
 	if err := st.PutRef(ctx, "build-pinned:"+f.String(), r); err != nil {
 		t.Fatal(err)
 	}
-	return buildK, f, defBytes
+	// Derive KP + the build-pinned:<KP> alias, as pin commit / driveFStages do.
+	envKey, ok, err := st.TreeSubdir(ctx, f, "env")
+	if err != nil || !ok {
+		t.Fatalf("F-tree env: ok=%v err=%v", ok, err)
+	}
+	kp, err = cover.Derive(ctx, st, pinnedBytes, pinned, platform, envKey)
+	if err != nil {
+		t.Fatalf("cover.Derive: %v", err)
+	}
+	if err := st.PutRef(ctx, "build-pinned:"+kp.String(), r); err != nil {
+		t.Fatal(err)
+	}
+	return buildK, kp, defBytes
 }
 
 // TestRunBuild drives the full build run stage: a real build-pinned:F with one

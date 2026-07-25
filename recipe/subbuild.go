@@ -10,12 +10,22 @@ import (
 )
 
 // makeSubbuild returns the `subbuild(dir, platform=platform, params=None,
-// build_jobs=None)` builtin: construct a build Input for a strict DESCENDANT
-// directory of the current build's own source tree. The sub-build's source is a
-// `tree` Input addressing the build-root content (sourceContentKey); build-from
-// narrows it by dir. See
-// docs/superpowers/specs/2026-06-25-subbuild-descendant-inputs-design.md.
-func makeSubbuild(platform string, sourceContentKey key.Key) *starlark.Builtin {
+// build_jobs=None)` builtin: construct a build Input for a directory of the
+// current build's source. Two forms (sibling-sources design §8):
+//
+//   - "path/below"  — a strict DESCENDANT of the build root; the sub-build's
+//     source is a tree Input addressing the build-root content
+//     (sourceContentKey). The descendant form stays cycle-free by
+//     construction (a build depends only on builds strictly below it).
+//   - "//any/path"  — ROOT-RELATIVE within the widened context: the source is
+//     a tree Input addressing the WHOLE context (contextKey), dir the stripped
+//     path. Sibling builds join per-context-commit on K and per-cover on KP;
+//     cycles become expressible and are caught by the scheduler's
+//     ancestry check at node creation.
+//
+// See docs/superpowers/specs/2026-06-25-subbuild-descendant-inputs-design.md
+// and docs/design/2026-07-26-sibling-sources.md §8.
+func makeSubbuild(platform string, sourceContentKey, contextKey key.Key) *starlark.Builtin {
 	return starlark.NewBuiltin("subbuild", func(thread *starlark.Thread, b *starlark.Builtin, args starlark.Tuple, kwargs []starlark.Tuple) (starlark.Value, error) {
 		var dir string
 		plat := platform
@@ -26,13 +36,21 @@ func makeSubbuild(platform string, sourceContentKey key.Key) *starlark.Builtin {
 			"dir", &dir, "platform?", &plat, "params?", &params, "build_jobs?", &buildJobs, "build_file?", &buildFile); err != nil {
 			return nil, err
 		}
-		if sourceContentKey == (key.Key{}) {
+		srcKey := sourceContentKey
+		if strings.HasPrefix(dir, "//") {
+			dir = strings.TrimPrefix(dir, "//")
+			srcKey = contextKey
+			if srcKey == (key.Key{}) {
+				return nil, fmt.Errorf("subbuild: //-paths need a widened context (this build has none)")
+			}
+		}
+		if srcKey == (key.Key{}) {
 			return nil, fmt.Errorf("subbuild: unavailable (no build-root content key in this evaluation)")
 		}
 		if err := validateDescendant(dir); err != nil {
 			return nil, fmt.Errorf("subbuild: %w", err)
 		}
-		src, err := builddef.TreeInput(sourceContentKey)
+		src, err := builddef.TreeInput(srcKey)
 		if err != nil {
 			return nil, fmt.Errorf("subbuild: %w", err)
 		}

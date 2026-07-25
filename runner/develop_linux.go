@@ -244,7 +244,14 @@ func prepareDevelop(ctx context.Context, st *amber.Store, cfg DevelopConfig, p *
 	if err := d.driveFStages(f, false, p); err != nil { // runFinal=false: stop at pin
 		return BuildSpec{}, "", err
 	}
-	spec, _, out := assembleBuildSpec(ctx, st, brc, f)
+	// The develop PTY sandboxes the COVERED tree, not the whole context —
+	// driveFStages derived KP after pin; re-deriving here is idempotent (all
+	// objects dedup) and hands us the spec key (sibling-sources design §9).
+	kp, err := d.deriveKP(f)
+	if err != nil {
+		return BuildSpec{}, "", err
+	}
+	spec, _, out := assembleBuildSpec(ctx, st, brc, kp)
 	if out != nil {
 		return BuildSpec{}, "", outcomeErr("assemble build spec", *out)
 	}

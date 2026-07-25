@@ -13,6 +13,7 @@ import (
 
 	"github.com/fables-for-robots/jobs-iroh/amber"
 	"github.com/fables-for-robots/jobs-iroh/bootstrap"
+	"github.com/fables-for-robots/jobs-iroh/cover"
 	"github.com/fables-for-robots/jobs-iroh/importdef"
 	"github.com/fables-for-robots/jobs-iroh/runner"
 )
@@ -97,9 +98,25 @@ func bootSelfTest(ctx context.Context, st *amber.Store, platform, cacheDir strin
 	} else if !ok {
 		return errors.New("boot self-test: build completed but its build-output ref is missing")
 	}
-	for _, prefix := range []string{"build-plugin-resolved:", "build-pinned:", "build-output:", "build-output-deps:"} {
-		if err := st.DeleteRef(ctx, prefix+f.String()); err != nil {
-			log.Debug("boot self-test: ref cleanup failed", "ref", prefix+f.String(), "error", err)
+	cleanup := []string{
+		"build-plugin-resolved:" + f.String(),
+		"build-pinned:" + f.String(),
+		"build-output:" + f.String(),
+		"build-output-deps:" + f.String(),
+	}
+	// The KP-keyed refs of the sibling-sources arc (build-pinned/-output
+	// ride under KP now; the F names above are aliases).
+	if kp, ok, err := st.GetKey(ctx, cover.PinCoverRef(f)); err == nil && ok {
+		cleanup = append(cleanup,
+			"build-pinned:"+kp.String(),
+			"build-output:"+kp.String(),
+			"build-output-deps:"+kp.String(),
+			cover.PinCoverRef(f),
+		)
+	}
+	for _, name := range cleanup {
+		if err := st.DeleteRef(ctx, name); err != nil {
+			log.Debug("boot self-test: ref cleanup failed", "ref", name, "error", err)
 		}
 	}
 	log.Info("boot self-test build passed", "wallMs", time.Since(start).Milliseconds())

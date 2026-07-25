@@ -216,6 +216,11 @@ type FailureRecord struct {
 	ConsecCtrl  int      `cbor:"consecControl,omitempty"`
 	BackoffMs   int64    `cbor:"backoffMs,omitempty"` // when Disposition == retry
 	RequestIDs  []string `cbor:"requestIds,omitempty"`
+	// ForF are the hex F keys of the buildvalues waiting on a KP-keyed
+	// buildrun at failure time (sibling-sources design §10.3): the human
+	// bridge from a buildrun_<KP> record back to the F-keyed pin/eval rows a
+	// KP node can serve for MANY Fs. omitempty; empty for every other kind.
+	ForF []string `cbor:"forF,omitempty"`
 
 	// Result is the runner's verbatim report when Origin != server (runner
 	// ID, class, exit, rusage; for commit/gate failures also the proposed

@@ -239,6 +239,18 @@ func (s *Sched) commit(sp commitSpec) error {
 			}
 		}
 	}
+	// Pin commit derives the KP binding server-side (sibling-sources design
+	// §6.3): build-pinned:<KP> + kp-tree/<KP> + pin-cover/<v>:F, from the
+	// just-gated pinned blob — "re-derived from the CAS, never trusted from
+	// the runner". A crash anywhere in the sequence is healed by
+	// resolveKPLocked's on-demand re-derivation, so this is an optimization
+	// of the common path, not a correctness point. An error here is a commit
+	// error (retryable — the pin re-runs, wasteful but never wrong).
+	if sp.kind == wire.KindPin {
+		if _, err := s.deriveKP(sp.key); err != nil {
+			return fmt.Errorf("derive KP for %s: %w", sp.key, err)
+		}
+	}
 	return nil
 }
 

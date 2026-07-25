@@ -142,8 +142,15 @@ func newBuildInput(source builddef.Input, dir, platform string, params starlark.
 	if buildJobs != "" {
 		override = []byte(buildJobs)
 	}
+	// Every subdir build gets widened-context semantics (sibling-sources
+	// design §2/§3.2: always-on, marked structurally); root builds omit ctx
+	// and keep their pre-field K.
+	ctxv := 0
+	if dir != "" {
+		ctxv = builddef.CtxWidened
+	}
 	canon, err := builddef.Definition{
-		Source: source, Dir: dir, Platform: platform, Params: cp, BuildJobs: override, BuildFile: buildFile,
+		Source: source, Dir: dir, Platform: platform, Params: cp, BuildJobs: override, BuildFile: buildFile, Ctx: ctxv,
 	}.Canonical()
 	if err != nil {
 		return nil, err

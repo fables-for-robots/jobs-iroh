@@ -25,7 +25,7 @@ func TestLoadBuildFromEnv_SourceContentKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f, err := st.BuildFromTree(ctx, envKey, params, "linux/amd64", nil)
+	f, err := st.BuildFromTree(ctx, envKey, "", params, "linux/amd64", nil)
 	if err != nil {
 		t.Fatal(err)
 	}

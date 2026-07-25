@@ -35,6 +35,7 @@ func (s *Sched) recordFailureLocked(n *node, res *wire.Result, origin, dispositi
 		ConsecCtrl:  n.consecControl,
 		BackoffMs:   backoff.Milliseconds(),
 		RequestIDs:  interestIDs(n),
+		ForF:        waiterFs(n),
 		Result:      res,
 		FailedNs:    time.Now().UnixNano(),
 	}

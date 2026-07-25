@@ -226,7 +226,15 @@ func (e *env) standardHandler(pinned builddef.Pinned) func(wire.Job) *wire.Resul
 			out := e.ingestFile([]byte("imported " + job.Node))
 			return okResult(job, ref("import-output:"+f, out))
 		case wire.KindBuildFrom:
-			ftree := e.ingestTree("f-tree for " + job.Node)
+			// A REAL F-tree ({env/, params, platform}) — pin commit derives KP
+			// from it (env subtree + platform file), so a marker blob no longer
+			// suffices (sibling-sources design §6.3).
+			envT := e.ingestTree("env for " + job.Node)
+			ftree, err := e.st.BuildFromTree(e.ctx, envT, "", []byte("params"), testPlatform, nil)
+			if err != nil {
+				e.t.Errorf("fake BuildFromTree: %v", err)
+				return nil
+			}
 			return okResult(job,
 				ref("build-from:"+f, ftree),
 				ref("build-from-tree:"+ftree.String(), ftree))
@@ -368,16 +376,33 @@ func TestLinearChainDonePropagation(t *testing.T) {
 	if !ok {
 		t.Fatal("build-from:K not written")
 	}
+	// The pin commit derived the KP binding (sibling-sources design §6.3);
+	// buildrun is KP-keyed, and the F-level output refs are server aliases.
+	kp, ok := e.getRef(PinCoverRef(f))
+	if !ok {
+		t.Fatal("pin-cover/<v>:F not written at pin commit")
+	}
 	assertRefs(e, map[string]bool{
 		"build-from-tree:" + f.String():       true,
 		FTreeRef(f):                           true,
 		"build-plugin-resolved:" + f.String(): true,
 		"build-pinned:" + f.String():          true,
+		"build-pinned:" + kp.String():         true,
+		KPTreeRef(kp):                         true,
+		"build-output-deps:" + kp.String():    true,
+		"build-output:" + kp.String():         true,
 		"build-output-deps:" + f.String():     true,
 		"build-output:" + f.String():          true,
 	})
 	if ftv, _ := e.getRef(FTreeRef(f)); ftv != f {
 		t.Fatalf("f-tree/%s -> %s, want %s (name==value)", f, ftv, f)
+	}
+	if ktv, _ := e.getRef(KPTreeRef(kp)); ktv != kp {
+		t.Fatalf("kp-tree/%s -> %s, want %s (name==value)", kp, ktv, kp)
+	}
+	// The F-aliases point at the same keys as the KP refs (design §10.2).
+	if av, _ := e.getRef("build-output:" + f.String()); func() key.Key { v, _ := e.getRef("build-output:" + kp.String()); return v }() != av {
+		t.Fatalf("build-output:F is not an alias of build-output:KP")
 	}
 
 	// PullRefs per stage, exact lists.
@@ -385,7 +410,7 @@ func TestLinearChainDonePropagation(t *testing.T) {
 		wire.KindBuildFrom:     {"build-from-tree:" + treeKey.String()},
 		wire.KindPluginResolve: {FTreeRef(f)},
 		wire.KindPin:           {FTreeRef(f), "build-plugin-resolved:" + f.String()},
-		wire.KindBuildRun:      {FTreeRef(f), "build-pinned:" + f.String()},
+		wire.KindBuildRun:      {KPTreeRef(kp), "build-pinned:" + kp.String()},
 	} {
 		jobs := fr.byKind(kind)
 		if len(jobs) != 1 {

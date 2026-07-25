@@ -17,10 +17,18 @@ type EvalConfig struct {
 	Platform string
 	Params   []byte
 	Source   Source
-	// SourceContentKey is the amber content key of the build root (the env/
+	// SourceContentKey is the amber content key of the build root (the dir
 	// subtree). subbuild() addresses descendants relative to it. Zero when a
 	// caller does not provide it (subbuild() then errors if used).
 	SourceContentKey key.Key
+	// ContextKey is the whole-context tree key of a widened build
+	// (sibling-sources design §3.1) — the tree //-rooted subbuild() paths and
+	// build() sources= resolve against. Zero for legacy narrow evaluations
+	// (//-paths then error).
+	ContextKey key.Key
+	// Dir is the build dir within the context ("" for root builds); ../-sugar
+	// source paths normalize against it.
+	Dir string
 	// SeedFetchers are the import-capable seed fetcher names (bootstrap
 	// SeedFetcherNames); a plugin-emitted import naming one passes through
 	// without a FetcherDef, anything else must match the plugin's bundled pins
@@ -61,7 +69,7 @@ func (cfg EvalConfig) basePredeclared() (starlark.StringDict, error) {
 		"imp":      makeImp(cfg.Platform),
 		"bld":      makeBld(cfg.Platform),
 		"fetcher":  makeFetcher(cfg.Platform),
-		"subbuild": makeSubbuild(cfg.Platform, cfg.SourceContentKey),
+		"subbuild": makeSubbuild(cfg.Platform, cfg.SourceContentKey, cfg.ContextKey),
 		"struct":   starlark.NewBuiltin("struct", starlarkstruct.Make),
 		// deps must be predeclared in BOTH stages (the same compile-time name
 		// check that keeps struct here); at the plugins() stage it is a stub
@@ -245,6 +253,18 @@ type BuildResult struct {
 	// in the jobs-console dashboard. Display metadata ONLY: it is never written
 	// into Pinned and never affects F/identity or dedup.
 	Name string
+	// Sources are the declared covered source paths of a widened build
+	// (sibling-sources design §5.2), normalized to root-relative form (the
+	// // prefix stripped, ../-sugar resolved against the build dir). nil when
+	// the recipe declares none.
+	Sources []string
+	// Generated are pin-synthesized files overlaid onto the covered tree
+	// (design §7): normalized root-relative path → content bytes.
+	Generated map[string][]byte
+	// AllowEscaping lists in-root symlink paths whose targets are allowed to
+	// escape the context root (kept verbatim, dangling in the sandbox —
+	// design §5.4). Normalized root-relative.
+	AllowEscaping []string
 }
 
 // Validate enforces the structural rule that runtimeDeps ⊆ inputs (build.md §7,
@@ -336,12 +356,25 @@ func EvalBuild(cfg EvalConfig, recipeSrc []byte, plugins map[string]PluginSpec) 
 		}
 		out.RuntimeDeps[i] = pinned
 	}
+	// Resolve declared covered paths to root-relative form against the build
+	// dir (sibling-sources design §5.2). Declaring sources in a legacy narrow
+	// evaluation (no context) is a hard error — the covered paths would be
+	// meaningless.
+	if len(out.Sources) > 0 || len(out.Generated) > 0 || len(out.AllowEscaping) > 0 {
+		if cfg.ContextKey == (key.Key{}) {
+			return BuildResult{}, fmt.Errorf("build() declares sources/generated but this build has no widened context (submit from a repo root, or drop the declarations)")
+		}
+		if err := normalizeBuildSources(&out, cfg.Dir); err != nil {
+			return BuildResult{}, err
+		}
+	}
 	return out, nil
 }
 
 // decodeBuildResult accepts a *starlarkstruct.Struct or a 4-tuple.
 func decodeBuildResult(v starlark.Value) (BuildResult, error) {
 	var inputsV, envV, scriptV, rtV, cachesV, resourcesV, nameV starlark.Value
+	var sourcesV, generatedV, allowEscV starlark.Value
 	switch t := v.(type) {
 	case *starlarkstruct.Struct:
 		get := func(field string) (starlark.Value, error) {
@@ -378,6 +411,17 @@ func decodeBuildResult(v starlark.Value) (BuildResult, error) {
 		// missing attr returns an error from t.Attr, meaning "absent".
 		if nv, nerr := t.Attr("name"); nerr == nil {
 			nameV = nv
+		}
+		// sources / generated / sources_allow_escaping are OPTIONAL
+		// (sibling-sources design §5.2, §7); struct form only.
+		if sv, serr := t.Attr("sources"); serr == nil {
+			sourcesV = sv
+		}
+		if gv, gerr := t.Attr("generated"); gerr == nil {
+			generatedV = gv
+		}
+		if av, aerr := t.Attr("sources_allow_escaping"); aerr == nil {
+			allowEscV = av
 		}
 	case starlark.Tuple:
 		if t.Len() != 4 {
@@ -426,7 +470,25 @@ func decodeBuildResult(v starlark.Value) (BuildResult, error) {
 		}
 		name = s
 	}
-	return BuildResult{Inputs: inputs, Env: env, Script: script, RuntimeDeps: rtDeps, Caches: caches, Resources: res, Name: name}, nil
+	var sources, allowEsc []string
+	var generated map[string][]byte
+	if sourcesV != nil {
+		if sources, err = decodeSources(sourcesV); err != nil {
+			return BuildResult{}, fmt.Errorf("build() sources: %w", err)
+		}
+	}
+	if allowEscV != nil {
+		if allowEsc, err = decodeSources(allowEscV); err != nil {
+			return BuildResult{}, fmt.Errorf("build() sources_allow_escaping: %w", err)
+		}
+	}
+	if generatedV != nil {
+		if generated, err = decodeGenerated(generatedV); err != nil {
+			return BuildResult{}, fmt.Errorf("build() generated: %w", err)
+		}
+	}
+	return BuildResult{Inputs: inputs, Env: env, Script: script, RuntimeDeps: rtDeps, Caches: caches, Resources: res, Name: name,
+		Sources: sources, Generated: generated, AllowEscaping: allowEsc}, nil
 }
 
 // decodeResources reads a Starlark struct(cpu="...", memory="...") into a

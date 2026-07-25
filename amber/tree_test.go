@@ -128,7 +128,7 @@ func TestBuildFromTree(t *testing.T) {
 	params := []byte(`{"a":1}`)
 	const platform = "linux/amd64"
 
-	f1, err := s.BuildFromTree(ctx, env, params, platform, nil)
+	f1, err := s.BuildFromTree(ctx, env, "", params, platform, nil)
 	if err != nil {
 		t.Fatalf("BuildFromTree: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestBuildFromTree(t *testing.T) {
 	}
 
 	// Deterministic: same inputs, same key.
-	again, err := s.BuildFromTree(ctx, env, params, platform, nil)
+	again, err := s.BuildFromTree(ctx, env, "", params, platform, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,14 +170,14 @@ func TestBuildFromTree(t *testing.T) {
 
 	// Override present only when non-nil — an empty override is still an
 	// override file.
-	fo, err := s.BuildFromTree(ctx, env, params, platform, []byte("override recipe"))
+	fo, err := s.BuildFromTree(ctx, env, "", params, platform, []byte("override recipe"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if got, want := lsNames(t, s, fo, ""), []string{"BUILD.jobs", "env", "params", "platform"}; !slices.Equal(got, want) {
 		t.Errorf("override entries = %v, want %v", got, want)
 	}
-	foEmpty, err := s.BuildFromTree(ctx, env, params, platform, []byte{})
+	foEmpty, err := s.BuildFromTree(ctx, env, "", params, platform, []byte{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -194,9 +194,9 @@ func TestBuildFromTree(t *testing.T) {
 	}
 	variants := map[string]key.Key{}
 	for name, mk := range map[string]func() (key.Key, error){
-		"params":   func() (key.Key, error) { return s.BuildFromTree(ctx, env, []byte(`{"a":2}`), platform, nil) },
-		"platform": func() (key.Key, error) { return s.BuildFromTree(ctx, env, params, "linux/arm64", nil) },
-		"env":      func() (key.Key, error) { return s.BuildFromTree(ctx, env2, params, platform, nil) },
+		"params":   func() (key.Key, error) { return s.BuildFromTree(ctx, env, "", []byte(`{"a":2}`), platform, nil) },
+		"platform": func() (key.Key, error) { return s.BuildFromTree(ctx, env, "", params, "linux/arm64", nil) },
+		"env":      func() (key.Key, error) { return s.BuildFromTree(ctx, env2, "", params, platform, nil) },
 		"override": func() (key.Key, error) { return fo, nil },
 	} {
 		k, err := mk()

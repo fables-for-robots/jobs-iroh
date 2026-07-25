@@ -34,8 +34,17 @@ import (
 
 // The five service ALPNs of a jobs-server endpoint.
 const (
-	ALPNBuild       = "jobs-build/1.0"        // client: submit builds, watch progress
-	ALPNRunnerNATS  = "jobs-runner-nats/1.0"  // runner: NATS client tunnel
+	ALPNBuild = "jobs-build/1.0" // client: submit builds, watch progress
+	// The runner-NATS ALPN is the FLEET FENCE (sibling-sources design §3.2
+	// [INV]): the sibling-sources arc changed job semantics (KP-keyed
+	// buildrun, ctx-widened defs) in ways an old runner would execute
+	// silently WRONG (narrow F under a new K, F-keyed output refs the gate
+	// now rejects). Runners pull work straight off JetStream queues, so a
+	// polite version handshake could be ignored — bumping the ALPN makes an
+	// old runner fail loudly at dial time instead. Bump it again whenever a
+	// change would make an old runner produce wrong results rather than
+	// clean errors.
+	ALPNRunnerNATS  = "jobs-runner-nats/2.0"
 	ALPNRunnerAmber = "jobs-runner-amber/1.0" // runner: CAS object/ref sync
 	ALPNAdmin       = "jobs-admin/1.0"        // admin TUI: observe builds, stats
 	ALPNAmberAdmin  = "jobs-amber-admin/1.0"  // client: CAS ref sync (source up, outputs home)

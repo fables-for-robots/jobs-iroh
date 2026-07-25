@@ -2,6 +2,7 @@ package sched
 
 import (
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/fables-for-robots/amber-store-core/key"
@@ -39,8 +40,10 @@ type node struct {
 	interest   map[string]struct{} // live request IDs
 
 	// buildvalue pipeline state.
-	f         key.Key
-	fResolved bool
+	f          key.Key
+	fResolved  bool
+	kp         key.Key // resolved from pin-cover/<v>:F after pin (sibling-sources §10.1)
+	kpResolved bool
 
 	// Unfold-derived placement inputs.
 	pinnedRes resources.Resources    // buildrun: Pinned.Resources
@@ -298,6 +301,15 @@ func (s *Sched) requireInputLocked(parent *node, in builddef.Input) {
 			s.failNodeLocked(parent, "input key: "+err.Error())
 			return
 		}
+		// Root-relative subbuilds make cycles expressible (A subbuilds B,
+		// B subbuilds A — sibling-sources design §8); undetected they become a
+		// silent mutual wait. A cycle exists iff the required buildvalue is
+		// already an ancestor of the requiring node — a bounded DFS over the
+		// in-memory dependent edges at creation time only.
+		if chain := s.cycleChainLocked(parent, nodeID{kind: wire.KindBuildValue, key: k}); chain != nil {
+			s.failNodeLocked(parent, "sub-build cycle: "+strings.Join(chain, " -> "))
+			return
+		}
 		platform := parent.platform
 		if d, err := builddef.DecodeDefinition(in.Definition); err == nil && d.Platform != "" {
 			platform = d.Platform
@@ -344,11 +356,66 @@ func (s *Sched) advanceBuildValueLocked(bv *node) {
 	if pin.phase != wire.PhaseDone {
 		return
 	}
-	run := s.require(wire.KindBuildRun, bv.f, nil, bv.platform, bv, nil)
+	// The buildrun stage is keyed by KP, not F (sibling-sources design §10.1):
+	// the KP binding is resolved from pin-cover/<v>:F (re-derived on demand —
+	// a missing derived ref is a crash window, never a failure), and require's
+	// doneness fast-path on build-output:<KP> IS the cross-context memo — a
+	// second F whose monorepo changed outside the covered subset joins the
+	// same node in flight or finds it done here, with no extra machinery.
+	if !bv.kpResolved {
+		kp, err := s.resolveKPLocked(bv.f)
+		if err != nil {
+			s.failNodeLocked(bv, "resolve KP: "+err.Error())
+			return
+		}
+		bv.kp, bv.kpResolved = kp, true
+	}
+	run := s.require(wire.KindBuildRun, bv.kp, nil, bv.platform, bv, nil)
 	if run.phase != wire.PhaseDone {
 		return
 	}
+	// F-aliases (design §10.2): deps-before-output, BEFORE the buildvalue
+	// transitions to done — a terminal watch snapshot must imply the aliases
+	// are durable (pullHome hard-fails on a missing build-output:F). Running
+	// here — on every advance-to-done — uniformly covers the fresh-build,
+	// memo-hit, late-join, and crash-heal paths. Store writes under s.mu
+	// follow the existing precedent (putNodeStatusLocked, unfold reads).
+	if err := s.ensureFAliasesLocked(bv.f, bv.kp); err != nil {
+		s.failNodeLocked(bv, "write build-output aliases: "+err.Error())
+		return
+	}
 	s.nodeDoneLocked(bv)
+}
+
+// cycleChainLocked reports whether target is an ancestor of from (walking
+// dependent edges), returning the node-name chain target…from when it is —
+// the sub-build cycle detector (sibling-sources design §8). Bounded: each
+// node visited once, under s.mu, at input-creation time only.
+func (s *Sched) cycleChainLocked(from *node, target nodeID) []string {
+	seen := map[*node]bool{}
+	var chain []string
+	var dfs func(n *node) bool
+	dfs = func(n *node) bool {
+		if seen[n] {
+			return false
+		}
+		seen[n] = true
+		if n.id == target {
+			chain = append(chain, n.name)
+			return true
+		}
+		for d := range n.dependents {
+			if dfs(d) {
+				chain = append(chain, n.name)
+				return true
+			}
+		}
+		return false
+	}
+	if dfs(from) {
+		return chain
+	}
+	return nil
 }
 
 // nodeDoneLocked transitions a node to done and advances its dependents.

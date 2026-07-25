@@ -6,6 +6,7 @@
 package builddef
 
 import (
+	"fmt"
 	"reflect"
 
 	"github.com/fables-for-robots/amber-store-core/key"
@@ -18,6 +19,17 @@ const (
 	KindImport = "import"
 	KindBuild  = "build"
 )
+
+// CtxWidened marks a definition with widened-context semantics
+// (sibling-sources design §3.2): F captures the WHOLE source context (env/ =
+// context root) and carries dir as an F-tree entry, instead of narrowing env/
+// to the dir subtree. Absent (0) is the legacy dir-narrowed encoding. Every
+// def constructor sets CtxWidened whenever Dir != ""; root builds omit it and
+// keep their pre-field K. Drivers must reject values they do not implement
+// via ValidateCtx — fxamacker's default decode silently drops unknown fields,
+// so an unrecognized ctx reaching an old driver would otherwise be built with
+// the WRONG (narrow) semantics under the new K.
+const CtxWidened = 2
 
 // canonEnc encodes deterministically (sorted map keys, shortest ints) so equal
 // values produce equal bytes — the property that makes K a content address.
@@ -61,12 +73,17 @@ type Definition struct {
 	Params    cbor.RawMessage `cbor:"params"`
 	BuildJobs []byte          `cbor:"buildJobs,omitempty"` // optional override recipe (design §6)
 	BuildFile string          `cbor:"buildFile,omitempty"` // optional recipe path relative to Dir (default BUILD.jobs)
+	Ctx       int             `cbor:"ctx,omitempty"`       // context-semantics version (sibling-sources design §3.2)
 }
 
 // Canonical returns the canonical CBOR of the definition. BuildJobs is an
 // optional override recipe and BuildFile an optional alternative recipe path
 // (relative to Dir); both are omitted when empty (omitempty) so a build that
-// uses neither encodes identically to before these fields existed.
+// uses neither encodes identically to before these fields existed. The
+// explicit field copy is load-bearing beyond style: the submit path's
+// canonicality check re-encodes through this function and byte-compares, so a
+// field missing here strips silently and rejects every def that carries it —
+// every new Definition field MUST be added to this copy.
 func (d Definition) Canonical() ([]byte, error) {
 	out := Definition{
 		Source:    d.Source,
@@ -75,8 +92,21 @@ func (d Definition) Canonical() ([]byte, error) {
 		Params:    d.Params,
 		BuildJobs: d.BuildJobs,
 		BuildFile: d.BuildFile,
+		Ctx:       d.Ctx,
 	}
 	return canonEnc.Marshal(out)
+}
+
+// ValidateCtx rejects context-semantics versions this binary does not
+// implement. Drivers (buildfrom, pin, local pipeline) call it right after
+// decoding a definition: building a newer-ctx def with older semantics would
+// silently produce a wrong F under the def's K (sibling-sources design §3.2).
+func ValidateCtx(ctx int) error {
+	switch ctx {
+	case 0, CtxWidened:
+		return nil
+	}
+	return fmt.Errorf("definition ctx %d is not supported by this binary (upgrade jobs)", ctx)
 }
 
 // Key derives the build's identity K from its canonical CBOR (build.md §2).

@@ -28,6 +28,27 @@ func CanonicalPinnedInputs(in []PinnedInput) []PinnedInput {
 	return deduped
 }
 
+// CanonicalSources returns a stable-ordered, deduplicated copy of the covered
+// path list (Pinned.Sources): sorted bytewise, duplicates dropped. Nested
+// paths are NOT collapsed here — the closure walker owns that (paths reaching
+// this function are already normalized root-relative, // prefix stripped).
+// Returns nil for empty input so a source-less Pinned stays byte-identical.
+func CanonicalSources(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := append([]string(nil), in...)
+	sort.Strings(out)
+	deduped := out[:0]
+	for i, p := range out {
+		if i > 0 && out[i-1] == p {
+			continue
+		}
+		deduped = append(deduped, p)
+	}
+	return deduped
+}
+
 // SortKeys returns a stable-ordered, deduplicated copy of ks, sorted by their
 // hex representation. Intended for Pinned.RuntimeDeps (32-byte keys). Returns
 // nil for empty input.

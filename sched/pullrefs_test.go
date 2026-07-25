@@ -249,8 +249,11 @@ func TestPullRefsBuildRun(t *testing.T) {
 			{ID: "cold", Path: "/build/cache-cold"},
 		},
 	}
+	// The buildrun node key is KP since the sibling-sources arc: the runner
+	// pulls the kp-tree carrier (covered closure) + the build-pinned:<KP>
+	// alias, never the F tree.
 	e.assertExact(e.pullRefs(n), []string{
-		FTreeRef(f),
+		KPTreeRef(f),
 		"build-pinned:" + f.String(),
 		"import-output:" + inputKey(t, imp).String(),
 		"build-from:" + bldK.String(),

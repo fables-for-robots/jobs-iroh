@@ -10,6 +10,7 @@ import (
 	"github.com/fables-for-robots/jobs-iroh/amber"
 	"github.com/fables-for-robots/jobs-iroh/bootstrap"
 	"github.com/fables-for-robots/jobs-iroh/builddef"
+	"github.com/fables-for-robots/jobs-iroh/cover"
 	"github.com/fables-for-robots/jobs-iroh/events"
 	"github.com/fables-for-robots/jobs-iroh/recipe"
 )
@@ -138,7 +139,11 @@ func RunPin(ctx context.Context, st *amber.Store, rw RefWriter, brc BuildRunCfg,
 		pluginErrSink = ow
 		defer ow.Close()
 	}
-	callers, err := buildPluginCallers(ctx, st, pr.Plugins, env.SrcRoot, brc.ShellKey, pluginErrSink, depDirs)
+	// Plugins see the WHOLE context read-only (sibling-sources design §9) —
+	// that visibility is what enables manifest-driven sibling discovery — with
+	// the build dir carried in the request so they know where the consumer
+	// package lives. Legacy builds: CtxRoot == SrcRoot, Dir == "".
+	callers, err := buildPluginCallers(ctx, st, pr.Plugins, env.CtxRoot, env.Dir, brc.ShellKey, pluginErrSink, depDirs)
 	if err != nil {
 		var pke pluginKeyError
 		if errors.As(err, &pke) {
@@ -152,6 +157,8 @@ func RunPin(ctx context.Context, st *amber.Store, rw RefWriter, brc BuildRunCfg,
 		Params:           env.Params,
 		Source:           env.Source,
 		SourceContentKey: env.SourceContentKey,
+		ContextKey:       env.ContextKey,
+		Dir:              env.Dir,
 		SeedFetchers:     bootstrap.SeedFetcherNames(),
 		Deps:             evalDeps,
 	}, env.Recipe, callers)
@@ -165,6 +172,26 @@ func RunPin(ctx context.Context, st *amber.Store, rw RefWriter, brc BuildRunCfg,
 
 	if err := res.Validate(); err != nil {
 		return hard("validating", err.Error(), 0)
+	}
+
+	// Covered closure (sibling-sources design §5): expand declared + discovered
+	// paths once, here — symlink chasing, escape validation, dangling warnings.
+	// The EXPANDED set lands in Pinned.Sources, so every later KP derivation
+	// (server pin-commit, local memo) is a pure prune+assemble, never a walk.
+	var covered []string
+	if env.ContextKey != (key.Key{}) {
+		walk, werr := cover.Walk(ctx, st, env.ContextKey, env.Dir, res.Sources, res.AllowEscaping)
+		if werr != nil {
+			return hard("covering", werr.Error(), 0)
+		}
+		if len(walk.Warnings) > 0 && pluginErrSink != nil {
+			for _, w := range walk.Warnings {
+				fmt.Fprintf(pluginErrSink, "cover: %s: %s\n", w.Path, w.Msg)
+			}
+		}
+		covered = walk.Paths
+	} else if len(res.Sources) > 0 {
+		return hard("covering", "recipe declares sources= but the build has no widened context", 0)
 	}
 
 	pinnedInputs := make([]builddef.PinnedInput, 0, len(res.Inputs))
@@ -197,6 +224,9 @@ func RunPin(ctx context.Context, st *amber.Store, rw RefWriter, brc BuildRunCfg,
 		RuntimeDeps: builddef.SortKeys(rtKeys),
 		Caches:      builddef.CanonicalCaches(res.Caches),
 		Resources:   res.Resources,
+		Sources:     builddef.CanonicalSources(covered),
+		Dir:         env.Dir,
+		Generated:   res.Generated,
 	}
 	for _, in := range pinned.Inputs {
 		if _, err := st.IngestFile(ctx, in.Definition); err != nil {
@@ -291,7 +321,7 @@ func (e pluginKeyError) Unwrap() error { return e.err }
 // the materialized source bound read-only into each call; depDirs are the
 // materialized resolution deps, each bound read-only at /jobs/deps/<name>
 // (resolution-deps design §3.3).
-func buildPluginCallers(ctx context.Context, st *amber.Store, plugins map[string]builddef.Input, srcRoot string, shellKey key.Key, errSink io.Writer, depDirs map[string]string) (map[string]recipe.PluginSpec, error) {
+func buildPluginCallers(ctx context.Context, st *amber.Store, plugins map[string]builddef.Input, srcRoot, dir string, shellKey key.Key, errSink io.Writer, depDirs map[string]string) (map[string]recipe.PluginSpec, error) {
 	specs := make(map[string]recipe.PluginSpec, len(plugins))
 	for name, in := range plugins {
 		pk, err := in.Key()
@@ -321,7 +351,7 @@ func buildPluginCallers(ctx context.Context, st *amber.Store, plugins map[string
 		}
 		specs[name] = recipe.PluginSpec{
 			Caller: SandboxedPluginCaller{
-				Cl: st, PluginKey: pluginOut, SourceDir: srcRoot, ShellKey: shellKey, Ctx: ctx,
+				Cl: st, PluginKey: pluginOut, SourceDir: srcRoot, Dir: dir, ShellKey: shellKey, Ctx: ctx,
 				StderrSink: errSink, DepDirs: depDirs,
 			},
 			Pins: pins,

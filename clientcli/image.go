@@ -19,15 +19,17 @@ import (
 // the by-key form images an already-built output (a K pulled home by
 // remote-build, or a local F) without building anything.
 type imageConfig struct {
-	dataDir   string
-	source    string
-	dir       string
-	buildFile string
-	platform  string
-	shellRef  string
-	tag       string
-	output    string
-	noShell   bool
+	dataDir    string
+	source     string
+	dir        string
+	buildFile  string
+	platform   string
+	shellRef   string
+	tag        string
+	output     string
+	noShell    bool
+	sourceRoot string
+	noRepoRoot bool
 }
 
 func imageCmd() *cli.Command {
@@ -43,6 +45,8 @@ func imageCmd() *cli.Command {
 			&cli.BoolFlag{Name: "no-shell", Usage: "do not bake the shell artifact (/bin/sh, /jobs/shell) into the image", Destination: &cfg.noShell},
 			&cli.StringFlag{Name: "source", Usage: "build this local source tree, then image it", Destination: &cfg.source},
 			&cli.StringFlag{Name: "dir", Usage: "build root within the source (where BUILD.jobs lives)", Destination: &cfg.dir},
+			&cli.StringFlag{Name: "source-root", Usage: "explicit context root (--source must live under it); default: the git repo root above --source", Destination: &cfg.sourceRoot},
+			&cli.BoolFlag{Name: "no-repo-root", Usage: "disable the git-root context default (ingest --source itself)", Destination: &cfg.noRepoRoot},
 			&cli.StringFlag{Name: "build-file", Usage: "recipe path relative to dir (default BUILD.jobs)", Destination: &cfg.buildFile},
 			&cli.StringFlag{Name: "platform", EnvVars: []string{"JOBS_PLATFORM"}, Value: runner.Platform(), Usage: "target platform, e.g. linux/amd64 (also the image OS/arch)", Destination: &cfg.platform},
 			&cli.StringFlag{Name: "shell-ref", EnvVars: []string{"JOBS_SHELL_REF"}, Usage: "amber ref for the vendored shell artifact (default shell:<platform>)", Destination: &cfg.shellRef},
@@ -88,6 +92,11 @@ func (cfg *imageConfig) run(c *cli.Context) (err error) {
 
 	// Source mode: build the local tree, then image it.
 	if cfg.source != "" {
+		root, rdir, rerr := resolveContextRoot(cfg.source, cfg.dir, cfg.sourceRoot, cfg.noRepoRoot)
+		if rerr != nil {
+			return rerr
+		}
+		cfg.source, cfg.dir = root, rdir
 		params, perr := parseParams(c.StringSlice("param"))
 		if perr != nil {
 			return perr

@@ -14,9 +14,12 @@ import (
 )
 
 // request is the plugin's CBOR stdin payload (mirrors runner.pluginRequest).
+// Dir is the consumer package's dir within the mounted source tree
+// (sibling-sources design §9); "" for legacy narrow builds.
 type request struct {
 	Call   map[string]any `cbor:"call"`
 	Source string         `cbor:"source"`
+	Dir    string         `cbor:"dir"`
 }
 
 func main() {
@@ -58,7 +61,34 @@ func run() error {
 		out = append(out, modOut{Path: m.Path, Version: m.Version, Input: spec})
 	}
 
-	resp, err := cbor.Marshal(out)
+	// Monorepo mode (sibling-sources design §12.1): a go_mod (and/or go_work)
+	// kwarg switches the response to {modules, sources} — sources are the
+	// //-rooted sibling paths of the manifest's relative replace/use targets,
+	// for the recipe to forward into build() sources=. Go's main-module-only
+	// replace rule makes the consumer's manifest the complete local closure.
+	// Without the kwarg the legacy bare-array response is byte-identical.
+	var rels []string
+	monorepo := false
+	for _, kw := range []string{"go_mod", "go_work"} {
+		switch v := req.Call[kw].(type) {
+		case []byte:
+			rels = append(rels, relDirectives(v)...)
+			monorepo = true
+		case string:
+			rels = append(rels, relDirectives([]byte(v))...)
+			monorepo = true
+		}
+	}
+
+	var resp []byte
+	if monorepo {
+		resp, err = cbor.Marshal(map[string]any{
+			"modules": out,
+			"sources": siblingSources(rels, req.Dir),
+		})
+	} else {
+		resp, err = cbor.Marshal(out)
+	}
 	if err != nil {
 		return fmt.Errorf("encode response: %w", err)
 	}

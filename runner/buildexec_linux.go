@@ -136,9 +136,17 @@ func assembleSandbox(ctx context.Context, st *amber.Store, spec BuildSpec, comma
 		})
 	}
 
+	// A widened build runs with CWD at its BUILD.jobs dir (design §9) so
+	// toolchain-relative paths (go build ./..., cargo -p) work naturally;
+	// legacy builds keep CWD=/ (scripts address $SRC explicitly).
+	workdir := ""
+	if spec.Workdir != "" {
+		workdir = sandboxSrcDir + "/" + spec.Workdir
+	}
 	a.cfg = sandbox.Config{
 		Command: command,
 		Env:     buildEnv(spec),
+		Dir:     workdir,
 		NewRoot: newRoot,
 		Mounts: append(append(append(append([]sandbox.Mount{
 			// The vendored shell is a fully STATIC userland (build.md §8, §14), so
@@ -253,6 +261,13 @@ func buildEnv(spec BuildSpec) []string {
 	// Structural variables are authoritative — the recipe's $SRC/$out/PATH must
 	// point at the sandbox layout, never at a stale spec value.
 	merged["SRC"] = sandboxSrcDir
+	if spec.Workdir != "" {
+		// Widened-context layout (sibling-sources design §9): $SRC is the
+		// BUILD.jobs dir (existing recipes keep their meaning), $SRC_ROOT the
+		// repo-relative source root for ../sibling access.
+		merged["SRC"] = sandboxSrcDir + "/" + spec.Workdir
+		merged["SRC_ROOT"] = sandboxSrcDir
+	}
 	merged["out"] = sandboxOutDir
 	merged["HOME"] = sandboxHomeDir
 	merged["PATH"] = shellDir + "/bin"

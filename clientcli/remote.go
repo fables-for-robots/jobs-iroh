@@ -35,12 +35,20 @@ func treeDefinition(sourceKey key.Key, dir, buildFile, platform string, params [
 	if err != nil {
 		return nil, key.Key{}, err
 	}
+	// Every subdir build carries widened-context semantics, marked
+	// structurally (sibling-sources design §3.2: always-on; old servers
+	// reject the unknown field at the submit canonicality check).
+	ctxv := 0
+	if dir != "" {
+		ctxv = builddef.CtxWidened
+	}
 	def := builddef.Definition{
 		Source:    in,
 		Dir:       dir,
 		Platform:  platform,
 		Params:    params,
 		BuildFile: buildFile,
+		Ctx:       ctxv,
 	}
 	canon, err = def.Canonical()
 	if err != nil {
@@ -56,15 +64,17 @@ func treeDefinition(sourceKey key.Key, dir, buildFile, platform string, params [
 // remoteConfig carries the remote-build flags: where the server is, what to
 // build, and the optional resource raise for the target build.
 type remoteConfig struct {
-	server    string
-	dataDir   string
-	source    string
-	dir       string
-	buildFile string
-	platform  string
-	cpu       string
-	memory    string
-	conns     int
+	server     string
+	dataDir    string
+	sourceRoot string
+	noRepoRoot bool
+	source     string
+	dir        string
+	buildFile  string
+	platform   string
+	cpu        string
+	memory     string
+	conns      int
 }
 
 func remoteBuildCmd() *cli.Command {
@@ -78,6 +88,8 @@ func remoteBuildCmd() *cli.Command {
 			&cli.StringFlag{Name: "data-dir", EnvVars: []string{"JOBS_DATA_DIR"}, Value: defaultDataDir(), Usage: "client data directory (embedded store + cache)", Destination: &cfg.dataDir},
 			&cli.StringFlag{Name: "source", Required: true, Usage: "source directory to ingest and push as the build source", Destination: &cfg.source},
 			&cli.StringFlag{Name: "dir", Usage: "build root within the source (where BUILD.jobs lives)", Destination: &cfg.dir},
+			&cli.StringFlag{Name: "source-root", Usage: "explicit context root (--source must live under it); default: the git repo root above --source", Destination: &cfg.sourceRoot},
+			&cli.BoolFlag{Name: "no-repo-root", Usage: "disable the git-root context default (ingest --source itself)", Destination: &cfg.noRepoRoot},
 			&cli.StringFlag{Name: "build-file", Usage: "recipe path relative to dir (default BUILD.jobs)", Destination: &cfg.buildFile},
 			&cli.StringFlag{Name: "platform", EnvVars: []string{"JOBS_PLATFORM"}, Value: runner.Platform(), Usage: "target platform, e.g. linux/amd64", Destination: &cfg.platform},
 			&cli.StringSliceFlag{Name: "param", Usage: "key=value build param (repeatable)"},
@@ -115,6 +127,11 @@ func (cfg *remoteConfig) run(c *cli.Context) error {
 	}
 	defer cs.Close()
 
+	if root, rdir, rerr := resolveContextRoot(cfg.source, cfg.dir, cfg.sourceRoot, cfg.noRepoRoot); rerr != nil {
+		return rerr
+	} else {
+		cfg.source, cfg.dir = root, rdir
+	}
 	lv.Println("ingesting " + cfg.source)
 	sourceKey, err := cs.Store.IngestSourceDir(ctx, cfg.source)
 	if err != nil {
