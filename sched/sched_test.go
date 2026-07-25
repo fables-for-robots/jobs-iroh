@@ -167,9 +167,16 @@ func (fr *fakeRunner) byKind(kind string) []wire.Job {
 // result-before-ack, like the real runner.
 func (e *env) startRunner(classes []wire.Class, handle func(wire.Job) *wire.Result) *fakeRunner {
 	e.t.Helper()
+	return e.startRunnerOn(testPlatform, classes, handle)
+}
+
+// startRunnerOn is startRunner bound to an explicit platform (multi-platform
+// tests need one fake runner per platform lane set).
+func (e *env) startRunnerOn(platform string, classes []wire.Class, handle func(wire.Job) *wire.Result) *fakeRunner {
+	e.t.Helper()
 	fr := &fakeRunner{jobs: map[string][]wire.Job{}}
 	for _, class := range classes {
-		cons, err := e.js.CreateOrUpdateConsumer(e.ctx, wire.StreamJobs, LaneConsumerConfig(testPlatform, class))
+		cons, err := e.js.CreateOrUpdateConsumer(e.ctx, wire.StreamJobs, LaneConsumerConfig(platform, class))
 		if err != nil {
 			e.t.Fatalf("lane consumer %s: %v", class, err)
 		}
