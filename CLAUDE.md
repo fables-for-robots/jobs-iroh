@@ -43,7 +43,8 @@ nix develop -c go build ./...
 
 | Package | What it is |
 |---|---|
-| `amber/` | Store seam over amber-store-core. Pinned chunk params (ByteOpts 32Ki/128Ki/256Ki, ItemBits 7) are **identity-critical** — never change them. |
+| `amber/` | Store seam over amber-store-core. Pinned chunk params (ByteOpts 32Ki/128Ki/256Ki, ItemBits 7) are **identity-critical** — never change them. Sibling-sources ops: PruneTree/NormalizeTree (covered trees, uid/gid=0 + ZIP-epoch mtimes — KP is mtime-immune), OverlayTree (generated sources), BuildKPTree ({job.cbor, platform, v, src/}). Source ingest excludes `.git` at every level. |
+| `cover/` | **Identity-critical shared** closure walker + KP derivation (sibling-sources design): pin expands declared+discovered paths (component-wise in-store symlink chase, ELOOP budget 40, dangling warn-keep, escaping fail + `sources_allow_escaping`) into `Pinned.Sources`; `cover.Derive` (used identically by pin runner, server pin-commit, local pipeline) = prune + generated overlay + KP tree. Bump `amber.KPVersion` on ANY semantic change here or in PruneTree. |
 | `natsiroh/` | NATS-over-iroh tunnel (dialer + stream proxy). The dialer writes a `0x00` stream preamble because the NATS server speaks first. |
 | `wire/` | Frozen scheduler wire contracts: node names, phases, Job/Result CBOR, size-class ladder, NATS subject/stream layout. |
 | `api/` | Frozen client API frames (4-byte BE length + CBOR `{t,b}` envelope) for the build/admin ALPNs. |
@@ -130,3 +131,15 @@ Every `main()` and every sandbox-driving `TestMain` must call
   before writing any ref.
 - Refs are **UNSIGNED** `reference.Reference` records — no sshsign/grants;
   transport identity is the iroh endpoint key.
+- **Sibling sources** (docs/design/2026-07-26-sibling-sources.md — read it
+  before touching identity, sched, pin, or the sandbox): every `dir != ""`
+  def carries `ctx: 2` (widened context; `Definition.Canonical()` MUST copy
+  every field or the submit canonicality check strips + rejects it). Buildrun
+  is **KP-keyed** (`build-output:<KP>` is doneness AND the cross-context
+  memo); `build-output(-deps):F` are server-written aliases — deps STRICTLY
+  before output, aliases before the buildvalue goes done. Derived refs
+  (`pin-cover/<v>:F`, `kp-tree/<KP>`, `build-pinned:<KP>`, `f-tree/<F>`)
+  re-derive on demand — absence after done is a crash window, never a
+  failure. Old runners are fenced by the `jobs-runner-nats/2.0` ALPN — bump
+  it again whenever an old runner would produce wrong results rather than
+  clean errors.

@@ -230,9 +230,14 @@ func (NamespaceBuildExecutor) RunBuild(ctx context.Context, st *amber.Store, spe
 	a.cfg.Stdout = stdout
 	a.cfg.Stderr = stderr
 
-	// What is actually being run, ahead of the trace.
+	// What is actually being run, ahead of the trace. $SRC is the build dir
+	// for widened builds (sibling-sources design §9) — print the real value.
+	srcBanner := sandboxSrcDir
+	if spec.Workdir != "" {
+		srcBanner = sandboxSrcDir + "/" + spec.Workdir
+	}
 	fmt.Fprintf(stderr, "jobs: exec %s ($SRC=%s, $out=%s, net=none)\n",
-		strings.Join(a.cfg.Command, " "), sandboxSrcDir, sandboxOutDir)
+		strings.Join(a.cfg.Command, " "), srcBanner, sandboxOutDir)
 
 	spec.Events.Phase("building")
 	// Liveness + cgroup usage while the script runs; stop before the deferred
