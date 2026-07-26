@@ -33,7 +33,7 @@ Four pillars carry the whole design:
 ```
         jobs-client                          jobs-runner (×N)
    private store (flock)                private store + sandbox
-        │ jobs-build/1.0                      │ jobs-runner-nats/1.0
+        │ jobs-build/1.0                      │ jobs-runner-nats/3.0
         │ jobs-admin/1.0                      │ jobs-runner-amber/1.0
         │ jobs-amber-admin/1.0                │
         └───────────────┐        ┌────────────┘
@@ -63,7 +63,7 @@ runner it is purely a dial-side peer: a private store synced on demand over
 | ALPN | Peer | Purpose |
 |---|---|---|
 | `jobs-build/1.0` | client | submit a build, watch progress, fetch logs, cancel |
-| `jobs-runner-nats/1.0` | runner | NATS tunnel — each stream proxies to the embedded NATS server |
+| `jobs-runner-nats/3.0` | runner | NATS tunnel — each stream proxies to the embedded NATS server |
 | `jobs-runner-amber/1.0` | runner | store sync (objects + refs) |
 | `jobs-admin/1.0` | client / TUI | requests, fleet, stats, refs browse, cancel/delete, diagnose |
 | `jobs-amber-admin/1.0` | client / registry | store sync — push source trees up, pull outputs (and images-to-be) home |
@@ -290,7 +290,7 @@ server-pushed frames. Build-ALPN requests: `submit`, `watch`, `logs`,
 watches the stream; anything unexpected from the client (including close)
 cancels the work.
 
-**The NATS tunnel** (`jobs-runner-nats/1.0`, `natsiroh/`): the runner's
+**The NATS tunnel** (`jobs-runner-nats/3.0`, `natsiroh/`): the runner's
 stock NATS client is given a custom dialer that opens an iroh stream and
 returns it as a `net.Conn`; the server side proxies each accepted stream to
 an in-process connection of the embedded NATS server. One wrinkle: a QUIC

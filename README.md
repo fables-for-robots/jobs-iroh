@@ -18,7 +18,7 @@ images). One server endpoint, five ALPNs:
 | ALPN | Who | What |
 |---|---|---|
 | `jobs-build/1.0` | client | submit builds, watch, logs, cancel |
-| `jobs-runner-nats/1.0` | runner | NATS tunnel to the embedded scheduler |
+| `jobs-runner-nats/3.0` | runner | NATS tunnel to the embedded scheduler |
 | `jobs-runner-amber/1.0` | runner | store sync (objects + refs) |
 | `jobs-admin/1.0` | client (TUI) | observe builds, stats, fleet, refs, cancel/delete, diagnose |
 | `jobs-amber-admin/1.0` | client / registry | push source trees up, pull outputs home |

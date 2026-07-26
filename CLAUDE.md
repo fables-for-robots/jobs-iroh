@@ -7,7 +7,7 @@ runners, a client, connected only by iroh QUIC — no k8s, HTTP, WebSockets,
 CRDTs, gossip, or signing keys. It embeds NATS (JetStream, `DontListen`) for
 scheduling and amber-store-core as the content-addressed store. Three core
 binaries (`jobs-server`, `jobs-runner`, `jobs-client`) and five ALPNs on one
-server endpoint: `jobs-build/1.0`, `jobs-runner-nats/1.0`,
+server endpoint: `jobs-build/1.0`, `jobs-runner-nats/3.0`,
 `jobs-runner-amber/1.0`, `jobs-admin/1.0`, `jobs-amber-admin/1.0`. The build
 model (Starlark recipes, canonical-CBOR identity, hermetic sandbox,
 self-bootstrapping fetchers/shell) is ported from jobs intact. A fourth,
@@ -44,7 +44,7 @@ nix develop -c go build ./...
 | Package | What it is |
 |---|---|
 | `amber/` | Store seam over amber-store-core. Pinned chunk params (ByteOpts 32Ki/128Ki/256Ki, ItemBits 7) are **identity-critical** — never change them. Sibling-sources ops: PruneTree/NormalizeTree (covered trees, uid/gid=0 + ZIP-epoch mtimes — KP is mtime-immune), OverlayTree (generated sources), BuildKPTree ({job.cbor, platform, v, src/}). Source ingest excludes `.git` at every level. |
-| `cover/` | **Identity-critical shared** closure walker + KP derivation (sibling-sources design): pin expands declared+discovered paths (component-wise in-store symlink chase, ELOOP budget 40, dangling warn-keep, escaping fail + `sources_allow_escaping`) into `Pinned.Sources`; `cover.Derive` (used identically by pin runner, server pin-commit, local pipeline) = prune + generated overlay + KP tree. Bump `amber.KPVersion` on ANY semantic change here or in PruneTree. |
+| `cover/` | **Identity-critical shared** closure walker + KP derivation (sibling-sources design): pin expands declared+discovered paths (component-wise in-store symlink chase, ELOOP budget 40, dangling warn-keep, escaping fail + `sources_allow_escaping`) into `Pinned.Sources`; `WalkClosure` expands complete covers (no dir seed, workdir validation) into `Pinned.Closure`; `cover.Derive` (used identically by pin runner, server pin-commit, local pipeline) = prune + generated overlay + KP tree. Bump `amber.KPVersion` on ANY semantic change here or in PruneTree. |
 | `natsiroh/` | NATS-over-iroh tunnel (dialer + stream proxy). The dialer writes a `0x00` stream preamble because the NATS server speaks first. |
 | `wire/` | Frozen scheduler wire contracts: node names, phases, Job/Result CBOR, size-class ladder, NATS subject/stream layout. |
 | `api/` | Frozen client API frames (4-byte BE length + CBOR `{t,b}` envelope) for the build/admin ALPNs. |
@@ -59,7 +59,7 @@ nix develop -c go build ./...
 | `tui/` | bubbletea admin TUI over `jobs-admin/1.0`: builds (watch/logs/cancel/delete), fleet, stats, refs. Never block in Update — network I/O only inside tea.Cmd goroutines. |
 | `builddef/`, `recipe/` | Build definition identity (canonical CBOR) + Starlark recipe evaluation — ports, seam-swapped. |
 | `bootstrap/` | Embedded seed artifacts (shell + fetchers per platform), idempotent seeding. |
-| `fetchers/`, `plugins/` | Self-bootstrapping fetcher builds + goplugin — ports. |
+| `fetchers/`, `plugins/` | Self-bootstrapping fetcher builds + goplugin — ports. goplugin's `go_closure` kwarg computes the //-rooted complete cover (source-closure design §8). |
 | `sandbox/`, `tailbuf/`, `resources/`, `importdef/` | Verbatim ports from jobs — keep drift-free against upstream. |
 | `cmd/jobs-server`, `cmd/jobs-runner`, `cmd/jobs-client`, `cmd/jobs-registry` | The mains (each calls `sandbox.Init()` first). |
 
@@ -140,6 +140,14 @@ Every `main()` and every sandbox-driving `TestMain` must call
   before output, aliases before the buildvalue goes done. Derived refs
   (`pin-cover/<v>:F`, `kp-tree/<KP>`, `build-pinned:<KP>`, `f-tree/<F>`)
   re-derive on demand — absence after done is a crash window, never a
-  failure. Old runners are fenced by the `jobs-runner-nats/2.0` ALPN — bump
+  failure. Old runners are fenced by the `jobs-runner-nats/3.0` ALPN — bump
   it again whenever an old runner would produce wrong results rather than
   clean errors.
+- **Source closure** (docs/design/2026-07-27-source-closure.md): `closure=`
+  on the `build()` return is a **COMPLETE cover** — the build dir is NOT
+  auto-seeded, mutually exclusive with `sources=`, allowed for root builds
+  (`dir == ""`), carried in `Pinned.Closure`, and validated at pin time to
+  cover the build dir (the sandbox workdir must exist). goplugin's
+  `go_closure` kwarg computes it (pure-Go transitive import walk;
+  module-root packages enumerate files + embed globs). No `KPVersion` bump
+  (existing derivations are byte-identical); the `/3.0` ALPN is the fence.

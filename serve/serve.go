@@ -43,8 +43,10 @@ const (
 	// polite version handshake could be ignored — bumping the ALPN makes an
 	// old runner fail loudly at dial time instead. Bump it again whenever a
 	// change would make an old runner produce wrong results rather than
-	// clean errors.
-	ALPNRunnerNATS  = "jobs-runner-nats/2.0"
+	// clean errors. Bumped to 3.0 for source closures: an old runner's
+	// recipe decoder silently ignores closure= and would fork
+	// pin-cover/<v>:F content (source-closure design §7.2).
+	ALPNRunnerNATS  = "jobs-runner-nats/3.0"
 	ALPNRunnerAmber = "jobs-runner-amber/1.0" // runner: CAS object/ref sync
 	ALPNAdmin       = "jobs-admin/1.0"        // admin TUI: observe builds, stats
 	ALPNAmberAdmin  = "jobs-amber-admin/1.0"  // client: CAS ref sync (source up, outputs home)
