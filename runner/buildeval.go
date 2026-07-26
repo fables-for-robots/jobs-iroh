@@ -178,8 +178,27 @@ func RunPin(ctx context.Context, st *amber.Store, rw RefWriter, brc BuildRunCfg,
 	// paths once, here — symlink chasing, escape validation, dangling warnings.
 	// The EXPANDED set lands in Pinned.Sources, so every later KP derivation
 	// (server pin-commit, local memo) is a pure prune+assemble, never a walk.
-	var covered []string
-	if env.ContextKey != (key.Key{}) {
+	var covered, closure []string
+	switch {
+	case len(res.Closure) > 0:
+		// Complete cover (source-closure design §5): dir is not auto-seeded;
+		// root builds (no widened context) walk the build-root tree — the
+		// same tree Derive later receives as the F env/.
+		root := env.ContextKey
+		if root == (key.Key{}) {
+			root = env.SourceContentKey
+		}
+		walk, werr := cover.WalkClosure(ctx, st, root, env.Dir, res.Closure, res.AllowEscaping)
+		if werr != nil {
+			return hard("covering", werr.Error(), 0)
+		}
+		if len(walk.Warnings) > 0 && pluginErrSink != nil {
+			for _, w := range walk.Warnings {
+				fmt.Fprintf(pluginErrSink, "cover: %s: %s\n", w.Path, w.Msg)
+			}
+		}
+		closure = walk.Paths
+	case env.ContextKey != (key.Key{}):
 		walk, werr := cover.Walk(ctx, st, env.ContextKey, env.Dir, res.Sources, res.AllowEscaping)
 		if werr != nil {
 			return hard("covering", werr.Error(), 0)
@@ -190,7 +209,7 @@ func RunPin(ctx context.Context, st *amber.Store, rw RefWriter, brc BuildRunCfg,
 			}
 		}
 		covered = walk.Paths
-	} else if len(res.Sources) > 0 {
+	case len(res.Sources) > 0:
 		return hard("covering", "recipe declares sources= but the build has no widened context", 0)
 	}
 
@@ -225,6 +244,7 @@ func RunPin(ctx context.Context, st *amber.Store, rw RefWriter, brc BuildRunCfg,
 		Caches:      builddef.CanonicalCaches(res.Caches),
 		Resources:   res.Resources,
 		Sources:     builddef.CanonicalSources(covered),
+		Closure:     builddef.CanonicalSources(closure),
 		Dir:         env.Dir,
 		Generated:   res.Generated,
 	}
