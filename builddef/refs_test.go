@@ -134,3 +134,29 @@ func TestValidateDepName(t *testing.T) {
 		}
 	}
 }
+
+func TestPinnedClosureRoundTripAndByteCompat(t *testing.T) {
+	// A Pinned WITHOUT Closure must encode byte-identically whether or not
+	// the field exists in the struct (omitempty) — cached pins stay valid.
+	base := Pinned{Script: "echo hi", Dir: "svc/api", Sources: []string{"lib/common"}}
+	b1, err := EncodePinned(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(b1, []byte("closure")) {
+		t.Fatalf("closure key leaked into closure-less Pinned: %x", b1)
+	}
+
+	withC := Pinned{Script: "echo hi", Dir: "svc/api", Closure: []string{"lib/common", "svc/api/go.mod"}}
+	b2, err := EncodePinned(withC)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dec, err := DecodePinned(b2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(dec.Closure) != 2 || dec.Closure[0] != "lib/common" || dec.Closure[1] != "svc/api/go.mod" {
+		t.Fatalf("closure round-trip: got %v", dec.Closure)
+	}
+}

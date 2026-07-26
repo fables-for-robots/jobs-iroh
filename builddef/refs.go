@@ -83,8 +83,13 @@ type Pinned struct {
 	Caches      []PinnedCache     `cbor:"caches,omitempty"`
 	Resources   *PinnedResources  `cbor:"resources,omitempty"`
 	Sources     []string          `cbor:"sources,omitempty"`
-	Dir         string            `cbor:"dir,omitempty"`
-	Generated   map[string][]byte `cbor:"generated,omitempty"`
+	// Closure, when non-empty, is a COMPLETE cover of the source context
+	// (source-closure design §4): the build dir is NOT auto-seeded and the
+	// covered tree is exactly this expanded list. Mutually exclusive with
+	// Sources — producers enforce it at eval, cover.Derive re-checks.
+	Closure   []string          `cbor:"closure,omitempty"`
+	Dir       string            `cbor:"dir,omitempty"`
+	Generated map[string][]byte `cbor:"generated,omitempty"`
 }
 
 // GeneratedMaxBytes caps the total inline size of Pinned.Generated (the
