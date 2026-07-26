@@ -420,3 +420,84 @@ func TestDeriveGeneratedCap(t *testing.T) {
 		t.Errorf("generated total over the cap: err = %v, want cap error", err)
 	}
 }
+
+// --- WalkClosure (source-closure design §5) ---
+
+// closureFixture lays out lib/common, services/api (with a manifest), docs.
+func closureFixture(t *testing.T, s *amber.Store) key.Key {
+	t.Helper()
+	src := t.TempDir()
+	write(t, filepath.Join(src, "lib", "common", "a.txt"), []byte("a"))
+	write(t, filepath.Join(src, "services", "api", "go.mod"), []byte("module api"))
+	write(t, filepath.Join(src, "docs", "x.txt"), []byte("docs"))
+	return ingest(t, s, src)
+}
+
+func TestWalkClosureSeedsAndWorkdir(t *testing.T) {
+	s := newStore(t)
+	root := closureFixture(t, s)
+
+	// (a) no dir seed: only the declared path is covered even with dir="".
+	res, err := cover.WalkClosure(t.Context(), s, root, "", []string{"lib/common"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(res.Paths, []string{"lib/common"}) {
+		t.Fatalf("paths: %v", res.Paths)
+	}
+
+	// (b) workdir covered transitively via its own manifest.
+	if _, err := cover.WalkClosure(t.Context(), s, root, "services/api",
+		[]string{"lib/common", "services/api/go.mod"}, nil); err != nil {
+		t.Fatalf("covered workdir rejected: %v", err)
+	}
+
+	// (c) workdir NOT covered → hard error.
+	_, err = cover.WalkClosure(t.Context(), s, root, "services/api", []string{"lib/common"}, nil)
+	if err == nil || !strings.Contains(err.Error(), "does not cover the build dir") {
+		t.Fatalf("want workdir error, got %v", err)
+	}
+
+	// (d) ancestor cover satisfies the workdir check.
+	if _, err := cover.WalkClosure(t.Context(), s, root, "services/api", []string{"services"}, nil); err != nil {
+		t.Fatalf("ancestor cover rejected: %v", err)
+	}
+
+	// (e) empty closure → error.
+	if _, err := cover.WalkClosure(t.Context(), s, root, "", nil, nil); err == nil {
+		t.Fatal("empty closure accepted")
+	}
+
+	// (f) missing declared path → hard error (same rule as Walk seeds).
+	if _, err := cover.WalkClosure(t.Context(), s, root, "", []string{"nope"}, nil); err == nil {
+		t.Fatal("missing declared closure path accepted")
+	}
+}
+
+func TestDeriveClosureBranch(t *testing.T) {
+	s := newStore(t)
+	root := closureFixture(t, s)
+	viaClosure, err := cover.Derive(t.Context(), s,
+		encodePinned(t, builddef.Pinned{Script: "s", Closure: []string{"lib/common"}}),
+		builddef.Pinned{Script: "s", Closure: []string{"lib/common"}}, "linux/amd64", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The covered tree must match a Sources prune of the same list: KP trees
+	// differ only through job.cbor (Pinned bytes), so compare the src/ subtree.
+	viaSources, err := cover.Derive(t.Context(), s,
+		encodePinned(t, builddef.Pinned{Script: "s", Closure: []string{"lib/common"}}),
+		builddef.Pinned{Script: "s", Sources: []string{"lib/common"}}, "linux/amd64", root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if viaClosure != viaSources {
+		t.Fatalf("closure/sources prune divergence: %s vs %s", viaClosure, viaSources)
+	}
+
+	// Both set → error.
+	if _, err := cover.Derive(t.Context(), s, []byte("pb"),
+		builddef.Pinned{Closure: []string{"a"}, Sources: []string{"b"}}, "linux/amd64", root); err == nil {
+		t.Fatal("both Closure and Sources accepted")
+	}
+}

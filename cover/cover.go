@@ -90,6 +90,52 @@ func Walk(ctx context.Context, st *amber.Store, contextRoot key.Key, dir string,
 	return WalkResult{Paths: out, Warnings: w.warnings}, nil
 }
 
+// WalkClosure expands a COMPLETE declared cover (source-closure design §5):
+// unlike Walk, the build dir is NOT auto-seeded — the declared paths are the
+// whole cover. Same expansion semantics otherwise (missing declared ⇒ error,
+// component-wise symlink chase, escape policy via allowEscaping). After
+// expansion the closure must cover the build dir (a covered path at, under,
+// or above dir) or the pruned tree would lack the sandbox workdir — a
+// pin-time error, never a runtime cd failure (§5.3 [INV]). Root builds
+// (dir == "") satisfy the check trivially.
+func WalkClosure(ctx context.Context, st *amber.Store, contextRoot key.Key, dir string, declared, allowEscaping []string) (WalkResult, error) {
+	if len(declared) == 0 {
+		return WalkResult{}, fmt.Errorf("cover: empty closure")
+	}
+	w := &walker{
+		ctx: ctx, st: st, root: contextRoot,
+		covered: map[string]bool{},
+		visited: map[string]bool{},
+		allow:   map[string]bool{},
+	}
+	for _, p := range allowEscaping {
+		w.allow[p] = true
+	}
+	for _, s := range declared {
+		if err := w.cover(s, true); err != nil {
+			return WalkResult{}, err
+		}
+	}
+	if dir != "" {
+		ok := false
+		for p := range w.covered {
+			if p == dir || strings.HasPrefix(p, dir+"/") || strings.HasPrefix(dir, p+"/") {
+				ok = true
+				break
+			}
+		}
+		if !ok {
+			return WalkResult{}, fmt.Errorf("cover: closure does not cover the build dir %q — the sandbox workdir would not exist", dir)
+		}
+	}
+	out := make([]string, 0, len(w.covered))
+	for p := range w.covered {
+		out = append(out, p)
+	}
+	sort.Strings(out)
+	return WalkResult{Paths: out, Warnings: w.warnings}, nil
+}
+
 type walker struct {
 	ctx      context.Context
 	st       *amber.Store
@@ -251,20 +297,28 @@ func (w *walker) resolve(p string) (string, *amber.Entry, error) {
 
 // Derive computes KP from a pinned blob — the SINGLE implementation used by
 // the pin runner, the server's pin-commit derivation, and the local
-// pipeline's memo (design §6.2, §6.3). For a widened build: prune the context
-// to Pinned.Sources (the pre-expanded closure — no walking here), overlay
-// Pinned.Generated, and assemble {job.cbor, platform, v, src/}. For a legacy
-// or root build (no Sources, Dir == ""): the covered tree is the whole env
-// normalized — root builds get the same mtime-immune buildrun memo.
+// pipeline's memo (design §6.2, §6.3). Pinned.Closure (a COMPLETE cover,
+// source-closure design §6) branches first; then Pinned.Sources (widened
+// build: prune the context to the pre-expanded closure — no walking here);
+// else the covered tree is the whole env normalized (legacy/root builds get
+// the same mtime-immune buildrun memo). Generated overlays after the prune,
+// and {job.cbor, platform, v, src/} assembles into KP.
 func Derive(ctx context.Context, st *amber.Store, pinnedBytes []byte, p builddef.Pinned, platform string, contextRoot key.Key) (key.Key, error) {
 	if total := generatedSize(p.Generated); total > builddef.GeneratedMaxBytes {
 		return key.Key{}, fmt.Errorf("cover: generated sources total %d bytes exceeds the %d cap", total, builddef.GeneratedMaxBytes)
 	}
+	if len(p.Closure) > 0 && len(p.Sources) > 0 {
+		return key.Key{}, fmt.Errorf("cover: pinned declares both Closure and Sources")
+	}
 	var covered key.Key
 	var err error
-	if len(p.Sources) > 0 {
+	switch {
+	case len(p.Closure) > 0:
+		// Complete cover (source-closure design §6): same prune, closure list.
+		covered, err = st.PruneTree(ctx, contextRoot, p.Closure)
+	case len(p.Sources) > 0:
 		covered, err = st.PruneTree(ctx, contextRoot, p.Sources)
-	} else {
+	default:
 		covered, err = st.NormalizeTree(ctx, contextRoot)
 	}
 	if err != nil {
