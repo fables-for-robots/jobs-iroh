@@ -89,8 +89,9 @@ func decodeGenerated(v starlark.Value) (map[string][]byte, error) {
 }
 
 // normalizeBuildSources resolves the raw declared paths of a BuildResult
-// against the build dir, in place: Sources and AllowEscaping element-wise,
-// Generated keys re-mapped. Called by EvalBuild (the only holder of cfg.Dir).
+// against the build dir, in place: Sources, Closure and AllowEscaping
+// element-wise, Generated keys re-mapped. Called by EvalBuild (the only
+// holder of cfg.Dir).
 func normalizeBuildSources(r *BuildResult, dir string) error {
 	for i, p := range r.Sources {
 		np, err := NormalizeSourcePath(p, dir)
@@ -98,6 +99,13 @@ func normalizeBuildSources(r *BuildResult, dir string) error {
 			return fmt.Errorf("build() sources[%d]: %w", i, err)
 		}
 		r.Sources[i] = np
+	}
+	for i, p := range r.Closure {
+		np, err := NormalizeSourcePath(p, dir)
+		if err != nil {
+			return fmt.Errorf("build() closure[%d]: %w", i, err)
+		}
+		r.Closure[i] = np
 	}
 	for i, p := range r.AllowEscaping {
 		np, err := NormalizeSourcePath(p, dir)

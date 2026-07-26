@@ -258,6 +258,11 @@ type BuildResult struct {
 	// // prefix stripped, ../-sugar resolved against the build dir). nil when
 	// the recipe declares none.
 	Sources []string
+	// Closure is the COMPLETE declared cover (source-closure design §3): the
+	// build dir is NOT auto-seeded and the covered tree is exactly this list.
+	// Mutually exclusive with Sources; allowed for root builds. Normalized
+	// root-relative like Sources.
+	Closure []string
 	// Generated are pin-synthesized files overlaid onto the covered tree
 	// (design §7): normalized root-relative path → content bytes.
 	Generated map[string][]byte
@@ -357,13 +362,21 @@ func EvalBuild(cfg EvalConfig, recipeSrc []byte, plugins map[string]PluginSpec) 
 		out.RuntimeDeps[i] = pinned
 	}
 	// Resolve declared covered paths to root-relative form against the build
-	// dir (sibling-sources design §5.2). Declaring sources in a legacy narrow
-	// evaluation (no context) is a hard error — the covered paths would be
-	// meaningless.
-	if len(out.Sources) > 0 || len(out.Generated) > 0 || len(out.AllowEscaping) > 0 {
-		if cfg.ContextKey == (key.Key{}) {
-			return BuildResult{}, fmt.Errorf("build() declares sources/generated but this build has no widened context (submit from a repo root, or drop the declarations)")
-		}
+	// dir (sibling-sources design §5.2, source-closure design §3). closure is
+	// a complete cover and is allowed everywhere — root builds included (the
+	// gate lift). sources still needs a widened context; generated and
+	// sources_allow_escaping ride with either a widened context or a closure.
+	widened := cfg.ContextKey != (key.Key{})
+	if len(out.Closure) > 0 && len(out.Sources) > 0 {
+		return BuildResult{}, fmt.Errorf("build() declares both closure and sources — closure is a complete cover; drop sources")
+	}
+	if len(out.Sources) > 0 && !widened {
+		return BuildResult{}, fmt.Errorf("build() declares sources/generated but this build has no widened context (submit from a repo root, or drop the declarations)")
+	}
+	if (len(out.Generated) > 0 || len(out.AllowEscaping) > 0) && !widened && len(out.Closure) == 0 {
+		return BuildResult{}, fmt.Errorf("build() declares generated/sources_allow_escaping but this build has neither a widened context nor a closure")
+	}
+	if len(out.Sources) > 0 || len(out.Generated) > 0 || len(out.AllowEscaping) > 0 || len(out.Closure) > 0 {
 		if err := normalizeBuildSources(&out, cfg.Dir); err != nil {
 			return BuildResult{}, err
 		}
@@ -374,7 +387,7 @@ func EvalBuild(cfg EvalConfig, recipeSrc []byte, plugins map[string]PluginSpec) 
 // decodeBuildResult accepts a *starlarkstruct.Struct or a 4-tuple.
 func decodeBuildResult(v starlark.Value) (BuildResult, error) {
 	var inputsV, envV, scriptV, rtV, cachesV, resourcesV, nameV starlark.Value
-	var sourcesV, generatedV, allowEscV starlark.Value
+	var sourcesV, closureV, generatedV, allowEscV starlark.Value
 	switch t := v.(type) {
 	case *starlarkstruct.Struct:
 		get := func(field string) (starlark.Value, error) {
@@ -412,10 +425,14 @@ func decodeBuildResult(v starlark.Value) (BuildResult, error) {
 		if nv, nerr := t.Attr("name"); nerr == nil {
 			nameV = nv
 		}
-		// sources / generated / sources_allow_escaping are OPTIONAL
-		// (sibling-sources design §5.2, §7); struct form only.
+		// sources / closure / generated / sources_allow_escaping are OPTIONAL
+		// (sibling-sources design §5.2, §7; source-closure design §3);
+		// struct form only.
 		if sv, serr := t.Attr("sources"); serr == nil {
 			sourcesV = sv
+		}
+		if cv, cerr := t.Attr("closure"); cerr == nil {
+			closureV = cv
 		}
 		if gv, gerr := t.Attr("generated"); gerr == nil {
 			generatedV = gv
@@ -470,11 +487,16 @@ func decodeBuildResult(v starlark.Value) (BuildResult, error) {
 		}
 		name = s
 	}
-	var sources, allowEsc []string
+	var sources, closure, allowEsc []string
 	var generated map[string][]byte
 	if sourcesV != nil {
 		if sources, err = decodeSources(sourcesV); err != nil {
 			return BuildResult{}, fmt.Errorf("build() sources: %w", err)
+		}
+	}
+	if closureV != nil {
+		if closure, err = decodeSources(closureV); err != nil {
+			return BuildResult{}, fmt.Errorf("build() closure: %w", err)
 		}
 	}
 	if allowEscV != nil {
@@ -488,7 +510,7 @@ func decodeBuildResult(v starlark.Value) (BuildResult, error) {
 		}
 	}
 	return BuildResult{Inputs: inputs, Env: env, Script: script, RuntimeDeps: rtDeps, Caches: caches, Resources: res, Name: name,
-		Sources: sources, Generated: generated, AllowEscaping: allowEsc}, nil
+		Sources: sources, Closure: closure, Generated: generated, AllowEscaping: allowEsc}, nil
 }
 
 // decodeResources reads a Starlark struct(cpu="...", memory="...") into a

@@ -187,3 +187,95 @@ func TestSubbuildRootRelative(t *testing.T) {
 		t.Errorf("//../ subbuild must error")
 	}
 }
+
+// rootCfg is a build-stage eval config for a ROOT build: no widened context.
+func rootCfg(t *testing.T) EvalConfig {
+	t.Helper()
+	cfg := widenedCfg(t, "")
+	cfg.ContextKey = key.Key{}
+	return cfg
+}
+
+func TestEvalBuildClosure(t *testing.T) {
+	// (a) closure decodes + normalizes; allowed at ROOT (zero ContextKey).
+	src := []byte(`
+def build():
+    return struct(inputs={}, env={}, script="s", runtime_deps=[],
+                  closure=["//lib/common", "cmd/foo", "//go.mod"])
+`)
+	res, err := EvalBuild(rootCfg(t), src, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"lib/common", "cmd/foo", "go.mod"}
+	if len(res.Closure) != len(want) {
+		t.Fatalf("closure: got %v want %v", res.Closure, want)
+	}
+	for i, w := range want {
+		if res.Closure[i] != w {
+			t.Errorf("closure[%d] = %q, want %q", i, res.Closure[i], w)
+		}
+	}
+
+	// (b) closure normalizes against dir in a widened build.
+	widened := []byte(`
+def build():
+    return struct(inputs={}, env={}, script="s", runtime_deps=[],
+                  closure=["../shared", "go.mod"])
+`)
+	wres, err := EvalBuild(widenedCfg(t, "services/api"), widened, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantW := []string{"services/shared", "services/api/go.mod"}
+	for i, w := range wantW {
+		if wres.Closure[i] != w {
+			t.Errorf("widened closure[%d] = %q, want %q", i, wres.Closure[i], w)
+		}
+	}
+
+	// (c) closure + sources together → error naming both.
+	both := []byte(`
+def build():
+    return struct(inputs={}, env={}, script="s", runtime_deps=[],
+                  closure=["//a"], sources=["//b"])
+`)
+	if _, err := EvalBuild(widenedCfg(t, "x"), both, nil); err == nil ||
+		!strings.Contains(err.Error(), "both closure and sources") {
+		t.Fatalf("want both-declared error, got %v", err)
+	}
+
+	// (d) generated WITH closure at root is allowed.
+	gen := []byte(`
+def build():
+    return struct(inputs={}, env={}, script="s", runtime_deps=[],
+                  closure=["//lib"], generated={"//lib/gen.txt": "x"})
+`)
+	gres, err := EvalBuild(rootCfg(t), gen, nil)
+	if err != nil {
+		t.Fatalf("generated+closure at root: %v", err)
+	}
+	if string(gres.Generated["lib/gen.txt"]) != "x" {
+		t.Errorf("generated = %v", gres.Generated)
+	}
+
+	// (e) generated WITHOUT closure at root still rejected.
+	genOnly := []byte(`
+def build():
+    return struct(inputs={}, env={}, script="s", runtime_deps=[],
+                  generated={"//lib/gen.txt": "x"})
+`)
+	if _, err := EvalBuild(rootCfg(t), genOnly, nil); err == nil {
+		t.Fatal("generated without closure/context: want error")
+	}
+
+	// (f) sources at root still rejected (unchanged rule).
+	srcOnly := []byte(`
+def build():
+    return struct(inputs={}, env={}, script="s", runtime_deps=[], sources=["//lib"])
+`)
+	if _, err := EvalBuild(rootCfg(t), srcOnly, nil); err == nil ||
+		!strings.Contains(err.Error(), "no widened context") {
+		t.Fatal("sources at root accepted")
+	}
+}
