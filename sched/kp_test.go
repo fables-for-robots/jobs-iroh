@@ -359,3 +359,47 @@ func TestSubbuildCycleDetection(t *testing.T) {
 		t.Errorf("runA failed on a non-cycle require")
 	}
 }
+
+// TestKPDerivedRefHealClosure is TestKPDerivedRefHeal with a CLOSURE-carrying
+// Pinned (source-closure design §11): the server-side derivation must honor
+// Pinned.Closure (PruneTree branch) through the full pipeline, and the §6.3
+// crash-window re-derivation must converge on the same KP without re-running
+// any stage.
+func TestKPDerivedRefHealClosure(t *testing.T) {
+	e := newEnv(t)
+	fr := e.startRunner([]wire.Class{"c0.2-m1", "c1-m1"},
+		e.standardHandler(builddef.Pinned{Closure: []string{"file.txt"}}))
+
+	defBytes := e.treeDef("kp-heal-closure")
+	_, f, kp := e.runChain(defBytes)
+	pinnedKey := e.mustRef("build-pinned:" + f.String())
+	outKP := e.mustRef("build-output:" + kp.String())
+
+	e.deleteRefs(
+		PinCoverRef(f), "build-pinned:"+kp.String(), KPTreeRef(kp),
+		"build-output:"+f.String(), "build-output-deps:"+f.String(),
+	)
+
+	sub, err := e.s.Submit(e.ctx, api.SubmitRequest{Def: defBytes})
+	if err != nil {
+		t.Fatalf("resubmit: %v", err)
+	}
+	if snap := e.watchTerminal(sub.RequestID); snap.Phase != "done" {
+		t.Fatalf("healed resubmit phase = %s, want done (%+v)", snap.Phase, snap)
+	}
+
+	if kp2 := e.mustRef(PinCoverRef(f)); kp2 != kp {
+		t.Errorf("healed pin-cover -> %s, want %s (closure derivation must be pure)", kp2, kp)
+	}
+	if pk := e.mustRef("build-pinned:" + kp.String()); pk != pinnedKey {
+		t.Errorf("healed build-pinned:KP -> %s, want %s", pk, pinnedKey)
+	}
+	if av := e.mustRef("build-output:" + f.String()); av != outKP {
+		t.Errorf("healed build-output:F -> %s, want %s", av, outKP)
+	}
+	for _, kind := range []string{wire.KindBuildFrom, wire.KindPluginResolve, wire.KindPin, wire.KindBuildRun} {
+		if jobs := fr.byKind(kind); len(jobs) != 1 {
+			t.Errorf("%s ran %d times, want 1 (heal must not re-run work)", kind, len(jobs))
+		}
+	}
+}
