@@ -9,7 +9,11 @@
 # distroless/static ships CA certs (needed for pkarr/DNS discovery when no
 # --addr is given) and nothing else.
 FROM gcr.io/distroless/static-debian12:nonroot
-COPY jobs-registry /usr/bin/jobs-registry
+# Multi-arch: the release builds jobs-registry-{amd64,arm64} into the
+# context and one buildx --platform invocation assembles the manifest list
+# (COPY-only image — no qemu needed).
+ARG TARGETARCH
+COPY jobs-registry-${TARGETARCH} /usr/bin/jobs-registry
 # /data must be a writable volume: the amber store, blob cache and image
 # records live there (see k8s.yaml's PVC).
 ENV JOBS_DATA_DIR=/data
