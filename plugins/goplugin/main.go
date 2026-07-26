@@ -68,24 +68,46 @@ func run() error {
 	// replace rule makes the consumer's manifest the complete local closure.
 	// Without the kwarg the legacy bare-array response is byte-identical.
 	var rels []string
-	monorepo := false
-	for _, kw := range []string{"go_mod", "go_work"} {
-		switch v := req.Call[kw].(type) {
-		case []byte:
-			rels = append(rels, relDirectives(v)...)
-			monorepo = true
-		case string:
-			rels = append(rels, relDirectives([]byte(v))...)
-			monorepo = true
+	gm, gmOK := kwargBytes(req.Call["go_mod"])
+	gw, gwOK := kwargBytes(req.Call["go_work"])
+	monorepo := gmOK || gwOK
+	if gmOK {
+		rels = append(rels, relDirectives(gm)...)
+	}
+	if gwOK {
+		rels = append(rels, relDirectives(gw)...)
+	}
+
+	// Closure mode (source-closure design §8): go_closure lists the entry
+	// package dirs (dir-relative); the response gains a "closure" key — the
+	// //-rooted complete cover for the recipe to forward into build()
+	// closure=. Requires go_mod (the consumer's module path anchors import
+	// resolution).
+	var closure []string
+	if cv, ok := req.Call["go_closure"]; ok {
+		entries, err := stringList(cv)
+		if err != nil {
+			return fmt.Errorf("go_closure kwarg: %w", err)
+		}
+		if !gmOK {
+			return fmt.Errorf("go_closure requires go_mod")
+		}
+		closure, err = goClosure(req.Source, req.Dir, gm, gw, entries)
+		if err != nil {
+			return err
 		}
 	}
 
 	var resp []byte
 	if monorepo {
-		resp, err = cbor.Marshal(map[string]any{
+		m := map[string]any{
 			"modules": out,
 			"sources": siblingSources(rels, req.Dir),
-		})
+		}
+		if closure != nil {
+			m["closure"] = closure
+		}
+		resp, err = cbor.Marshal(m)
 	} else {
 		resp, err = cbor.Marshal(out)
 	}
@@ -96,4 +118,35 @@ func run() error {
 		return fmt.Errorf("write response: %w", err)
 	}
 	return nil
+}
+
+// kwargBytes coerces a CBOR kwarg value to bytes ([]byte or string shapes).
+func kwargBytes(v any) ([]byte, bool) {
+	switch b := v.(type) {
+	case []byte:
+		return b, true
+	case string:
+		return []byte(b), true
+	}
+	return nil, false
+}
+
+// stringList coerces a CBOR kwarg value to a list of strings.
+func stringList(v any) ([]string, error) {
+	l, ok := v.([]any)
+	if !ok {
+		return nil, fmt.Errorf("must be a list of strings (got %T)", v)
+	}
+	out := make([]string, 0, len(l))
+	for i, e := range l {
+		switch s := e.(type) {
+		case string:
+			out = append(out, s)
+		case []byte:
+			out = append(out, string(s))
+		default:
+			return nil, fmt.Errorf("element %d is not a string (got %T)", i, e)
+		}
+	}
+	return out, nil
 }
