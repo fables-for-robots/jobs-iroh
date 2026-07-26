@@ -174,9 +174,10 @@ func RunPin(ctx context.Context, st *amber.Store, rw RefWriter, brc BuildRunCfg,
 		return hard("validating", err.Error(), 0)
 	}
 
-	// Covered closure (sibling-sources design §5): expand declared + discovered
-	// paths once, here — symlink chasing, escape validation, dangling warnings.
-	// The EXPANDED set lands in Pinned.Sources, so every later KP derivation
+	// Covered closure (sibling-sources design §5; source-closure design §5):
+	// expand declared + discovered paths once, here — symlink chasing, escape
+	// validation, dangling warnings. The EXPANDED set lands in Pinned.Sources
+	// (or Pinned.Closure for complete covers), so every later KP derivation
 	// (server pin-commit, local memo) is a pure prune+assemble, never a walk.
 	var covered, closure []string
 	switch {

@@ -16,7 +16,7 @@ import (
 // package dirs (source-closure design §8): pure filesystem + go/parser, no
 // toolchain, deterministic. The //-rooted output covers reached package dirs
 // (recursive covers — embeds/cgo/asm/testdata ride along), each involved
-// module's go.mod/go.sum, and go.work(.sum) at the context root when a
+// module's go.mod/go.sum, and go.work(.sum) at the consumer dir when a
 // go.work was passed. Imports from EVERY .go file count — build-tag-ignored
 // and _test.go included (cross-compile and `go test` safety; gosha's
 // IgnoredFiles rationale). Stdlib (first path element without a dot, incl.
@@ -61,6 +61,9 @@ func goClosure(srcRoot, dir string, gomod, gowork []byte, entries []string) ([]s
 	}
 
 	// Transitive walk from the entry package dirs.
+	if len(entries) == 0 {
+		return nil, fmt.Errorf("go_closure: empty entry list — name at least one package dir (e.g. [\".\"])")
+	}
 	var frontier []string
 	for _, e := range entries {
 		ed := rootRel(dir, e)
@@ -119,6 +122,12 @@ func goClosure(srcRoot, dir string, gomod, gowork []byte, entries []string) ([]s
 		for _, e := range embeds {
 			out[path.Join(pd, e)] = true
 		}
+		// testdata/ is a compiler-invisible input of the package (`go test`
+		// reads it); recursive covers include it for free, so the module-root
+		// enumeration must too.
+		if _, err := os.Stat(filepath.Join(hostPath(srcRoot, pd), "testdata")); err == nil {
+			out[path.Join(pd, "testdata")] = true
+		}
 	}
 	for mp := range usedMods {
 		mdir := mods[mp]
@@ -127,10 +136,13 @@ func goClosure(srcRoot, dir string, gomod, gowork []byte, entries []string) ([]s
 			out[path.Join(mdir, "go.sum")] = true
 		}
 	}
+	// go.work rides dir-relative like its use-directive targets (the
+	// pre-existing monorepo-mode convention: relDirectives targets resolve
+	// against the consumer dir, so the manifest they came from lives there).
 	if len(gowork) > 0 {
 		for _, f := range []string{"go.work", "go.work.sum"} {
-			if _, err := os.Stat(filepath.Join(srcRoot, f)); err == nil {
-				out[f] = true
+			if _, err := os.Stat(filepath.Join(hostPath(srcRoot, dir), f)); err == nil {
+				out[path.Join(dir, f)] = true
 			}
 		}
 	}
@@ -233,26 +245,21 @@ func dirImports(hostDir string) ([]string, int, error) {
 }
 
 // resolveLocal longest-prefix-matches imp against the local module map.
-// Stdlib (first element without a dot, incl. "C") and unmatched (external)
-// → ok=false.
+// The map decides alone — so dot-less local module paths (legal for
+// replace-only modules, e.g. `module api`) resolve locally; every unmatched
+// import (stdlib incl. the cgo pseudo-import "C", and external modules —
+// the go.sum fetcher's territory) is skipped by the caller.
 func resolveLocal(mods map[string]string, imp string) (mp, dir string, ok bool) {
-	first := imp
-	if i := strings.IndexByte(imp, '/'); i >= 0 {
-		first = imp[:i]
-	}
-	if !strings.Contains(first, ".") {
-		return "", "", false
-	}
 	best := ""
 	for m := range mods {
 		if (imp == m || strings.HasPrefix(imp, m+"/")) && len(m) > len(best) {
 			best = m
 		}
 	}
-	if best == "" {
-		return "", "", false
+	if best != "" {
+		return best, mods[best], true
 	}
-	return best, mods[best], true
+	return "", "", false
 }
 
 // regularFiles lists the non-directory entries of one directory, sorted.
@@ -299,7 +306,7 @@ func embedTargets(hostDir string) ([]string, error) {
 				continue
 			}
 			for _, pat := range strings.Fields(strings.TrimPrefix(line, "//go:embed ")) {
-				pat = strings.Trim(strings.TrimPrefix(pat, "all:"), `"`)
+				pat = strings.TrimPrefix(strings.Trim(pat, "`\""), "all:")
 				matches, err := fs.Glob(os.DirFS(hostDir), pat)
 				if err != nil {
 					return nil, fmt.Errorf("embed pattern %q: %w", pat, err)

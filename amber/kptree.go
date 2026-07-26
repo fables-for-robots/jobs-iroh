@@ -15,8 +15,12 @@ import (
 // Derived pin-cover bindings persist forever — pin never re-runs once
 // build-pinned:F exists — so only a version bump can supersede bindings
 // produced by a buggy or semantically-changed walker. Bump on ANY semantic
-// change to the closure walk (runner/cover) or PruneTree normalization.
-// Starts at 2, matching builddef.CtxWidened (sibling-sources design §3.3).
+// change to the closure walk (runner/cover) or PruneTree normalization —
+// i.e. any change to what an EXISTING Pinned/declaration derives; a branch
+// that only consumes a new Pinned field leaves old bindings valid and needs
+// no bump (source-closure design §7.1 — the runner ALPN fences the pin-time
+// skew instead). Starts at 2, matching builddef.CtxWidened (sibling-sources
+// design §3.3).
 const KPVersion = 2
 
 // BuildKPTree assembles the KP identity tree (sibling-sources design §3.3):

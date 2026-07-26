@@ -131,8 +131,9 @@ closure; `sources` alone keeps the widened-only rule.
 
 ### 5.3 Workdir validation **[INV]**
 
-After expansion, at least one covered path must equal or fall under
-`Pinned.Dir`, else the pruned tree would not contain the sandbox workdir and
+After expansion, at least one covered path must sit at, under, or **above**
+`Pinned.Dir` (a covered ancestor materializes the workdir too — covers are
+recursive), else the pruned tree would not contain the sandbox workdir and
 buildrun would fail at `cd`. This is a **pin-time hard error**:
 
 ```
@@ -218,14 +219,25 @@ Algorithm — pure Go, filesystem-only, deterministic:
    must be platform-independent (gosha includes `IgnoredFiles` for the same
    reason).
 3. **Resolution.** Longest-prefix match of each import path against the
-   local module map → local package dir joins the frontier. First path
-   element without a dot ⇒ stdlib, skip. Anything else ⇒ external module
-   (the go.sum fetcher's territory), skip.
+   local module map decides alone — so dot-less local module paths (legal
+   for replace-only modules) resolve locally. Every unmatched import is
+   skipped: stdlib (incl. the cgo pseudo-import `"C"`) and external modules
+   (the go.sum fetcher's territory) alike. There is deliberately no
+   "unresolvable" error class: the walker cannot distinguish external-shaped
+   from misspelled imports without resolving `go.sum` semantics, and a
+   genuinely missing package fails the sandbox build loudly.
 4. **Output.** Sorted, `//`-rooted, nested paths collapsed (a covered
    ancestor subsumes descendants): reached package dirs + each involved
    module's `go.mod` and `go.sum` (when present) + `go.work`/`go.work.sum`
-   (when present). The build file itself is not part of the closure — the
-   pinned job rides in the KP tree as `job.cbor`, not as a source file.
+   at the consumer dir (when a go.work was passed — dir-relative like its
+   `use` targets). A reached package at a MODULE ROOT cannot be covered as
+   a dir (that would swallow the whole module; the context root cannot be
+   covered at all): its regular files are enumerated non-recursively, its
+   `//go:embed` patterns are glob-resolved, and its `testdata/` is covered
+   when present. The residual limitation: other non-embed subdirectory
+   inputs of a module-root package (e.g. cgo `#include` subdirs) must be
+   hand-added to the closure. The pinned job itself rides in the KP tree as
+   `job.cbor`, never as a source file.
 5. **Response.** The monorepo-mode map (`plugins/goplugin/main.go:84-88`)
    gains a `closure` key next to `modules`/`sources`; the recipe forwards it
    verbatim into `build() closure=`. Without the kwarg every existing
@@ -243,10 +255,12 @@ All failures land at eval/pin, never at buildrun:
 |---|---|
 | `closure` + `sources` both declared | eval error naming both keys |
 | declared closure path missing from context | pin hard error (existing walk path) |
-| expanded closure covers nothing at/under `dir` | pin error (§5.3 message) |
-| goplugin: import unresolvable (not local, not stdlib, not external-shaped) | plugin hard error naming import + file |
+| expanded closure covers nothing at/under/above `dir` | pin error (§5.3 message) |
+| goplugin: empty `go_closure` entry list | plugin hard error |
 | goplugin: entry dir missing / not a package (no `.go` files) | plugin hard error |
-| goplugin: malformed `go.mod`/`go.work` | plugin hard error |
+| goplugin: `go.mod` without a module directive; sibling replace/use target without a readable `go.mod` | plugin hard error naming it |
+| goplugin: embed pattern matching nothing | plugin hard error (under-covering is the one forbidden failure mode) |
+| goplugin: unmatched import | skipped, never an error (§8.3) |
 
 Vendored module trees (`vendor/`): out of scope — a vendored import resolves
 like any local path only if the author lists `vendor/` by hand; the plugin

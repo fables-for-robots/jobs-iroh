@@ -1,10 +1,14 @@
 // Package cover computes the covered source closure and the KP identity of a
 // widened-context build (sibling-sources design §5, §6). It is
 // IDENTITY-CRITICAL SHARED CODE: the pin runner expands the closure once
-// (Walk) and bakes it into Pinned.Sources; the server and the local pipeline
-// both derive KP from the pinned blob via Derive — the same implementation on
+// (Walk → Pinned.Sources, or WalkClosure → Pinned.Closure for complete
+// covers, source-closure design §5); the server and the local pipeline both
+// derive KP from the pinned blob via Derive — the same implementation on
 // every path, pinned like the chunker params. amber.KPVersion versions the
-// semantics; bump it on ANY behavioral change here or in amber.PruneTree.
+// semantics; bump it on ANY behavioral change to how a given Pinned derives
+// (a new branch that only fires on a new Pinned field does not re-derive old
+// pins and needs no bump — source-closure design §7.1; the runner ALPN
+// fences version skew at pin time).
 package cover
 
 import (
@@ -140,7 +144,7 @@ type walker struct {
 	ctx      context.Context
 	st       *amber.Store
 	root     key.Key
-	covered  map[string]bool // paths that land in Pinned.Sources
+	covered  map[string]bool // paths that land in Pinned.Sources / Pinned.Closure
 	visited  map[string]bool // recursion guard for cover()
 	allow    map[string]bool // link paths allowed to escape the root
 	warnings []Warning

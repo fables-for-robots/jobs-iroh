@@ -136,9 +136,9 @@ func TestGoClosureNestedCollapse(t *testing.T) {
 	root := t.TempDir()
 	// A reached package nested under another reached package collapses.
 	writeTree(t, root, map[string]string{
-		"app/go.mod":       "module example.com/app\n",
-		"app/main.go":      "package main\n\nimport (\n\t_ \"example.com/app/pkg\"\n\t_ \"example.com/app/pkg/inner\"\n)\n",
-		"app/pkg/p.go":     "package pkg\n",
+		"app/go.mod":         "module example.com/app\n",
+		"app/main.go":        "package main\n\nimport (\n\t_ \"example.com/app/pkg\"\n\t_ \"example.com/app/pkg/inner\"\n)\n",
+		"app/pkg/p.go":       "package pkg\n",
 		"app/pkg/inner/i.go": "package inner\n",
 	})
 	gomod, err := os.ReadFile(filepath.Join(root, "app/go.mod"))
@@ -186,5 +186,87 @@ func TestGoClosureErrors(t *testing.T) {
 	// entry escaping the context root → error.
 	if _, err := goClosure(root, "app", []byte("module example.com/app\n"), nil, []string{"../../up"}); err == nil {
 		t.Fatal("escaping entry accepted")
+	}
+}
+
+func TestGoClosureReviewRegressions(t *testing.T) {
+	// (1) Dot-less local module paths (module api) resolve locally, not as
+	// stdlib.
+	root := t.TempDir()
+	writeTree(t, root, map[string]string{
+		"app/go.mod":   "module app\n\nreplace api => ../lib\n",
+		"app/main.go":  "package main\n\nimport _ \"api/foo\"\n",
+		"lib/go.mod":   "module api\n",
+		"lib/foo/f.go": "package foo\n",
+	})
+	gomod, err := os.ReadFile(filepath.Join(root, "app/go.mod"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := goClosure(root, "app", gomod, nil, []string{"."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(got, "//lib/foo") {
+		t.Fatalf("dot-less local module import not covered: %v", got)
+	}
+
+	// (2) go.work covers dir-relative (same base as its use-directive
+	// targets).
+	root2 := t.TempDir()
+	writeTree(t, root2, map[string]string{
+		"ws/go.work": "use (\n\t.\n\t../lib\n)\n",
+		"ws/go.mod":  "module example.com/ws\n",
+		"ws/main.go": "package main\n\nimport _ \"example.com/lib/x\"\n",
+		"lib/go.mod": "module example.com/lib\n",
+		"lib/x/x.go": "package x\n",
+	})
+	gm2, _ := os.ReadFile(filepath.Join(root2, "ws/go.mod"))
+	gw2, _ := os.ReadFile(filepath.Join(root2, "ws/go.work"))
+	got2, err := goClosure(root2, "ws", gm2, gw2, []string{"."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(got2, "//ws/go.work") {
+		t.Fatalf("go.work not covered at the consumer dir: %v", got2)
+	}
+	if !slices.Contains(got2, "//lib/x") {
+		t.Fatalf("go.work use-sibling package not covered: %v", got2)
+	}
+
+	// (3) Empty entry list is a hard error.
+	if _, err := goClosure(root, "app", gomod, nil, nil); err == nil ||
+		!strings.Contains(err.Error(), "empty entry list") {
+		t.Fatalf("empty entries: want hard error, got %v", err)
+	}
+
+	// (4) all:-prefixed and quoted embed patterns resolve; testdata of a
+	// module-root package is covered.
+	root3 := t.TempDir()
+	writeTree(t, root3, map[string]string{
+		"go.mod": "module example.com/e\n",
+		"main.go": `package main
+
+import "embed"
+
+//go:embed all:static
+var a embed.FS
+
+//go:embed "assets/logo.txt"
+var b string
+`,
+		"static/deep/x.txt": "x\n",
+		"assets/logo.txt":   "logo\n",
+		"testdata/tc.json":  "{}\n",
+	})
+	gm3, _ := os.ReadFile(filepath.Join(root3, "go.mod"))
+	got3, err := goClosure(root3, "", gm3, nil, []string{"."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range []string{"//static", "//assets/logo.txt", "//testdata"} {
+		if !slices.Contains(got3, w) {
+			t.Fatalf("missing %s in %v", w, got3)
+		}
 	}
 }
