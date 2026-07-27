@@ -20,7 +20,7 @@ import (
 	"sync/atomic"
 	"time"
 
-	ambserver "github.com/jobs-build/amber-store-iroh/server"
+	"github.com/jobs-build/jobs-iroh/amberiroh"
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/tmc/go-iroh/iroh"
@@ -199,7 +199,7 @@ func Run(ctx context.Context, opts Options) error {
 		defer pub.Close()
 	}
 
-	amberSrv := ambserver.New(log.With("component", "amber"), store.Objects(), store.RefStore())
+	amberSrv := amberiroh.New(log.With("component", "amber"), store.Objects(), store.RefStore())
 
 	// Extra data endpoints for sharded transfers, bound with the SAME
 	// secret key so shard dials authenticate the same server identity.
@@ -293,10 +293,10 @@ func (c *closeTracked) Close() error {
 	return c.Conn.Close()
 }
 
-// amberConnHandler serves the amber-store-iroh sync protocol on every stream
-// of a connection — the per-connection half of amber-store-iroh's own Serve
-// loop, adapted to router dispatch.
-func amberConnHandler(srv *ambserver.Server) iroh.ProtocolHandler {
+// amberConnHandler serves the amberiroh sync protocol on every stream of a
+// connection. This is why amberiroh carries no accept loop of its own: the
+// router owns connection dispatch, so only the per-connection half is needed.
+func amberConnHandler(srv *amberiroh.Server) iroh.ProtocolHandler {
 	return iroh.ProtocolHandlerFunc(func(ctx context.Context, conn *iroh.Conn) error {
 		g, ctx := errgroup.WithContext(ctx)
 		// Closing the connection on ctx cancel unblocks in-flight handlers.

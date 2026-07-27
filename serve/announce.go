@@ -13,7 +13,7 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/jobs-build/amber-store-iroh/relaymode"
+	"github.com/jobs-build/jobs-iroh/amberiroh"
 	"github.com/tmc/go-iroh/dns"
 	"github.com/tmc/go-iroh/iroh"
 	"github.com/tmc/go-iroh/iroh/mdns"
@@ -42,7 +42,7 @@ const (
 // bounded and best-effort — on failure the default map is used as-is.
 func serverRelayMode(ctx context.Context, flag string, log *slog.Logger) (relay.Mode, error) {
 	if flag != "" {
-		return relaymode.FromFlag(flag)
+		return amberiroh.FromFlag(flag)
 	}
 	probeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()

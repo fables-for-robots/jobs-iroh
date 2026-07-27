@@ -19,8 +19,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/jobs-build/amber-store-iroh/protocol"
-	"github.com/jobs-build/amber-store-iroh/wantsync"
+	"github.com/jobs-build/jobs-iroh/amberiroh"
 	"github.com/tmc/go-iroh/iroh"
 	"github.com/tmc/go-iroh/netaddr"
 
@@ -139,7 +138,7 @@ func (c *Client) attachExtras(ctx context.Context, token []byte, ports []uint16,
 			if dl, ok := actx.Deadline(); ok {
 				_ = stream.SetWriteDeadline(dl)
 			}
-			err = protocol.WriteMsg(stream, protocol.Msg{Type: protocol.TAttach, Token: token})
+			err = amberiroh.WriteMsg(stream, amberiroh.Msg{Type: amberiroh.TAttach, Token: token})
 			if err != nil || actx.Err() != nil {
 				CloseStream(stream)
 				teardown()
@@ -208,30 +207,30 @@ func (w *watchdogConn) Read(p []byte) (int, error) {
 // Send loop per channel; a TWants means a server that ignored the request's
 // DataConns — replay the consumed frame in front of the stream and fall back
 // to a single channel; a TErr surfaces as the usual remote error.
-func (c *Client) runSenders(ctx context.Context, ctrl io.ReadWriter, st *amber.Store, prog wantsync.Progress, conns int) error {
+func (c *Client) runSenders(ctx context.Context, ctrl io.ReadWriter, st *amber.Store, prog amberiroh.Progress, conns int) error {
 	if conns <= 1 {
-		return wantsync.Send(ctrl, st.Objects(), prog)
+		return amberiroh.Send(ctrl, st.Objects(), prog)
 	}
-	first, err := protocol.ReadMsg(ctrl)
+	first, err := amberiroh.ReadMsg(ctrl)
 	if err != nil {
 		return err
 	}
 	switch first.Type {
-	case protocol.TErr:
-		return protocol.RemoteFromMsg(first)
-	case protocol.TWants:
+	case amberiroh.TErr:
+		return amberiroh.RemoteFromMsg(first)
+	case amberiroh.TWants:
 		var replay bytes.Buffer
-		if err := protocol.WriteMsg(&replay, first); err != nil {
+		if err := amberiroh.WriteMsg(&replay, first); err != nil {
 			return err
 		}
 		fallback := struct {
 			io.Reader
 			io.Writer
 		}{io.MultiReader(&replay, ctrl), ctrl}
-		return wantsync.Send(fallback, st.Objects(), prog)
-	case protocol.TAccept:
+		return amberiroh.Send(fallback, st.Objects(), prog)
+	case amberiroh.TAccept:
 	default:
-		return fmt.Errorf("%w: type %d, want TAccept or TWants", protocol.ErrProtocol, first.Type)
+		return fmt.Errorf("%w: type %d, want TAccept or TWants", amberiroh.ErrProtocol, first.Type)
 	}
 
 	extras, closeExtras := c.attachExtras(ctx, first.Token, first.DataPorts, conns-1)
@@ -251,7 +250,7 @@ func (c *Client) runSenders(ctx context.Context, ctrl io.ReadWriter, st *amber.S
 		wg.Add(1)
 		go func(i int, ch io.ReadWriter) {
 			defer wg.Done()
-			errs[i] = wantsync.Send(ch, st.Objects(), prog)
+			errs[i] = amberiroh.Send(ch, st.Objects(), prog)
 		}(i, ch)
 	}
 	wg.Wait()

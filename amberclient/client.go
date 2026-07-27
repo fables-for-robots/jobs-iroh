@@ -2,8 +2,8 @@
 // protocol — the dial/push/pull/refs orchestration that upstream lives only
 // in amber-store-iroh's cmd/amber mains, lifted into a library so jobs-iroh
 // components can sync stores over any of the server's amber ALPNs
-// (jobs-runner-amber/1.0, jobs-amber-admin/1.0). The wire protocol itself is
-// amber-store-iroh's protocol + wantsync packages, unchanged.
+// (jobs-runner-amber/1.0, jobs-amber-admin/1.0). The wire protocol itself
+// lives in the amberiroh package.
 //
 // Transfers are sharded: with Conns > 1 (DefaultConns is 4) each push and
 // pull asks the server for extra data channels and attaches one stream per
@@ -35,8 +35,7 @@ import (
 
 	"github.com/jobs-build/amber-store-core/key"
 	"github.com/jobs-build/amber-store-core/reference"
-	"github.com/jobs-build/amber-store-iroh/protocol"
-	"github.com/jobs-build/amber-store-iroh/wantsync"
+	"github.com/jobs-build/jobs-iroh/amberiroh"
 	"github.com/tmc/go-iroh/iroh"
 	irohkey "github.com/tmc/go-iroh/key"
 	"github.com/tmc/go-iroh/netaddr"
@@ -173,7 +172,7 @@ func Dial(ctx context.Context, o Options) (*Client, error) {
 	}
 	alpn := o.ALPN
 	if alpn == "" {
-		alpn = protocol.ALPN
+		alpn = amberiroh.ALPN
 	}
 	id, err := irohkey.ParseEndpointID(o.EndpointID)
 	if err != nil {
@@ -260,26 +259,26 @@ func (c *Client) pushOnce(ctx context.Context, st *amber.Store, name string, roo
 	// request goes out before any read. DataConns > 0 makes a sharding
 	// server answer TAccept with a transfer token before its want rounds;
 	// runSenders handles both that and the plain single-channel reply.
-	req := protocol.Msg{Type: protocol.TPush, Name: name, Root: root[:]}
+	req := amberiroh.Msg{Type: amberiroh.TPush, Name: name, Root: root[:]}
 	if conns > 1 {
 		req.DataConns = conns - 1
 	}
-	if err := protocol.WriteMsg(stream, req); err != nil {
+	if err := amberiroh.WriteMsg(stream, req); err != nil {
 		return fmt.Errorf("amberclient: push %q: %w", name, err)
 	}
 	if err := c.runSenders(ctx, stream, st, mtr, conns); err != nil {
 		return fmt.Errorf("amberclient: push %q: %w", name, err)
 	}
-	m, err := protocol.ReadMsg(stream)
+	m, err := amberiroh.ReadMsg(stream)
 	if err != nil {
 		return fmt.Errorf("amberclient: push %q: read commit: %w", name, err)
 	}
 	switch m.Type {
-	case protocol.TOK:
-	case protocol.TErr:
-		return fmt.Errorf("amberclient: push %q: %w", name, protocol.RemoteFromMsg(m))
+	case amberiroh.TOK:
+	case amberiroh.TErr:
+		return fmt.Errorf("amberclient: push %q: %w", name, amberiroh.RemoteFromMsg(m))
 	default:
-		return fmt.Errorf("amberclient: push %q: %w: type %d, want TOK", name, protocol.ErrProtocol, m.Type)
+		return fmt.Errorf("amberclient: push %q: %w: type %d, want TOK", name, amberiroh.ErrProtocol, m.Type)
 	}
 	c.log.Debug("amberclient push committed", "ref", name, "root", root.String())
 	return nil
@@ -327,26 +326,26 @@ func (c *Client) pullOnce(ctx context.Context, st *amber.Store, name string, mtr
 	defer stop()
 	defer CloseStream(stream)
 
-	req := protocol.Msg{Type: protocol.TPull, Name: name}
+	req := amberiroh.Msg{Type: amberiroh.TPull, Name: name}
 	if conns > 1 {
 		req.DataConns = conns - 1
 	}
-	if err := protocol.WriteMsg(stream, req); err != nil {
+	if err := amberiroh.WriteMsg(stream, req); err != nil {
 		return key.Key{}, fmt.Errorf("amberclient: pull %q: %w", name, err)
 	}
-	m, err := protocol.ReadMsg(stream)
+	m, err := amberiroh.ReadMsg(stream)
 	if err != nil {
 		return key.Key{}, fmt.Errorf("amberclient: pull %q: read ref: %w", name, err)
 	}
 	switch m.Type {
-	case protocol.TRef:
-	case protocol.TErr:
-		if m.Code == protocol.CodeUnknownRef {
+	case amberiroh.TRef:
+	case amberiroh.TErr:
+		if m.Code == amberiroh.CodeUnknownRef {
 			return key.Key{}, fmt.Errorf("amberclient: pull %q: %w", name, ErrRefNotFound)
 		}
-		return key.Key{}, fmt.Errorf("amberclient: pull %q: %w", name, protocol.RemoteFromMsg(m))
+		return key.Key{}, fmt.Errorf("amberclient: pull %q: %w", name, amberiroh.RemoteFromMsg(m))
 	default:
-		return key.Key{}, fmt.Errorf("amberclient: pull %q: %w: type %d, want TRef", name, protocol.ErrProtocol, m.Type)
+		return key.Key{}, fmt.Errorf("amberclient: pull %q: %w: type %d, want TRef", name, amberiroh.ErrProtocol, m.Type)
 	}
 	rec, err := reference.Decode(m.Record)
 	if err != nil {
@@ -374,7 +373,7 @@ func (c *Client) pullOnce(ctx context.Context, st *amber.Store, name string, mtr
 	// Verify) and re-walks the frontier until CheckComplete prunes
 	// everything — returning nil IS the completeness proof for root's
 	// whole closure.
-	if _, err := wantsync.Receive(channels, st.Objects(), root, 0, mtr); err != nil {
+	if _, err := amberiroh.Receive(channels, st.Objects(), root, 0, mtr); err != nil {
 		return key.Key{}, fmt.Errorf("amberclient: pull %q: %w", name, err)
 	}
 	if err := st.PutRef(ctx, name, root); err != nil {
@@ -393,19 +392,19 @@ func (c *Client) Refs(ctx context.Context) ([]RefInfo, error) {
 	defer stop()
 	defer CloseStream(stream)
 
-	if err := protocol.WriteMsg(stream, protocol.Msg{Type: protocol.TRefList}); err != nil {
+	if err := amberiroh.WriteMsg(stream, amberiroh.Msg{Type: amberiroh.TRefList}); err != nil {
 		return nil, fmt.Errorf("amberclient: refs: %w", err)
 	}
-	m, err := protocol.ReadMsg(stream)
+	m, err := amberiroh.ReadMsg(stream)
 	if err != nil {
 		return nil, fmt.Errorf("amberclient: refs: %w", err)
 	}
 	switch m.Type {
-	case protocol.TRefs:
-	case protocol.TErr:
-		return nil, fmt.Errorf("amberclient: refs: %w", protocol.RemoteFromMsg(m))
+	case amberiroh.TRefs:
+	case amberiroh.TErr:
+		return nil, fmt.Errorf("amberclient: refs: %w", amberiroh.RemoteFromMsg(m))
 	default:
-		return nil, fmt.Errorf("amberclient: refs: %w: type %d, want TRefs", protocol.ErrProtocol, m.Type)
+		return nil, fmt.Errorf("amberclient: refs: %w: type %d, want TRefs", amberiroh.ErrProtocol, m.Type)
 	}
 	out := make([]RefInfo, 0, len(m.Refs))
 	for _, r := range m.Refs {

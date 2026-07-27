@@ -6,7 +6,7 @@ import (
 	"sync"
 
 	"github.com/jobs-build/amber-store-core/key"
-	"github.com/jobs-build/amber-store-iroh/protocol"
+	"github.com/jobs-build/jobs-iroh/amberiroh"
 
 	"github.com/jobs-build/jobs-iroh/amber"
 	"github.com/jobs-build/jobs-iroh/amberclient"
@@ -16,7 +16,7 @@ import (
 // redial-on-failure: a Client is one connection, so when an operation fails
 // on transport (server restart, link drop) the client is discarded and the
 // operation retried once on a fresh dial. Errors the SERVER answered with
-// (protocol.RemoteError, ErrRefNotFound) never redial — the connection just
+// (amberiroh.RemoteError, ErrRefNotFound) never redial — the connection just
 // proved itself.
 type reconnSync struct {
 	opts amberclient.Options
@@ -70,7 +70,7 @@ func (r *reconnSync) do(ctx context.Context, op func(*amberclient.Client) error)
 // isRemoteVerdict reports whether the server itself answered err — proof the
 // connection works, so redialing cannot change the outcome.
 func isRemoteVerdict(err error) bool {
-	var re *protocol.RemoteError
+	var re *amberiroh.RemoteError
 	return errors.As(err, &re) || errors.Is(err, amberclient.ErrRefNotFound)
 }
 

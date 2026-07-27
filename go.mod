@@ -11,7 +11,6 @@ require (
 	github.com/fxamacker/cbor/v2 v2.9.2
 	github.com/google/go-containerregistry v0.21.7
 	github.com/jobs-build/amber-store-core v0.0.0-20260727080459-e4fcb60cba49
-	github.com/jobs-build/amber-store-iroh v0.0.0-20260727080618-d80bbf75444f
 	github.com/klauspost/compress v1.19.0
 	github.com/nats-io/nats-server/v2 v2.14.3
 	github.com/nats-io/nats.go v1.52.0

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jobs-build/amber-store-iroh/protocol"
+	"github.com/jobs-build/jobs-iroh/amberiroh"
 	"github.com/tmc/go-iroh/iroh"
 	"github.com/tmc/go-iroh/netaddr"
 
@@ -112,14 +112,14 @@ func TestAmberRefListOverAdminALPN(t *testing.T) {
 	}
 	defer stream.Close()
 
-	if err := protocol.WriteMsg(stream, protocol.Msg{Type: protocol.TRefList}); err != nil {
+	if err := amberiroh.WriteMsg(stream, amberiroh.Msg{Type: amberiroh.TRefList}); err != nil {
 		t.Fatalf("write ref-list request: %v", err)
 	}
-	msg, err := protocol.ReadMsg(stream)
+	msg, err := amberiroh.ReadMsg(stream)
 	if err != nil {
 		t.Fatalf("read ref-list reply: %v", err)
 	}
-	if msg.Type != protocol.TRefs {
+	if msg.Type != amberiroh.TRefs {
 		t.Fatalf("got frame type %d, want TRefs", msg.Type)
 	}
 	found := false
