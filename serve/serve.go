@@ -183,7 +183,14 @@ func Run(ctx context.Context, opts Options) error {
 		if err != nil {
 			return err
 		}
-		bindOpts = append(bindOpts, iroh.WithRelayMode(relayMode))
+		// Net reports are what discover this host's public mapping: a QAD probe
+		// to a relay reports the address the outside world sees, which go-iroh
+		// installs as an external candidate. Without it a NAT'd server knows
+		// only its LAN addresses — it publishes a record no off-LAN peer can
+		// dial, and advertises no QNT candidate for a peer to punch toward, so
+		// every remote runner is stuck on the relay forever. Requires relays
+		// (the probe target), hence inside the Announce branch.
+		bindOpts = append(bindOpts, iroh.WithRelayMode(relayMode), iroh.WithNetReport())
 	}
 	ep, err := iroh.Bind(ctx, bindOpts...)
 	if err != nil {

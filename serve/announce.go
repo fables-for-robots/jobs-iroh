@@ -9,11 +9,13 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"iter"
 	"log/slog"
 	"net/netip"
 	"time"
 
 	"github.com/jobs-build/jobs-iroh/amberiroh"
+	"github.com/jobs-build/jobs-iroh/hostaddr"
 	"github.com/tmc/go-iroh/dns"
 	"github.com/tmc/go-iroh/iroh"
 	"github.com/tmc/go-iroh/iroh/mdns"
@@ -98,17 +100,14 @@ func announce(ctx context.Context, ep *iroh.Endpoint, sk irohkey.SecretKey, adve
 			return nil, err
 		}
 	} else {
-		ifaces, err := localIfaceAddrs()
+		direct, err = hostaddr.LocalAddrPorts(ep.LocalAddr().Port())
 		if err != nil {
 			return nil, fmt.Errorf("interface addresses: %w", err)
 		}
-		direct = advertisedAddrPorts(ifaces, ep.LocalAddr().Port())
 	}
-	advertised := ep.Addr()
 	directTransport := make([]netaddr.TransportAddr, 0, len(direct))
 	for _, ap := range direct {
 		ep.AddExternalAddr(ap)
-		advertised = advertised.WithIP(ap)
 		directTransport = append(directTransport, netaddr.IPAddr{Addr: ap})
 	}
 
@@ -152,8 +151,51 @@ func announce(ctx context.Context, ep *iroh.Endpoint, sk irohkey.SecretKey, adve
 		cancel()
 		return nil, fmt.Errorf("pkarr publisher: %w", err)
 	}
-	pub.Publish(dns.NewEndpointData(advertised.Addrs()...))
-
-	log.Info("server advertised", "addr", advertised)
+	// The endpoint's address set is NOT final at this point. go-iroh learns the
+	// host's public mapping from a QAD probe and installs it as an external
+	// candidate only when the first net report lands, which happens a moment
+	// after Online returns (applyNetReport -> setExternalNATTraversalCandidates
+	// -> Endpoint.Addr). Publishing a snapshot taken here freezes a record
+	// holding every unreachable LAN address and no public one — precisely the
+	// record that leaves an off-LAN peer nothing to dial but the relay, with no
+	// way to ever discover otherwise. So follow the endpoint's address watcher
+	// and re-publish whenever it changes; the first value arrives immediately,
+	// which is the initial publish.
+	go publishAddrChanges(ep.WatchAddr().Stream(ctx), direct, func(a netaddr.EndpointAddr) {
+		pub.Publish(dns.NewEndpointData(a.Addrs()...))
+		log.Info("server advertised", "addr", a)
+	})
 	return &announcer{cancel: cancel, pub: pub}, nil
+}
+
+// publishAddrChanges publishes the endpoint's address set, merged with the
+// pinned direct addresses, on every change seq reports. Records that merge to
+// something already published are skipped, so a net report that only reshuffles
+// candidates does not churn the pkarr record.
+func publishAddrChanges(seq iter.Seq[netaddr.EndpointAddr], pinned []netip.AddrPort, publish func(netaddr.EndpointAddr)) {
+	var last string
+	for live := range seq {
+		merged := pinnedAddr(live, pinned)
+		if s := merged.String(); s != last {
+			last = s
+			publish(merged)
+		}
+	}
+}
+
+// pinnedAddr merges the addresses this server pins — the operator's
+// --advertise-addr list, or the interface walk — into the endpoint's live
+// address set.
+//
+// The merge is not belt-and-braces: a net report REPLACES the endpoint's
+// external candidate set rather than extending it (go-iroh
+// setExternalNATTraversalCandidates), so everything AddExternalAddr contributed
+// is gone from Endpoint.Addr the moment the first report lands. Without
+// re-merging, the record would trade its LAN addresses for the public one
+// instead of carrying both.
+func pinnedAddr(live netaddr.EndpointAddr, pinned []netip.AddrPort) netaddr.EndpointAddr {
+	for _, ap := range pinned {
+		live = live.WithIP(ap)
+	}
+	return live
 }

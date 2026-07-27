@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/jobs-build/jobs-iroh/hostaddr"
+
 	"github.com/tmc/go-iroh/iroh"
 	"github.com/tmc/go-iroh/iroh/mdns"
 	irohkey "github.com/tmc/go-iroh/key"
@@ -66,14 +68,23 @@ func bindAndResolve(ctx context.Context, id irohkey.EndpointID, addrs []string, 
 	// relay.ModeDisabled, under which the relay candidate in the server's
 	// published record can never be dialed and the relay fallback below
 	// would be dead weight.
+	// WithNetReport: a QAD probe against the relays tells this endpoint the
+	// address the outside world sees it at, which go-iroh then advertises as a
+	// QNT NAT traversal candidate. It is what lets a server behind NAT open a
+	// direct path back to this client — without it the client offers no
+	// dialable candidate at all and the connection never leaves the relay.
+	// (The direct-addr branch above skips it deliberately: no relays there, so
+	// there is nothing to probe against.)
 	ep, err := iroh.Bind(ctx, append(bindOpts,
 		iroh.WithSecretKey(sk),
 		iroh.WithAddressLookup(&services),
 		iroh.WithRelayMode(relay.ModeDefault()),
+		iroh.WithNetReport(),
 	)...)
 	if err != nil {
 		return nil, nil, fmt.Errorf("amberclient: bind: %w", err)
 	}
+	seedLocalCandidates(ep)
 
 	// Connect does no discovery on its own: it only dials addresses already
 	// present in the EndpointAddr, so resolve first. One resolver's answer
@@ -100,6 +111,35 @@ func bindAndResolve(ctx context.Context, id irohkey.EndpointID, addrs []string, 
 		return nil, nil, fmt.Errorf("amberclient: no address found for endpoint %s", id)
 	}
 	return ep, addr.Addrs(), nil
+}
+
+// seedLocalCandidates tells the endpoint which of this machine's addresses a
+// peer could reach it at, so they are advertised as QNT NAT traversal
+// candidates on every connection.
+//
+// Without this a client offers a peer no dialable address whatsoever. The
+// endpoint's own bound address is the wildcard, which go-iroh rejects as a
+// candidate, and QUIC address discovery contributes nothing until a relay
+// observes the host — so the peer has only the relay, and a relayed connection
+// has nothing to upgrade toward.
+//
+// It matters most in the asymmetric case, which is the common one: a runner on
+// a public IP and a server behind NAT. There the runner's interface address IS
+// its reachable address, and the server merely has to send to it — the NAT
+// mapping opens outbound, with no hole to punch. Behind NAT the seeded
+// addresses are LAN-local and simply fail to validate off-LAN, costing a peer
+// one candidate's connect budget and nothing else.
+//
+// Best-effort: an interface walk that fails leaves the endpoint exactly as it
+// was, which is the pre-existing behaviour.
+func seedLocalCandidates(ep *iroh.Endpoint) {
+	addrs, err := hostaddr.LocalAddrPorts(ep.LocalAddr().Port())
+	if err != nil {
+		return
+	}
+	for _, ap := range addrs {
+		ep.AddExternalAddr(ap)
+	}
 }
 
 // parseDirectAddrs turns direct address strings into dial candidates. Each
