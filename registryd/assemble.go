@@ -11,10 +11,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fables-for-robots/amber-store-core/key"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
+	"github.com/jobs-build/amber-store-core/key"
 
-	"github.com/fables-for-robots/jobs-iroh/runner"
+	"github.com/jobs-build/jobs-iroh/runner"
 )
 
 // imageRecord is the tiny durable record of an assembled image, one JSON file

@@ -7,8 +7,8 @@ import (
 	"io"
 	"testing"
 
-	"github.com/fables-for-robots/jobs-iroh/amber"
-	"github.com/fables-for-robots/jobs-iroh/builddef"
+	"github.com/jobs-build/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/builddef"
 )
 
 // TestEnsureInput_TreeIsNoOp verifies that a tree-kind Input in ensureInput

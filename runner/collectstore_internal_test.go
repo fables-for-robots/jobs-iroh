@@ -4,9 +4,9 @@ import (
 	"context"
 	"testing"
 
-	"github.com/fables-for-robots/amber-store-core/key"
-	"github.com/fables-for-robots/jobs-iroh/builddef"
 	"github.com/fxamacker/cbor/v2"
+	"github.com/jobs-build/amber-store-core/key"
+	"github.com/jobs-build/jobs-iroh/builddef"
 )
 
 // importInput fabricates a distinct pinned import input and returns it with

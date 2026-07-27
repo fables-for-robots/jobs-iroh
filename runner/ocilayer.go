@@ -6,10 +6,10 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/fables-for-robots/amber-store-core/key"
-	"github.com/fables-for-robots/jobs-iroh/amber"
 	v1 "github.com/google/go-containerregistry/pkg/v1"
 	"github.com/google/go-containerregistry/pkg/v1/types"
+	"github.com/jobs-build/amber-store-core/key"
+	"github.com/jobs-build/jobs-iroh/amber"
 )
 
 // LayerKind names one of the two shapes a registry image layer has.

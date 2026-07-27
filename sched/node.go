@@ -5,14 +5,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fables-for-robots/amber-store-core/key"
+	"github.com/jobs-build/amber-store-core/key"
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/fables-for-robots/jobs-iroh/builddef"
-	"github.com/fables-for-robots/jobs-iroh/importdef"
-	"github.com/fables-for-robots/jobs-iroh/resources"
-	"github.com/fables-for-robots/jobs-iroh/wire"
+	"github.com/jobs-build/jobs-iroh/builddef"
+	"github.com/jobs-build/jobs-iroh/importdef"
+	"github.com/jobs-build/jobs-iroh/resources"
+	"github.com/jobs-build/jobs-iroh/wire"
 )
 
 // nodeID keys the in-memory node table — (kind, key) get-or-create IS the

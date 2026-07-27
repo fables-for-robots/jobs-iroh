@@ -1,7 +1,7 @@
 # jobs-registry: uncompressed layers, streamed from the CAS
 
 2026-07-24 · implemented in `runner/ocilayer.go` + `registryd/` ·
-closes [#4](https://github.com/fables-for-robots/jobs-iroh/issues/4)
+closes [#4](https://github.com/jobs-build/jobs-iroh/issues/4)
 
 ## Problem
 

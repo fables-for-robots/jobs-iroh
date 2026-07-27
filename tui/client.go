@@ -18,8 +18,8 @@ import (
 	"github.com/fxamacker/cbor/v2"
 	"github.com/tmc/go-iroh/iroh"
 
-	"github.com/fables-for-robots/jobs-iroh/amberclient"
-	"github.com/fables-for-robots/jobs-iroh/api"
+	"github.com/jobs-build/jobs-iroh/amberclient"
+	"github.com/jobs-build/jobs-iroh/api"
 )
 
 // alpnAdmin is the server's admin ALPN (frozen contract — serve/ mounts it).

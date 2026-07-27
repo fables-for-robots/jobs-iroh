@@ -8,8 +8,8 @@ import (
 
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/fables-for-robots/jobs-iroh/api"
-	"github.com/fables-for-robots/jobs-iroh/wire"
+	"github.com/jobs-build/jobs-iroh/api"
+	"github.com/jobs-build/jobs-iroh/wire"
 )
 
 // Diagnose assembles the failure report for one node or one request from

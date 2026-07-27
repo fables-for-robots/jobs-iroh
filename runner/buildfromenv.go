@@ -5,9 +5,9 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/fables-for-robots/amber-store-core/key"
-	"github.com/fables-for-robots/jobs-iroh/amber"
-	"github.com/fables-for-robots/jobs-iroh/recipe"
+	"github.com/jobs-build/amber-store-core/key"
+	"github.com/jobs-build/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/recipe"
 )
 
 // buildFromEnv is the materialized eval environment of a build-from tree at F:

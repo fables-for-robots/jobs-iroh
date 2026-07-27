@@ -13,7 +13,7 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/fables-for-robots/amber-store-iroh/relaymode"
+	"github.com/jobs-build/amber-store-iroh/relaymode"
 	"github.com/tmc/go-iroh/dns"
 	"github.com/tmc/go-iroh/iroh"
 	"github.com/tmc/go-iroh/iroh/mdns"

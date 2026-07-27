@@ -36,9 +36,9 @@ import (
 
 	"golang.org/x/sync/singleflight"
 
-	"github.com/fables-for-robots/jobs-iroh/amber"
-	"github.com/fables-for-robots/jobs-iroh/amberclient"
-	"github.com/fables-for-robots/jobs-iroh/runner"
+	"github.com/jobs-build/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/amberclient"
+	"github.com/jobs-build/jobs-iroh/runner"
 )
 
 // alpnAmberAdmin is serve.ALPNAmberAdmin, declared locally so the registry

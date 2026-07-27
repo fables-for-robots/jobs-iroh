@@ -4,8 +4,8 @@ import (
 	"context"
 	"errors"
 
-	"github.com/fables-for-robots/amber-store-core/key"
-	"github.com/fables-for-robots/jobs-iroh/amber"
+	"github.com/jobs-build/amber-store-core/key"
+	"github.com/jobs-build/jobs-iroh/amber"
 )
 
 // Ref names one result ref (name -> key) for a WriteRefs batch.

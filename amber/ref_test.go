@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fables-for-robots/amber-store-core/key"
-	"github.com/fables-for-robots/amber-store-core/reference"
-	"github.com/fables-for-robots/jobs-iroh/amber"
+	"github.com/jobs-build/amber-store-core/key"
+	"github.com/jobs-build/amber-store-core/reference"
+	"github.com/jobs-build/jobs-iroh/amber"
 )
 
 func mustFileKey(t *testing.T, data string) key.Key {

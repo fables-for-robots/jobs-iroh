@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fables-for-robots/jobs-iroh/amberclient"
-	"github.com/fables-for-robots/jobs-iroh/serve"
+	"github.com/jobs-build/jobs-iroh/amberclient"
+	"github.com/jobs-build/jobs-iroh/serve"
 )
 
 // dialConns dials the server's amber mount with an explicit Conns setting.

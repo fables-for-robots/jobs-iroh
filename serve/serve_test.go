@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fables-for-robots/amber-store-iroh/protocol"
+	"github.com/jobs-build/amber-store-iroh/protocol"
 	"github.com/tmc/go-iroh/iroh"
 	"github.com/tmc/go-iroh/netaddr"
 
-	"github.com/fables-for-robots/jobs-iroh/natsiroh"
+	"github.com/jobs-build/jobs-iroh/natsiroh"
 )
 
 // startServer runs a full jobs-server on loopback and returns its handle plus

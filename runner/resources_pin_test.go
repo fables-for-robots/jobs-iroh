@@ -6,8 +6,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/fables-for-robots/jobs-iroh/builddef"
-	"github.com/fables-for-robots/jobs-iroh/runner"
+	"github.com/jobs-build/jobs-iroh/builddef"
+	"github.com/jobs-build/jobs-iroh/runner"
 )
 
 // TestRunPin_CarriesResources: a recipe declaring resources pins them into

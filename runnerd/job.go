@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/fables-for-robots/amber-store-core/fstree"
-	"github.com/fables-for-robots/amber-store-core/key"
+	"github.com/jobs-build/amber-store-core/fstree"
+	"github.com/jobs-build/amber-store-core/key"
 	"github.com/nats-io/nats.go/jetstream"
 
-	"github.com/fables-for-robots/jobs-iroh/events"
-	"github.com/fables-for-robots/jobs-iroh/runner"
-	"github.com/fables-for-robots/jobs-iroh/wire"
+	"github.com/jobs-build/jobs-iroh/events"
+	"github.com/jobs-build/jobs-iroh/runner"
+	"github.com/jobs-build/jobs-iroh/wire"
 )
 
 // syncClient is the daemon's seam over amberclient: pull an input ref's

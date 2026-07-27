@@ -13,7 +13,7 @@ import (
 	"os"
 
 	"github.com/BurntSushi/toml"
-	jobsiroh "github.com/fables-for-robots/jobs-iroh"
+	jobsiroh "github.com/jobs-build/jobs-iroh"
 )
 
 // Source is how a fetcher artifact is obtained. Only "embedded" remains:

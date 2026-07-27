@@ -14,9 +14,9 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fables-for-robots/jobs-iroh/amberclient"
-	"github.com/fables-for-robots/jobs-iroh/api"
-	"github.com/fables-for-robots/jobs-iroh/wire"
+	"github.com/jobs-build/jobs-iroh/amberclient"
+	"github.com/jobs-build/jobs-iroh/api"
+	"github.com/jobs-build/jobs-iroh/wire"
 )
 
 // maxFollowNodes caps the concurrent log-follow streams during one watch,

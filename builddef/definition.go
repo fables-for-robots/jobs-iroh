@@ -9,9 +9,9 @@ import (
 	"fmt"
 	"reflect"
 
-	"github.com/fables-for-robots/amber-store-core/key"
-	"github.com/fables-for-robots/jobs-iroh/amber"
 	"github.com/fxamacker/cbor/v2"
+	"github.com/jobs-build/amber-store-core/key"
+	"github.com/jobs-build/jobs-iroh/amber"
 )
 
 // Input kinds (build.md §4).

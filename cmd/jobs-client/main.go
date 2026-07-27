@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/fables-for-robots/jobs-iroh/clientcli"
-	"github.com/fables-for-robots/jobs-iroh/sandbox"
+	"github.com/jobs-build/jobs-iroh/clientcli"
+	"github.com/jobs-build/jobs-iroh/sandbox"
 )
 
 func main() {

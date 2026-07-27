@@ -1,11 +1,11 @@
 # amber-store-core API map — embedding as the jobs-iroh CAS
 
 Source examined (read-only module cache):
-`/home/dragan/go/pkg/mod/github.com/fables-for-robots/amber-store-core@v0.0.0-20260720222444-a37d35fa4ecf`
+`/home/dragan/go/pkg/mod/github.com/jobs-build/amber-store-core@v0.0.0-20260720222444-a37d35fa4ecf`
 (all `file:line` cites below are relative to that root unless prefixed `jobs/`, which means
 `/home/dragan/fables-for-robots/jobs/`).
 
-Module: `github.com/fables-for-robots/amber-store-core`, Go 1.26.3 (go.mod:1-3).
+Module: `github.com/jobs-build/amber-store-core`, Go 1.26.3 (go.mod:1-3).
 Notable deps: pebble/v2 (refstore), fxamacker/cbor/v2, klauspost/compress (zstd),
 zeebo/blake3, PlakarKorp/go-cdc-chunkers (ultracdc), FastFilter/xorfilter, go-git (gitignore
 matcher only), urfave/cli/v2 (CLI only) (go.mod:5-16).

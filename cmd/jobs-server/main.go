@@ -15,9 +15,9 @@ import (
 
 	"github.com/urfave/cli/v2"
 
-	"github.com/fables-for-robots/jobs-iroh/sandbox"
-	"github.com/fables-for-robots/jobs-iroh/serve"
-	"github.com/fables-for-robots/jobs-iroh/version"
+	"github.com/jobs-build/jobs-iroh/sandbox"
+	"github.com/jobs-build/jobs-iroh/serve"
+	"github.com/jobs-build/jobs-iroh/version"
 )
 
 func main() {

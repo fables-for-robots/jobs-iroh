@@ -11,10 +11,10 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/fables-for-robots/jobs-iroh/runner"
-	"github.com/fables-for-robots/jobs-iroh/sandbox"
 	tarballimg "github.com/google/go-containerregistry/pkg/v1/tarball"
 	"github.com/google/go-containerregistry/pkg/v1/validate"
+	"github.com/jobs-build/jobs-iroh/runner"
+	"github.com/jobs-build/jobs-iroh/sandbox"
 )
 
 // runnableBuildJobs is jobs' shared run/image e2e recipe fixture: the build

@@ -9,12 +9,12 @@ import (
 	"os"
 	"testing"
 
-	"github.com/fables-for-robots/amber-store-core/key"
+	"github.com/jobs-build/amber-store-core/key"
 
-	"github.com/fables-for-robots/jobs-iroh/amber"
-	"github.com/fables-for-robots/jobs-iroh/builddef"
-	"github.com/fables-for-robots/jobs-iroh/importdef"
-	"github.com/fables-for-robots/jobs-iroh/wire"
+	"github.com/jobs-build/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/builddef"
+	"github.com/jobs-build/jobs-iroh/importdef"
+	"github.com/jobs-build/jobs-iroh/wire"
 )
 
 // pullEnv is a store-only harness — computePullRefsLocked needs no NATS.

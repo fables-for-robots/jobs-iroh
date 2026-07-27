@@ -5,7 +5,7 @@ package runner
 import (
 	"context"
 
-	"github.com/fables-for-robots/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/amber"
 )
 
 // DevelopConfig configures a `jobs develop` / local `jobs run --source` run

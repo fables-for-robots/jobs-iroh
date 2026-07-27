@@ -5,7 +5,7 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/fables-for-robots/jobs-iroh/resources"
+	"github.com/jobs-build/jobs-iroh/resources"
 )
 
 // jobIDPrefix marks admission entries that are running jobs (vs. lane

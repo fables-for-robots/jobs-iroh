@@ -6,8 +6,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/fables-for-robots/jobs-iroh/builddef"
-	"github.com/fables-for-robots/jobs-iroh/runner"
+	"github.com/jobs-build/jobs-iroh/builddef"
+	"github.com/jobs-build/jobs-iroh/runner"
 )
 
 // TestRunPin_CarriesCaches: a recipe declaring caches pins them into

@@ -33,15 +33,15 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/fables-for-robots/amber-store-core/key"
-	"github.com/fables-for-robots/amber-store-core/reference"
-	"github.com/fables-for-robots/amber-store-iroh/protocol"
-	"github.com/fables-for-robots/amber-store-iroh/wantsync"
+	"github.com/jobs-build/amber-store-core/key"
+	"github.com/jobs-build/amber-store-core/reference"
+	"github.com/jobs-build/amber-store-iroh/protocol"
+	"github.com/jobs-build/amber-store-iroh/wantsync"
 	"github.com/tmc/go-iroh/iroh"
 	irohkey "github.com/tmc/go-iroh/key"
 	"github.com/tmc/go-iroh/netaddr"
 
-	"github.com/fables-for-robots/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/amber"
 )
 
 // ErrRefNotFound is returned (errors.Is-able) by Pull when the server does

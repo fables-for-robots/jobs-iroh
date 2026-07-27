@@ -6,8 +6,8 @@ import (
 
 	"github.com/nats-io/nats.go"
 
-	"github.com/fables-for-robots/jobs-iroh/events"
-	"github.com/fables-for-robots/jobs-iroh/wire"
+	"github.com/jobs-build/jobs-iroh/events"
+	"github.com/jobs-build/jobs-iroh/wire"
 )
 
 // jobSink is the per-attempt events.Sink: it maps the stage drivers'

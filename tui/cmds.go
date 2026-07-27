@@ -6,8 +6,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/fables-for-robots/jobs-iroh/api"
-	"github.com/fables-for-robots/jobs-iroh/wire"
+	"github.com/jobs-build/jobs-iroh/api"
+	"github.com/jobs-build/jobs-iroh/wire"
 )
 
 const (

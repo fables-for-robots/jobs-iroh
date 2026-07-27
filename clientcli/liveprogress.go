@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fables-for-robots/jobs-iroh/runner"
+	"github.com/jobs-build/jobs-iroh/runner"
 )
 
 // liveProgress adapts the runner's Progress seam (runner.Sink) to the

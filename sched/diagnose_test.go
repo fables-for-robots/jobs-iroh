@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fables-for-robots/jobs-iroh/api"
-	"github.com/fables-for-robots/jobs-iroh/wire"
+	"github.com/jobs-build/jobs-iroh/api"
+	"github.com/jobs-build/jobs-iroh/wire"
 )
 
 // publishAttemptLog pushes one log chunk for the job's gen and waits for the

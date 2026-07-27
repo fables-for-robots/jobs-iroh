@@ -3,8 +3,8 @@ package recipe
 import (
 	"fmt"
 
-	"github.com/fables-for-robots/jobs-iroh/builddef"
 	"github.com/fxamacker/cbor/v2"
+	"github.com/jobs-build/jobs-iroh/builddef"
 	"go.starlark.net/starlark"
 )
 

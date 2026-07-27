@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fables-for-robots/amber-store-core/key"
-	"github.com/fables-for-robots/jobs-iroh/events"
-	"github.com/fables-for-robots/jobs-iroh/sandbox"
+	"github.com/jobs-build/amber-store-core/key"
+	"github.com/jobs-build/jobs-iroh/events"
+	"github.com/jobs-build/jobs-iroh/sandbox"
 )
 
 // TestBuildExecHeartbeatWiring: the namespace build executor emits

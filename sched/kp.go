@@ -3,13 +3,13 @@ package sched
 import (
 	"fmt"
 
-	"github.com/fables-for-robots/amber-store-core/key"
+	"github.com/jobs-build/amber-store-core/key"
 
 	"sort"
 
-	"github.com/fables-for-robots/jobs-iroh/builddef"
-	"github.com/fables-for-robots/jobs-iroh/cover"
-	"github.com/fables-for-robots/jobs-iroh/wire"
+	"github.com/jobs-build/jobs-iroh/builddef"
+	"github.com/jobs-build/jobs-iroh/cover"
+	"github.com/jobs-build/jobs-iroh/wire"
 )
 
 // KPTreeRef and PinCoverRef are the shared ref-name helpers (cover owns

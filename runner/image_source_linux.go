@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/fables-for-robots/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/amber"
 )
 
 // BuildImageFromSource builds cfg's target hermetically (exactly as `develop`

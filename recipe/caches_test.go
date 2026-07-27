@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fables-for-robots/jobs-iroh/builddef"
+	"github.com/jobs-build/jobs-iroh/builddef"
 )
 
 func evalCachesRecipe(t *testing.T, cachesLine string) (BuildResult, error) {

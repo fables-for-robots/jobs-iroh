@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fables-for-robots/jobs-iroh/sandbox"
+	"github.com/jobs-build/jobs-iroh/sandbox"
 )
 
 // TestExecHeartbeatTicks: while running, the heartbeat emits exec.heartbeat

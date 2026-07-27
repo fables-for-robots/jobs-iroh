@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fables-for-robots/jobs-iroh/amber"
-	"github.com/fables-for-robots/jobs-iroh/events"
+	"github.com/jobs-build/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/events"
 )
 
 // capSink captures emitted events in memory — the trimmed stand-in for jobs'

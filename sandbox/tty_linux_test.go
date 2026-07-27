@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/creack/pty"
-	"github.com/fables-for-robots/jobs-iroh/sandbox"
+	"github.com/jobs-build/jobs-iroh/sandbox"
 )
 
 // With a Tty set, the child's stdin must be a terminal (test -t 0 succeeds).

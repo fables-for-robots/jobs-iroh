@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fables-for-robots/jobs-iroh/tailbuf"
+	"github.com/jobs-build/jobs-iroh/tailbuf"
 )
 
 func TestTailBuf_LargeWrite(t *testing.T) {

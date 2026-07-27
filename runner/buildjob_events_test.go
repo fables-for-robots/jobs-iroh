@@ -8,10 +8,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fables-for-robots/jobs-iroh/builddef"
-	"github.com/fables-for-robots/jobs-iroh/events"
-	"github.com/fables-for-robots/jobs-iroh/runner"
-	"github.com/fables-for-robots/jobs-iroh/sandbox"
+	"github.com/jobs-build/jobs-iroh/builddef"
+	"github.com/jobs-build/jobs-iroh/events"
+	"github.com/jobs-build/jobs-iroh/runner"
+	"github.com/jobs-build/jobs-iroh/sandbox"
 )
 
 // memSink captures emitted events in memory — the external-package stand-in

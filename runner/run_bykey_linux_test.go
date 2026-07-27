@@ -9,9 +9,9 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/fables-for-robots/amber-store-core/key"
-	"github.com/fables-for-robots/jobs-iroh/runner"
-	"github.com/fables-for-robots/jobs-iroh/sandbox"
+	"github.com/jobs-build/amber-store-core/key"
+	"github.com/jobs-build/jobs-iroh/runner"
+	"github.com/jobs-build/jobs-iroh/sandbox"
 )
 
 // TestRunByKey_ShellShebangEntrypoint executes a hand-built build output by

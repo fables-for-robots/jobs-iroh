@@ -3,7 +3,7 @@ package builddef
 import (
 	"fmt"
 
-	"github.com/fables-for-robots/jobs-iroh/importdef"
+	"github.com/jobs-build/jobs-iroh/importdef"
 )
 
 // FetcherBuild synthesizes the standard build definition for a recipe-declared

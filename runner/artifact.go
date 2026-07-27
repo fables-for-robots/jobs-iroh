@@ -7,8 +7,8 @@ import (
 	"io"
 	"strings"
 
-	"github.com/fables-for-robots/amber-store-core/key"
-	"github.com/fables-for-robots/jobs-iroh/amber"
+	"github.com/jobs-build/amber-store-core/key"
+	"github.com/jobs-build/jobs-iroh/amber"
 )
 
 // resolvedArtifact is everything `run` and `image` need to consume an already-built

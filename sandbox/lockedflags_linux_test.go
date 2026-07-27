@@ -28,7 +28,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/fables-for-robots/jobs-iroh/sandbox"
+	"github.com/jobs-build/jobs-iroh/sandbox"
 )
 
 const lockedRemountHelperName = "locked-remount"

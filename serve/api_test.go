@@ -15,9 +15,9 @@ import (
 
 	"github.com/tmc/go-iroh/iroh"
 
-	"github.com/fables-for-robots/jobs-iroh/api"
-	"github.com/fables-for-robots/jobs-iroh/builddef"
-	"github.com/fables-for-robots/jobs-iroh/importdef"
+	"github.com/jobs-build/jobs-iroh/api"
+	"github.com/jobs-build/jobs-iroh/builddef"
+	"github.com/jobs-build/jobs-iroh/importdef"
 )
 
 // request performs one framed request on a fresh stream and returns the

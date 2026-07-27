@@ -11,14 +11,14 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fables-for-robots/amber-store-core/fstree"
-	"github.com/fables-for-robots/amber-store-core/key"
+	"github.com/jobs-build/amber-store-core/fstree"
+	"github.com/jobs-build/amber-store-core/key"
 
-	"github.com/fables-for-robots/jobs-iroh/amber"
-	"github.com/fables-for-robots/jobs-iroh/api"
-	"github.com/fables-for-robots/jobs-iroh/builddef"
-	"github.com/fables-for-robots/jobs-iroh/resources"
-	"github.com/fables-for-robots/jobs-iroh/wire"
+	"github.com/jobs-build/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/api"
+	"github.com/jobs-build/jobs-iroh/builddef"
+	"github.com/jobs-build/jobs-iroh/resources"
+	"github.com/jobs-build/jobs-iroh/wire"
 )
 
 // request is one submitted build: in-memory truth (plus a status-KV mirror);

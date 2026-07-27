@@ -6,11 +6,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fables-for-robots/amber-store-core/key"
+	"github.com/jobs-build/amber-store-core/key"
 
-	"github.com/fables-for-robots/jobs-iroh/api"
-	"github.com/fables-for-robots/jobs-iroh/sandbox"
-	"github.com/fables-for-robots/jobs-iroh/wire"
+	"github.com/jobs-build/jobs-iroh/api"
+	"github.com/jobs-build/jobs-iroh/sandbox"
+	"github.com/jobs-build/jobs-iroh/wire"
 )
 
 // testKey mints a canonical key from a seed (ParseNodeName rejects

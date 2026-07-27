@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"runtime"
 
-	"github.com/fables-for-robots/jobs-iroh/resources"
+	"github.com/jobs-build/jobs-iroh/resources"
 )
 
 // detectHostCapacity is the non-Linux fallback (dev hosts): host core count for

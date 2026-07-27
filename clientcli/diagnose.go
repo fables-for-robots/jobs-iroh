@@ -12,8 +12,8 @@ import (
 
 	"github.com/urfave/cli/v2"
 
-	"github.com/fables-for-robots/jobs-iroh/api"
-	"github.com/fables-for-robots/jobs-iroh/wire"
+	"github.com/jobs-build/jobs-iroh/api"
+	"github.com/jobs-build/jobs-iroh/wire"
 )
 
 // diagnoseCmd fetches the durable failure trail of a request or node and

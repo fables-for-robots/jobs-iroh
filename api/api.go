@@ -16,7 +16,7 @@ import (
 
 	"github.com/fxamacker/cbor/v2"
 
-	"github.com/fables-for-robots/jobs-iroh/wire"
+	"github.com/jobs-build/jobs-iroh/wire"
 )
 
 // MaxFrame bounds one frame's payload (matches the amber sync protocol).

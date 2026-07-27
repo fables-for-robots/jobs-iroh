@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/fables-for-robots/amber-store-core/key"
-	"github.com/fables-for-robots/amber-store-core/reference"
-	"github.com/fables-for-robots/amber-store-core/refstore"
+	"github.com/jobs-build/amber-store-core/key"
+	"github.com/jobs-build/amber-store-core/reference"
+	"github.com/jobs-build/amber-store-core/refstore"
 )
 
 // RefInfo is one reference: a name pointing at a store key, with its

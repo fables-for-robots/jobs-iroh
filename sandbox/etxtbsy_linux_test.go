@@ -9,7 +9,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/fables-for-robots/jobs-iroh/sandbox"
+	"github.com/jobs-build/jobs-iroh/sandbox"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )

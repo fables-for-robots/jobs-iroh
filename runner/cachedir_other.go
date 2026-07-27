@@ -6,8 +6,8 @@ import (
 	"context"
 	"time"
 
-	"github.com/fables-for-robots/jobs-iroh/amber"
-	"github.com/fables-for-robots/jobs-iroh/events"
+	"github.com/jobs-build/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/events"
 )
 
 // finalizeCaches is unreachable off Linux (the build executor returns

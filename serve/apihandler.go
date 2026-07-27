@@ -14,9 +14,9 @@ import (
 	"github.com/tmc/go-iroh/iroh"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/fables-for-robots/jobs-iroh/amber"
-	"github.com/fables-for-robots/jobs-iroh/api"
-	"github.com/fables-for-robots/jobs-iroh/sched"
+	"github.com/jobs-build/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/api"
+	"github.com/jobs-build/jobs-iroh/sched"
 )
 
 // apiService serves the api frame protocol (4-byte BE length + CBOR

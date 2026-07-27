@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/fables-for-robots/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/amber"
 )
 
 // openStore opens a fresh embedded store under a test temp dir (the jobs-iroh

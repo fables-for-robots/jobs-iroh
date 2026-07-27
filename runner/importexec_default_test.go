@@ -5,7 +5,7 @@ package runner
 import (
 	"testing"
 
-	"github.com/fables-for-robots/jobs-iroh/sandbox"
+	"github.com/jobs-build/jobs-iroh/sandbox"
 )
 
 // The production runner must confine imports: the default import executor is

@@ -6,9 +6,9 @@ import (
 	"errors"
 	"io"
 
-	"github.com/fables-for-robots/amber-store-core/key"
-	"github.com/fables-for-robots/jobs-iroh/amber"
-	"github.com/fables-for-robots/jobs-iroh/events"
+	"github.com/jobs-build/amber-store-core/key"
+	"github.com/jobs-build/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/events"
 )
 
 // ErrUnsupported is returned by a BuildExecutor on platforms without the

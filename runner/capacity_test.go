@@ -3,7 +3,7 @@ package runner
 import (
 	"testing"
 
-	"github.com/fables-for-robots/jobs-iroh/resources"
+	"github.com/jobs-build/jobs-iroh/resources"
 )
 
 func TestCapacityOverrideWins(t *testing.T) {

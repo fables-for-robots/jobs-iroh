@@ -5,7 +5,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/fables-for-robots/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/amber"
 )
 
 // testStore, when non-nil, bypasses the data-dir open entirely (no flock, no

@@ -3,7 +3,7 @@ package wire
 import (
 	"fmt"
 
-	"github.com/fables-for-robots/jobs-iroh/resources"
+	"github.com/jobs-build/jobs-iroh/resources"
 )
 
 // Class is one rung of the fixed size ladder a job requirement is rounded up

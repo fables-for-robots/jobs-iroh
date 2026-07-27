@@ -5,8 +5,8 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/fables-for-robots/jobs-iroh/runner"
-	"github.com/fables-for-robots/jobs-iroh/wire"
+	"github.com/jobs-build/jobs-iroh/runner"
+	"github.com/jobs-build/jobs-iroh/wire"
 )
 
 func testJob() wire.Job {

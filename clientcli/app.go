@@ -19,7 +19,7 @@ import (
 
 	"github.com/urfave/cli/v2"
 
-	"github.com/fables-for-robots/jobs-iroh/version"
+	"github.com/jobs-build/jobs-iroh/version"
 )
 
 // signalCtx derives the command context cancelled on Ctrl-C / SIGTERM so an

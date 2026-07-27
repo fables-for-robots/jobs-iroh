@@ -6,11 +6,11 @@ import (
 	"context"
 	"testing"
 
-	"github.com/fables-for-robots/amber-store-core/key"
-	"github.com/fables-for-robots/jobs-iroh/amber"
-	"github.com/fables-for-robots/jobs-iroh/builddef"
-	"github.com/fables-for-robots/jobs-iroh/importdef"
-	"github.com/fables-for-robots/jobs-iroh/runner"
+	"github.com/jobs-build/amber-store-core/key"
+	"github.com/jobs-build/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/builddef"
+	"github.com/jobs-build/jobs-iroh/importdef"
+	"github.com/jobs-build/jobs-iroh/runner"
 )
 
 func TestRunBuildFrom_importSourceProducesF(t *testing.T) {

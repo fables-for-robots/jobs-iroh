@@ -18,9 +18,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fables-for-robots/jobs-iroh/amber"
-	"github.com/fables-for-robots/jobs-iroh/amberclient"
-	"github.com/fables-for-robots/jobs-iroh/serve"
+	"github.com/jobs-build/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/amberclient"
+	"github.com/jobs-build/jobs-iroh/serve"
 )
 
 // startServer runs a jobs-server on loopback and returns its handle.

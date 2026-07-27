@@ -78,10 +78,6 @@ github.com/docker/docker-credential-helpers v0.9.3 h1:gAm/VtF9wgqJMoxzT3Gj5p4AqI
 github.com/docker/docker-credential-helpers v0.9.3/go.mod h1:x+4Gbw9aGmChi3qTLZj8Dfn0TD20M/fuWy0E5+WDeCo=
 github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f h1:Y/CXytFA4m6baUTXGLOoWe4PQhGxaX0KpnayAqC48p4=
 github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f/go.mod h1:vw97MGsxSvLiUE2X8qFplwetxpGLQrlU1Q9AUEIzCaM=
-github.com/fables-for-robots/amber-store-core v0.0.0-20260720222444-a37d35fa4ecf h1:U3jImn5AVM+EboewhPeH4jh6Akmcp+Y65cPFrjDpKAw=
-github.com/fables-for-robots/amber-store-core v0.0.0-20260720222444-a37d35fa4ecf/go.mod h1:cFxp0PbnCV/VyeRy706LprzLdOA6LjBHEGXmjYsvu6o=
-github.com/fables-for-robots/amber-store-iroh v0.0.0-20260721231548-857301522547 h1:qJzaGHKFfMJKQX/fCkLA0kZe6jUp8srWEI8tmbN94As=
-github.com/fables-for-robots/amber-store-iroh v0.0.0-20260721231548-857301522547/go.mod h1:GdKpylbfyoUKOp9njSeI8wV+fRGBC2YazIvrFi4rGFA=
 github.com/fxamacker/cbor/v2 v2.9.2 h1:X4Ksno9+x3cz0TZv69ec1hxP/+tymuR8PXQJyDwfh78=
 github.com/fxamacker/cbor/v2 v2.9.2/go.mod h1:vM4b+DJCtHn+zz7h3FFp/hDAI9WNWCsZj23V5ytsSxQ=
 github.com/getsentry/sentry-go v0.27.0 h1:Pv98CIbtB3LkMWmXi4Joa5OOcwbmnX88sF5qbK3r3Ps=
@@ -126,6 +122,10 @@ github.com/google/pprof v0.0.0-20260402051712-545e8a4df936 h1:EwtI+Al+DeppwYX2oX
 github.com/google/pprof v0.0.0-20260402051712-545e8a4df936/go.mod h1:MxpfABSjhmINe3F1It9d+8exIHFvUqtLIRCdOGNXqiI=
 github.com/jbenet/go-context v0.0.0-20150711004518-d14ea06fba99 h1:BQSFePA1RWJOlocH6Fxy8MmwDt+yVQYULKfN0RoTN8A=
 github.com/jbenet/go-context v0.0.0-20150711004518-d14ea06fba99/go.mod h1:1lJo3i6rXxKeerYnT8Nvf0QmHCRC1n8sfWVwXF2Frvo=
+github.com/jobs-build/amber-store-core v0.0.0-20260727080459-e4fcb60cba49 h1:Fw+eRdS72v38HdYbiQ6ssDUB3KrKaFd1NG2EWxqWR9U=
+github.com/jobs-build/amber-store-core v0.0.0-20260727080459-e4fcb60cba49/go.mod h1:6W8t/OqZ5VKDiMOHVvDflgiOZ3BiSRqcYKDIyJgHn6k=
+github.com/jobs-build/amber-store-iroh v0.0.0-20260727080618-d80bbf75444f h1:g6HesWKuBDOz1fDWyFUkb4/0JtfddMexPkALN61ylGk=
+github.com/jobs-build/amber-store-iroh v0.0.0-20260727080618-d80bbf75444f/go.mod h1:+RLL48BnHyYOZppBCA71Iyh8YqsD/jTVO/+GWfuFy6I=
 github.com/joshdk/go-junit v1.0.0 h1:S86cUKIdwBHWwA6xCmFlf3RTLfVXYQfvanM5Uh+K6GE=
 github.com/joshdk/go-junit v1.0.0/go.mod h1:TiiV0PqkaNfFXjEiyjWM3XXrhVyCa1K4Zfga6W52ung=
 github.com/kisielk/errcheck v1.5.0/go.mod h1:pFxgyoBC7bSaBwPgfKdkLd5X25qrDl4LWUI2bnpBCr8=

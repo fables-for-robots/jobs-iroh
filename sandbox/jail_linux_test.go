@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fables-for-robots/jobs-iroh/sandbox"
+	"github.com/jobs-build/jobs-iroh/sandbox"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
@@ -54,7 +54,7 @@ var _ = Describe("rootless jail", func() {
 		m := []sandbox.Mount{
 			{Source: "", Target: "/", FSType: "tmpfs"}, // writable new root
 			{Source: "/nix", Target: "/nix", ReadOnly: true},
-			{Source: "/dev", Target: "/dev"}, // rw: /dev/tcp, /dev/null
+			{Source: "/dev", Target: "/dev"},    // rw: /dev/tcp, /dev/null
 			{Source: resultDir, Target: "/out"}, // rw results, host-readable
 		}
 		if _, err := os.Stat("/usr"); err == nil {

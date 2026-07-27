@@ -8,7 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/fables-for-robots/jobs-iroh/api"
+	"github.com/jobs-build/jobs-iroh/api"
 )
 
 // refsModel is the ref browser: a prefix-filterable listing, one page of up

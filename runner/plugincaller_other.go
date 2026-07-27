@@ -8,9 +8,9 @@ import (
 	"io"
 	"os"
 
-	"github.com/fables-for-robots/amber-store-core/key"
-	"github.com/fables-for-robots/jobs-iroh/amber"
-	"github.com/fables-for-robots/jobs-iroh/recipe"
+	"github.com/jobs-build/amber-store-core/key"
+	"github.com/jobs-build/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/recipe"
 )
 
 // SandboxedPluginCaller off Linux has no user-namespace hermetic sandbox, so

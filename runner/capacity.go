@@ -3,7 +3,7 @@ package runner
 import (
 	"log/slog"
 
-	"github.com/fables-for-robots/jobs-iroh/resources"
+	"github.com/jobs-build/jobs-iroh/resources"
 )
 
 // Capacity headroom reserved for the runner process + sandbox overhead: the

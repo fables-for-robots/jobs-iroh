@@ -5,7 +5,7 @@ package runner
 import (
 	"context"
 
-	"github.com/fables-for-robots/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/amber"
 )
 
 // NamespaceBuildExecutor is unavailable off Linux (no user namespaces /

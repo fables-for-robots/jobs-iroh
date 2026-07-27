@@ -3,7 +3,7 @@ package builddef
 import (
 	"testing"
 
-	"github.com/fables-for-robots/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/amber"
 )
 
 func TestTreeInput_RoundTrip(t *testing.T) {

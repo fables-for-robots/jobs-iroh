@@ -5,11 +5,11 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/fables-for-robots/amber-store-core/key"
-	"github.com/fables-for-robots/amber-store-iroh/protocol"
+	"github.com/jobs-build/amber-store-core/key"
+	"github.com/jobs-build/amber-store-iroh/protocol"
 
-	"github.com/fables-for-robots/jobs-iroh/amber"
-	"github.com/fables-for-robots/jobs-iroh/amberclient"
+	"github.com/jobs-build/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/amberclient"
 )
 
 // reconnSync adapts amberclient onto the daemon's syncClient seam with

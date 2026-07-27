@@ -16,8 +16,8 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/fables-for-robots/jobs-iroh/events"
-	"github.com/fables-for-robots/jobs-iroh/tailbuf"
+	"github.com/jobs-build/jobs-iroh/events"
+	"github.com/jobs-build/jobs-iroh/tailbuf"
 )
 
 // ExecSpec describes one fetcher invocation.

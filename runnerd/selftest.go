@@ -11,11 +11,11 @@ import (
 	"runtime"
 	"time"
 
-	"github.com/fables-for-robots/jobs-iroh/amber"
-	"github.com/fables-for-robots/jobs-iroh/bootstrap"
-	"github.com/fables-for-robots/jobs-iroh/cover"
-	"github.com/fables-for-robots/jobs-iroh/importdef"
-	"github.com/fables-for-robots/jobs-iroh/runner"
+	"github.com/jobs-build/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/bootstrap"
+	"github.com/jobs-build/jobs-iroh/cover"
+	"github.com/jobs-build/jobs-iroh/importdef"
+	"github.com/jobs-build/jobs-iroh/runner"
 )
 
 // selfTestTimeout bounds the whole boot self-test, first-boot shell ingest

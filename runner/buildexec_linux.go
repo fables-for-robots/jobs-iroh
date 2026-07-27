@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fables-for-robots/jobs-iroh/amber"
-	"github.com/fables-for-robots/jobs-iroh/sandbox"
-	"github.com/fables-for-robots/jobs-iroh/tailbuf"
+	"github.com/jobs-build/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/sandbox"
+	"github.com/jobs-build/jobs-iroh/tailbuf"
 )
 
 // NamespaceBuildExecutor runs a hermetic build in a rootless namespace sandbox.

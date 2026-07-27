@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/fables-for-robots/jobs-iroh/builddef"
+	"github.com/jobs-build/jobs-iroh/builddef"
 )
 
 func TestResolveSourceContentTree_Tree(t *testing.T) {

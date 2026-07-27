@@ -13,10 +13,10 @@ import (
 
 	"github.com/urfave/cli/v2"
 
-	"github.com/fables-for-robots/jobs-iroh/runnerd"
-	"github.com/fables-for-robots/jobs-iroh/sandbox"
-	"github.com/fables-for-robots/jobs-iroh/version"
-	"github.com/fables-for-robots/jobs-iroh/wire"
+	"github.com/jobs-build/jobs-iroh/runnerd"
+	"github.com/jobs-build/jobs-iroh/sandbox"
+	"github.com/jobs-build/jobs-iroh/version"
+	"github.com/jobs-build/jobs-iroh/wire"
 )
 
 func main() {

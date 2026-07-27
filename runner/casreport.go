@@ -1,8 +1,8 @@
 package runner
 
 import (
-	"github.com/fables-for-robots/jobs-iroh/amber"
-	"github.com/fables-for-robots/jobs-iroh/events"
+	"github.com/jobs-build/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/events"
 )
 
 // emitCAS reports the node attempt's CAS summary (issue #95): what the output

@@ -3,8 +3,8 @@ package runner
 import (
 	"time"
 
-	"github.com/fables-for-robots/jobs-iroh/events"
-	"github.com/fables-for-robots/jobs-iroh/sandbox"
+	"github.com/jobs-build/jobs-iroh/events"
+	"github.com/jobs-build/jobs-iroh/sandbox"
 )
 
 // execHeartbeatInterval is how often a running job's process emits an

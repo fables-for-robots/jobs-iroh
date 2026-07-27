@@ -10,10 +10,10 @@ import (
 
 	"github.com/urfave/cli/v2"
 
-	"github.com/fables-for-robots/jobs-iroh/amber"
-	"github.com/fables-for-robots/jobs-iroh/bootstrap"
-	"github.com/fables-for-robots/jobs-iroh/importdef"
-	"github.com/fables-for-robots/jobs-iroh/runner"
+	"github.com/jobs-build/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/bootstrap"
+	"github.com/jobs-build/jobs-iroh/importdef"
+	"github.com/jobs-build/jobs-iroh/runner"
 )
 
 // localConfig carries the flags shared by the local build commands (build,

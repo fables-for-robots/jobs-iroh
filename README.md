@@ -120,7 +120,7 @@ direnv allow          # sets up the flake shell + GOPRIVATE
 nix develop -c go test ./...
 ```
 
-`GOPRIVATE=github.com/fables-for-robots/*` is required for module fetches
+`GOPRIVATE=github.com/jobs-build/*` is required for module fetches
 (exported by `.envrc`).
 
 ## Tests

@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/fables-for-robots/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/amber"
 )
 
 // BuildImageFromSource is Linux-only because it drives the namespace build

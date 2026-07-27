@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fables-for-robots/jobs-iroh/resources"
+	"github.com/jobs-build/jobs-iroh/resources"
 )
 
 func res(cpu, memGiB int64) resources.Resources {

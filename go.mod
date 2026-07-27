@@ -1,4 +1,4 @@
-module github.com/fables-for-robots/jobs-iroh
+module github.com/jobs-build/jobs-iroh
 
 go 1.26.5
 
@@ -8,10 +8,10 @@ require (
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/creack/pty v1.1.9
-	github.com/fables-for-robots/amber-store-core v0.0.0-20260720222444-a37d35fa4ecf
-	github.com/fables-for-robots/amber-store-iroh v0.0.0-20260721231548-857301522547
 	github.com/fxamacker/cbor/v2 v2.9.2
 	github.com/google/go-containerregistry v0.21.7
+	github.com/jobs-build/amber-store-core v0.0.0-20260727080459-e4fcb60cba49
+	github.com/jobs-build/amber-store-iroh v0.0.0-20260727080618-d80bbf75444f
 	github.com/klauspost/compress v1.19.0
 	github.com/nats-io/nats-server/v2 v2.14.3
 	github.com/nats-io/nats.go v1.52.0

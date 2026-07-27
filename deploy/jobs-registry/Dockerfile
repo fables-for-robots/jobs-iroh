@@ -1,5 +1,5 @@
 # Containerize jobs-registry. The module tree is private
-# (GOPRIVATE=github.com/fables-for-robots/*), so the binary is built OUTSIDE
+# (GOPRIVATE=github.com/jobs-build/*), so the binary is built OUTSIDE
 # the image where credentials exist, and copied in:
 #
 #   CGO_ENABLED=0 GOOS=linux nix develop -c \

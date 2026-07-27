@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/fables-for-robots/jobs-iroh/sandbox"
+	"github.com/jobs-build/jobs-iroh/sandbox"
 )
 
 // TestMain MUST call sandbox.Init() first (CLAUDE.md sandbox re-exec rule):

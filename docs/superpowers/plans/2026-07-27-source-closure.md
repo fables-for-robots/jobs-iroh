@@ -12,7 +12,7 @@
 
 ## Global Constraints
 
-- Go toolchain comes from the Nix devShell: run everything as `nix develop -c go test ./<pkg>/...` (or `direnv` env). `GOPRIVATE=github.com/fables-for-robots/*`.
+- Go toolchain comes from the Nix devShell: run everything as `nix develop -c go test ./<pkg>/...` (or `direnv` env). `GOPRIVATE=github.com/jobs-build/*`.
 - **Identity-critical**: do NOT touch chunk params, `NormalizeTree`/`PruneTree` normalization values, or `amber.KPVersion` (stays 2 — spec §7.1).
 - `Pinned` without `Closure` must encode **byte-identically** to before (cbor `omitempty`).
 - `closure` and `sources` are mutually exclusive at every layer that sees both (recipe eval, `cover.Derive`).

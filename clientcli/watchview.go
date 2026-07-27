@@ -6,8 +6,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fables-for-robots/jobs-iroh/api"
-	"github.com/fables-for-robots/jobs-iroh/wire"
+	"github.com/jobs-build/jobs-iroh/api"
+	"github.com/jobs-build/jobs-iroh/wire"
 )
 
 // The snapshot → terminal-view mapping for remote-build/watch: one pure

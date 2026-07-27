@@ -36,7 +36,7 @@ nix develop -c go test ./...
 nix develop -c go build ./...
 ```
 
-`GOPRIVATE=github.com/fables-for-robots/*` is required for module fetches
+`GOPRIVATE=github.com/jobs-build/*` is required for module fetches
 (set in `.envrc`).
 
 ## Package map

@@ -7,10 +7,10 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/fables-for-robots/amber-store-core/fstree"
-	"github.com/fables-for-robots/amber-store-core/key"
-	"github.com/fables-for-robots/amber-store-core/tarexport"
-	"github.com/fables-for-robots/amber-store-core/tarextract"
+	"github.com/jobs-build/amber-store-core/fstree"
+	"github.com/jobs-build/amber-store-core/key"
+	"github.com/jobs-build/amber-store-core/tarexport"
+	"github.com/jobs-build/amber-store-core/tarextract"
 )
 
 // Entry is one directory entry as returned by Ls: the fstree entry's name,

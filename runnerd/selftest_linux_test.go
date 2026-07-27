@@ -10,9 +10,9 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fables-for-robots/jobs-iroh/amber"
-	"github.com/fables-for-robots/jobs-iroh/runner"
-	"github.com/fables-for-robots/jobs-iroh/sandbox"
+	"github.com/jobs-build/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/runner"
+	"github.com/jobs-build/jobs-iroh/sandbox"
 )
 
 // TestMain MUST call sandbox.Init() first: bootSelfTest drives the real

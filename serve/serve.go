@@ -20,16 +20,16 @@ import (
 	"sync/atomic"
 	"time"
 
-	ambserver "github.com/fables-for-robots/amber-store-iroh/server"
+	ambserver "github.com/jobs-build/amber-store-iroh/server"
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/tmc/go-iroh/iroh"
 	"golang.org/x/sync/errgroup"
 
-	"github.com/fables-for-robots/jobs-iroh/amber"
-	"github.com/fables-for-robots/jobs-iroh/bootstrap"
-	"github.com/fables-for-robots/jobs-iroh/natsiroh"
-	"github.com/fables-for-robots/jobs-iroh/sched"
+	"github.com/jobs-build/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/bootstrap"
+	"github.com/jobs-build/jobs-iroh/natsiroh"
+	"github.com/jobs-build/jobs-iroh/sched"
 )
 
 // The five service ALPNs of a jobs-server endpoint.

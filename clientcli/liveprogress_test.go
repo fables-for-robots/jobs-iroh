@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fables-for-robots/jobs-iroh/runner"
+	"github.com/jobs-build/jobs-iroh/runner"
 )
 
 // newLiveProgressForTest builds a liveProgress without the TTY refresh

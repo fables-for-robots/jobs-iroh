@@ -5,7 +5,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/fables-for-robots/jobs-iroh/api"
+	"github.com/jobs-build/jobs-iroh/api"
 )
 
 // statsModel is the server-stats view: store disk usage, ref count,

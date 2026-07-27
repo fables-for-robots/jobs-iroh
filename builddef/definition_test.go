@@ -4,8 +4,8 @@ import (
 	"bytes"
 	"testing"
 
-	"github.com/fables-for-robots/jobs-iroh/amber"
-	"github.com/fables-for-robots/jobs-iroh/importdef"
+	"github.com/jobs-build/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/importdef"
 )
 
 // importInput builds an import Input for a fetcher+url (test helper).

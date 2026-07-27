@@ -7,7 +7,7 @@ import (
 
 	"github.com/urfave/cli/v2"
 
-	"github.com/fables-for-robots/jobs-iroh/api"
+	"github.com/jobs-build/jobs-iroh/api"
 )
 
 // serverFlags are the connection flags shared by every remote observation

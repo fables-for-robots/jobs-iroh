@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/fables-for-robots/jobs-iroh/api"
+	"github.com/jobs-build/jobs-iroh/api"
 )
 
 // Error is a scheduler error carrying an api error code, so the protocol

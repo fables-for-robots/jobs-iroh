@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fables-for-robots/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/amber"
 )
 
 // newStore opens a fresh Store over a temp dir, closed at test end.

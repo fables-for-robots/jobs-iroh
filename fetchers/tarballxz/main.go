@@ -19,7 +19,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/fables-for-robots/jobs-iroh/fetchers/tarextract"
+	"github.com/jobs-build/jobs-iroh/fetchers/tarextract"
 	"github.com/ulikunitz/xz"
 )
 

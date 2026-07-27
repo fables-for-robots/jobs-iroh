@@ -4,7 +4,7 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/fables-for-robots/jobs-iroh/importdef"
+	"github.com/jobs-build/jobs-iroh/importdef"
 )
 
 // module is one Go module to fetch: its path and version.

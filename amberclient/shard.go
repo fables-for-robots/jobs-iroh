@@ -19,12 +19,12 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fables-for-robots/amber-store-iroh/protocol"
-	"github.com/fables-for-robots/amber-store-iroh/wantsync"
+	"github.com/jobs-build/amber-store-iroh/protocol"
+	"github.com/jobs-build/amber-store-iroh/wantsync"
 	"github.com/tmc/go-iroh/iroh"
 	"github.com/tmc/go-iroh/netaddr"
 
-	"github.com/fables-for-robots/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/amber"
 )
 
 // Attach timing. The server serves whatever shards arrived within its gather

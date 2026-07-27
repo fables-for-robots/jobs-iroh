@@ -11,8 +11,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fables-for-robots/jobs-iroh/sandbox"
-	"github.com/fables-for-robots/jobs-iroh/tailbuf"
+	"github.com/jobs-build/jobs-iroh/sandbox"
+	"github.com/jobs-build/jobs-iroh/tailbuf"
 )
 
 // CgroupExecutor runs a fetcher's ./fetch inside a best-effort cgroup

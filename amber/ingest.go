@@ -4,9 +4,9 @@ import (
 	"context"
 	"errors"
 
-	"github.com/fables-for-robots/amber-store-core/fstree"
-	"github.com/fables-for-robots/amber-store-core/key"
-	"github.com/fables-for-robots/amber-store-core/packstore"
+	"github.com/jobs-build/amber-store-core/fstree"
+	"github.com/jobs-build/amber-store-core/key"
+	"github.com/jobs-build/amber-store-core/packstore"
 )
 
 // IngestStats reports what one ingest wrote: ObjectsStored/BytesStored count

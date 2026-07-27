@@ -3,7 +3,7 @@ package clientcli
 import (
 	"github.com/urfave/cli/v2"
 
-	"github.com/fables-for-robots/jobs-iroh/tui"
+	"github.com/jobs-build/jobs-iroh/tui"
 )
 
 // tuiCmd launches the interactive admin TUI over jobs-admin/1.0: live build

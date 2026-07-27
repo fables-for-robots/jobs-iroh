@@ -7,8 +7,8 @@ import (
 	"io"
 	"sync"
 
-	"github.com/fables-for-robots/jobs-iroh/amber"
-	"github.com/fables-for-robots/jobs-iroh/runner"
+	"github.com/jobs-build/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/runner"
 )
 
 // errStreamClosed answers a read that arrives after the handler tore the

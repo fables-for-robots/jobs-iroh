@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fables-for-robots/jobs-iroh/events"
+	"github.com/jobs-build/jobs-iroh/events"
 )
 
 // mkCacheDir writes one file ("hello", 5 bytes) into a fresh cache host dir.
