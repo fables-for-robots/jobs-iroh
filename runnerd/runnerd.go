@@ -237,6 +237,7 @@ func Run(ctx context.Context, o Options) error {
 	if nc.IsConnected() {
 		signalHello(nc)
 	}
+	sync.Warm(ctx)
 
 	log.Info("jobs-runner starting",
 		"name", name, "platform", platform, "size", size,
@@ -274,6 +275,10 @@ func natsConnSource(opts amberclient.Options) (natsiroh.ConnSource, func()) {
 		if err != nil {
 			return nil, err
 		}
+		// WithoutCancel: this ctx bounds one dial attempt (5s), while a
+		// relay→direct upgrade lands after it — the watcher's real lifetime
+		// bound is the connection, which closeCurLocked ends.
+		amberclient.WatchPath(context.WithoutCancel(ctx), conn, reportPath(opts.Logger, "scheduling"))
 		cur, curEP = conn, ep
 		return conn, nil
 	}
@@ -281,6 +286,27 @@ func natsConnSource(opts amberclient.Options) (natsiroh.ConnSource, func()) {
 		mu.Lock()
 		defer mu.Unlock()
 		closeCurLocked()
+	}
+}
+
+// reportPath builds the path reporter for one of the runner's two server
+// connections (link is what it carries: "store" or "scheduling"). Whether
+// the path is direct or relayed is the single biggest predictor of store
+// throughput — a relayed connection funnels every CAS byte through a third
+// party and is also what makes sharded transfers demote themselves — so a
+// relay is reported as a warning, and every later change (hole punching
+// landing, or a fall back to the relay) is reported too.
+func reportPath(log *slog.Logger, link string) func(amberclient.Path) {
+	if log == nil {
+		log = slog.Default()
+	}
+	return func(p amberclient.Path) {
+		attrs := append([]any{"link", link}, p.LogAttrs()...)
+		if p.Relayed {
+			log.Warn("server connection goes through a relay — no direct path; store transfers will be slower", attrs...)
+			return
+		}
+		log.Info("server connection is direct", attrs...)
 	}
 }
 

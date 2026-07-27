@@ -3,6 +3,7 @@ package runnerd
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"sync"
 
 	"github.com/jobs-build/amber-store-core/key"
@@ -84,8 +85,23 @@ func (r *reconnSync) client(ctx context.Context) (*amberclient.Client, error) {
 	if err != nil {
 		return nil, err
 	}
+	c.WatchPath(context.WithoutCancel(ctx), reportPath(r.opts.Logger, "store"))
 	r.cur = c
 	return c, nil
+}
+
+// Warm dials the store connection ahead of the first transfer, so the runner
+// reports how it reaches the store (see reportPath) at startup instead of at
+// the first job. Failure is not fatal — the connection is dialed lazily
+// anyway and do retries it on every operation — so it is only logged.
+func (r *reconnSync) Warm(ctx context.Context) {
+	if _, err := r.client(ctx); err != nil {
+		log := r.opts.Logger
+		if log == nil {
+			log = slog.Default()
+		}
+		log.Warn("store connection not established yet; retrying at first transfer", "error", err)
+	}
 }
 
 // drop closes c and forgets it (if still current).
