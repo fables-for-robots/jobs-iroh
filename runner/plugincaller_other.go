@@ -31,6 +31,12 @@ type SandboxedPluginCaller struct {
 	// DepDirs mirrors the Linux caller's resolution-dep mounts; the
 	// non-hermetic fallback does not expose them to the plugin.
 	DepDirs map[string]string
+	// Dir mirrors the Linux caller's build dir within the source tree
+	// (sibling-sources design §9). The SubprocessPlugin bridge's request
+	// carries only {call, source} — there is no field to announce the
+	// consumer dir in — so this fallback REFUSES a widened build rather
+	// than letting the plugin resolve against the context root.
+	Dir string
 }
 
 var _ recipe.PluginCaller = SandboxedPluginCaller{}
@@ -45,6 +51,13 @@ func (p SandboxedPluginCaller) Call(kwargs map[string]any) (any, error) {
 	// them must not emit a wrong import set on this fallback path.
 	if len(p.DepDirs) > 0 {
 		return nil, fmt.Errorf("resolution deps are not supported by the non-Linux plugin fallback")
+	}
+	// Same reasoning for a widened (sibling-sources) build: handing the plugin
+	// the context root with no consumer dir would make it resolve the wrong
+	// directory and emit a wrong import set — which becomes a wrong cover and
+	// a wrong KP, i.e. corrupt identity rather than an honest failure.
+	if p.Dir != "" {
+		return nil, fmt.Errorf("subdirectory builds (dir %q) are not supported by the non-Linux plugin fallback: the plugin bridge cannot announce the build dir", p.Dir)
 	}
 	// Materialize the plugin artifact to disk so SubprocessPlugin can exec it.
 	dir, err := os.MkdirTemp("", "jobs-plugin-")

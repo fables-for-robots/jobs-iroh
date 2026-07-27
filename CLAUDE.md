@@ -39,6 +39,61 @@ nix develop -c go build ./...
 `GOPRIVATE=github.com/jobs-build/*` is required for module fetches
 (set in `.envrc`).
 
+**Cross-compile for macOS after touching any `_linux.go`/`_other.go` pair.**
+Build tags mean `go build` on Linux never type-checks the `!linux` twin, and
+there is no CI — a field added to one side and not the other compiles here
+and breaks every macOS developer (this is exactly how `SandboxedPluginCaller
+.Dir` shipped broken from v0.11.0 through v0.14.0):
+
+```sh
+nix develop -c env CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go vet ./...
+```
+
+`vet` rather than `build` — it type-checks `_test.go` files too. Windows is
+not a target (amber-store-core is unix-only).
+
+## Release process
+
+Every release is: bump `version/version.go` (the ONLY change in the release
+commit), tag, push, GitHub release, **then push the `jobs-registry` Docker
+image**. The image is part of the release, not an optional extra — a tag
+without its image leaves `dmilhdef/jobs-registry:latest` pointing at older
+code than the tag suggests. Patch releases included.
+
+```sh
+V=0.14.1                                    # version/version.go already bumped
+git add version/version.go CHANGELOG.md
+git commit -m "Release v$V: <headline>" && git tag "v$V"
+git push origin main && git push origin "v$V"
+nix develop -c gh release create "v$V" --verify-tag --repo jobs-build/jobs-iroh \
+  --title "v$V — <headline>" --notes "…"
+
+# The image MUST be built from a clean tree — a dirty tree flips Go's
+# vcs.modified stamp into the binary.
+git status --porcelain                      # must be empty
+nix develop -c bash -c 'export GOPRIVATE="github.com/jobs-build/*"
+  CGO_ENABLED=0 GOARCH=arm64 go build -o deploy/jobs-registry/jobs-registry-arm64 ./cmd/jobs-registry
+  CGO_ENABLED=0 GOARCH=amd64 go build -o deploy/jobs-registry/jobs-registry-amd64 ./cmd/jobs-registry'
+REV=$(git rev-parse HEAD)
+sudo docker --config "$HOME/.docker" buildx build --builder jobs-multi \
+  --platform linux/amd64,linux/arm64 --provenance=false --sbom=false \
+  --label org.opencontainers.image.version="$V" \
+  --label org.opencontainers.image.revision="$REV" \
+  --label org.opencontainers.image.source=https://github.com/jobs-build/jobs-iroh \
+  --annotation "index:org.opencontainers.image.version=$V" \
+  --annotation "index:org.opencontainers.image.revision=$REV" \
+  --annotation "index:org.opencontainers.image.source=https://github.com/jobs-build/jobs-iroh" \
+  -t "dmilhdef/jobs-registry:v$V" -t dmilhdef/jobs-registry:latest \
+  --push deploy/jobs-registry
+sudo docker --config "$HOME/.docker" buildx imagetools inspect "dmilhdef/jobs-registry:v$V"
+rm -f deploy/jobs-registry/jobs-registry-{amd64,arm64}
+```
+
+`imagetools inspect` must show exactly two platform entries and no
+`unknown/unknown` attestation rows. The push is public and needs `sudo` —
+confirm with the user before running it. Keep `CHANGELOG.md` in step: it is
+the in-tree record, the GitHub release notes are the outward one.
+
 ## Package map
 
 | Package | What it is |

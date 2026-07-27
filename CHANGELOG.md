@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.14.1 — 2026-07-27
+
+- **macOS builds again.** `runner/plugincaller_other.go` (the `!linux`
+  fallback) never received the `Dir` field its Linux twin gained with
+  sibling sources in v0.11.0, so every non-Linux build failed with
+  `unknown field Dir in struct literal of type SandboxedPluginCaller`.
+  Broken in v0.11.0 through v0.14.0; Linux was never affected.
+- **A widened build now fails loudly on the non-Linux fallback** instead of
+  resolving plugins against the wrong directory. The `SubprocessPlugin`
+  bridge's request carries only `{call, source}` — there is no field to
+  announce the consumer dir in — so a `dir != ""` build would have handed
+  the plugin the context root and got back a wrong import set, i.e. a wrong
+  cover and a wrong KP. It refuses, matching how that fallback already
+  refuses resolution deps. Root builds (`dir == ""`) are unaffected.
+- The macOS cross-compile check is documented in `README.md` and
+  `CLAUDE.md`: `CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go vet ./...`
+  (`vet`, so `_test.go` files are type-checked too).
+
 ## v0.14.0 — 2026-07-27
 
 - **`jobs-client` builds where you stand.** `--source` is now optional on
