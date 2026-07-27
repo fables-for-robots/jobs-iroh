@@ -1,5 +1,53 @@
 # Changelog
 
+## v0.16.0 — 2026-07-28
+
+- **A runner on a public IP can now reach a NAT'd server directly.** Nothing
+  in the tree ever published an address the other side could dial, so every
+  such runner sat on a relay permanently, funnelling all CAS traffic through
+  a third party. Three independent causes, all fixed.
+- **`iroh.WithNetReport()` was never passed anywhere.** It is opt-in, and
+  without it the QAD probe that discovers a host's public mapping never runs
+  at all: the endpoint's external candidate set stays empty forever, so
+  `Endpoint.Addr` never carries a public address and no NAT traversal
+  candidate is ever advertised. Now enabled for `jobs-server` and for
+  `amberclient`'s discovery dial.
+- **The server published its discovery record once and never updated it.**
+  `announce` snapshotted the endpoint's addresses before seeding them and
+  handed the frozen result to the pkarr publisher, whose background loop
+  re-published those same bytes every five minutes — so anything the
+  endpoint learned afterwards, which is the entire point of a net report,
+  never reached the record. It now follows `Endpoint.WatchAddr()` and
+  re-publishes on change.
+- Every published record re-merges the pinned direct addresses, because a
+  landing net report *replaces* the endpoint's external candidate set rather
+  than extending it. Without the merge the record would trade its LAN
+  addresses for the public one instead of carrying both.
+- **`amberclient` seeded no candidates at all.** A client's bound address is
+  the wildcard, which go-iroh rejects as a candidate, so a peer had nothing
+  to reach it at but the relay — and a relayed connection had nothing to
+  upgrade toward. It now seeds the machine's interface addresses. This is
+  what fixes the common asymmetric case: when the runner is on a public IP
+  its interface address *is* its reachable address, so a NAT'd server only
+  has to send to it — the NAT mapping opens outbound and there is no hole to
+  punch.
+- New package `hostaddr`: which of the machine's own addresses are worth
+  offering a peer, moved out of `serve` now that both ends need the same
+  answer. Loopback, link-local, down interfaces and container bridges stay
+  excluded.
+
+Known upstream limitation: go-iroh's QAD probe does not currently return an
+observed address — `internal/netreport` dials the relay and reads
+`conn.ObservedAddr()` immediately, while the relay sends `OBSERVED_ADDRESS`
+after the handshake, so the probe always loses that race and reports latency
+only. Verified against two independent relay deployments with UDP 7842
+confirmed reachable to both. A server behind NAT therefore still cannot
+discover its own public mapping; give it `--bind <fixed port>` plus
+`--advertise-addr <public ip>:<port>` and a port forward if peers must dial
+*it* directly. The client-side seeding above is what makes the direct path
+work today, and enabling net reports is what makes the rest land as soon as
+the upstream race is fixed.
+
 ## v0.15.0 — 2026-07-28
 
 - **A runner now says how it reaches the server.** Both connections report
