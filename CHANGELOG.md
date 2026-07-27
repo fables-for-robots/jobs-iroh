@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.15.0 — 2026-07-28
+
+- **A runner now says how it reaches the server.** Both connections report
+  their transport path — `server connection is direct` at INFO, or `server
+  connection goes through a relay` at WARN — with the address and RTT, tagged
+  `link=scheduling` (the NATS tunnel) or `link=store` (amber sync). A relayed
+  path funnels every CAS byte through a third party: it is the single biggest
+  predictor of store throughput and the usual reason a connection demotes
+  itself out of sharded transfers, and until now nothing said so.
+- Path changes are reported too, not just the dial: a connection that starts
+  out relayed and upgrades to direct once hole punching lands (typically a
+  moment after the dial) logs the upgrade, as does a later fall back to the
+  relay.
+- The store connection is now dialed at startup rather than lazily at the
+  first transfer, so the link that matters most reports itself at boot. The
+  dial is best-effort — failure logs a warning and the existing
+  lazy-dial-and-retry path is unchanged.
+- New in `amberclient`: `Path`, `ConnPath`, `Client.Path` and `WatchPath`.
+  The path in use comes from iroh's `Conn.Paths()`, honouring the transport's
+  own `Selected` flag and falling back to validated → direct-over-relayed →
+  lowest RTT.
+
 ## v0.14.1 — 2026-07-27
 
 - **macOS builds again.** `runner/plugincaller_other.go` (the `!linux`
