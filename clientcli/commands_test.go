@@ -65,3 +65,30 @@ func TestImageCommandRegistered(t *testing.T) {
 		}
 	}
 }
+
+// TestSourceFlagOptional locks in the cwd default: no source-building command
+// may require --source, because omitting it resolves the build from the
+// current directory. A stray Required:true would turn that into a usage
+// error.
+func TestSourceFlagOptional(t *testing.T) {
+	for _, name := range []string{"build", "run", "develop", "remote-build", "image"} {
+		cmd := findCommand(t, name)
+		if cmd == nil {
+			t.Fatalf("%s command not registered", name)
+		}
+		found := false
+		for _, f := range cmd.Flags {
+			sf, ok := f.(*cli.StringFlag)
+			if !ok || sf.Name != "source" {
+				continue
+			}
+			found = true
+			if sf.Required {
+				t.Errorf("%s --source must be optional (it defaults to the cwd context)", name)
+			}
+		}
+		if !found {
+			t.Errorf("%s has no --source flag", name)
+		}
+	}
+}

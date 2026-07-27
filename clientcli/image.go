@@ -15,9 +15,11 @@ import (
 
 // imageConfig carries the `image` command's flags: the shared local-build
 // surface (data dir, source/dir/build-file/platform/shell-ref) plus the image
-// specifics (tag, output, no-shell). Unlike build/run, --source is optional —
-// the by-key form images an already-built output (a K pulled home by
-// remote-build, or a local F) without building anything.
+// specifics (tag, output, no-shell). Unlike build/run, `image` has two modes,
+// discriminated by the POSITIONAL build key: given one, it images an
+// already-built output (a K pulled home by remote-build, or a local F)
+// without building anything; given none, it builds --source — which, like
+// build/run/develop, defaults to the cwd-resolved context.
 type imageConfig struct {
 	dataDir    string
 	source     string
@@ -43,7 +45,7 @@ func imageCmd() *cli.Command {
 			&cli.StringFlag{Name: "output", Aliases: []string{"o"}, Required: true, Usage: "write the image tarball here (- for stdout; load with `docker load -i <file>`)", Destination: &cfg.output},
 			&cli.StringFlag{Name: "tag", Usage: "image reference for the tarball manifest, e.g. myapp:1.0 (default derived)", Destination: &cfg.tag},
 			&cli.BoolFlag{Name: "no-shell", Usage: "do not bake the shell artifact (/bin/sh, /jobs/shell) into the image", Destination: &cfg.noShell},
-			&cli.StringFlag{Name: "source", Usage: "build this local source tree, then image it", Destination: &cfg.source},
+			&cli.StringFlag{Name: "source", Usage: "build this local source tree, then image it (default with no build key: the nearest ancestor of the current directory holding BUILD.jobs, searched up to the repo root)", Destination: &cfg.source},
 			&cli.StringFlag{Name: "dir", Usage: "build root within the source (where BUILD.jobs lives)", Destination: &cfg.dir},
 			&cli.StringFlag{Name: "source-root", Usage: "explicit context root (--source must live under it); default: the git repo root above --source", Destination: &cfg.sourceRoot},
 			&cli.BoolFlag{Name: "no-repo-root", Usage: "disable the git-root context default (ingest --source itself)", Destination: &cfg.noRepoRoot},
@@ -59,6 +61,13 @@ func imageCmd() *cli.Command {
 func (cfg *imageConfig) run(c *cli.Context) (err error) {
 	ctx, stop := signalCtx(c.Context)
 	defer stop()
+
+	// The positional build key decides the mode, so it must be checked before
+	// anything with a side effect (the output file, the store lock): naming
+	// both a key and a source is a contradiction, not a precedence question.
+	if c.Args().Len() > 0 && cfg.source != "" {
+		return fmt.Errorf("--source and a build key are mutually exclusive: drop one (see `jobs-client image --help`)")
+	}
 
 	cs, err := openClientStore(cfg.dataDir, lockExclusive)
 	if err != nil {
@@ -90,13 +99,15 @@ func (cfg *imageConfig) run(c *cli.Context) (err error) {
 
 	opts := runner.ImageOptions{Tag: cfg.tag, IncludeShell: !cfg.noShell, Output: w}
 
-	// Source mode: build the local tree, then image it.
-	if cfg.source != "" {
-		root, rdir, rerr := resolveContextRoot(cfg.source, cfg.dir, cfg.sourceRoot, cfg.noRepoRoot)
+	// Source mode: no build key, so build the local tree and image it. Same
+	// two resolution calls, in the same order, as build/run/develop.
+	if len(args) == 0 {
+		root, rdir, rerr := resolveSource(cfg.source, cfg.dir, cfg.sourceRoot, cfg.buildFile, cfg.noRepoRoot)
 		if rerr != nil {
 			return rerr
 		}
 		cfg.source, cfg.dir = root, rdir
+		cliLiveView(c).Println(contextLine(cfg.source, cfg.dir, cfg.buildFile))
 		params, perr := parseParams(c.StringSlice("param"))
 		if perr != nil {
 			return perr
@@ -121,12 +132,10 @@ func (cfg *imageConfig) run(c *cli.Context) (err error) {
 		}, cfg.platform, opts)
 	}
 
-	// By-key mode: image an already-built output. First positional is the build
-	// key (a submission K, or a local build identity F — resolveByKeyArtifact
-	// falls back from two-hop to the direct build-output ref).
-	if len(args) == 0 {
-		return fmt.Errorf("provide --source <dir> or a build key K (see `jobs-client image --help`)")
-	}
+	// By-key mode: image an already-built output. The first positional is the
+	// build key (a submission K, or a local build identity F —
+	// resolveByKeyArtifact falls back from two-hop to the direct build-output
+	// ref).
 	raw, derr := hex.DecodeString(args[0])
 	if derr != nil {
 		return fmt.Errorf("bad build key %q: %w", args[0], derr)

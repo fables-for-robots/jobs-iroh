@@ -56,7 +56,7 @@ nix develop -c go build ./...
 | `amberclient/` | Importable amber sync client over `amberiroh`: dial by endpoint ID, Push/Pull (+WithProgress), refs list. Transfers are sharded (`Conns`, default 4): extra QUIC connections attach to the server's transfer token, want rounds deal across all channels; degrades to the single control stream. |
 | `runner/` | Ported stage drivers + sandbox executors; local build/run pipeline (`driveFStages`), develop PTY shell, OCI image export (single-layer docker-load tar + two-layer `AssembleOCIImage` for the registry). |
 | `registryd/` | jobs-registry daemon: read-only OCI Distribution API (images named `jobs:<K>` — one repo, tags are build keys), on-demand K→F resolve + amberclient sync into a private store, two-layer image assembly (shell baked by default like `run`/`image`), uncompressed layers streamed from the CAS per request (never cached; the record's layer recipes are the index), manifest/config blob cache with last-read TTL sweep, offline reassembly from records. |
-| `clientcli/` | jobs-client command surface: local + remote commands, store flock, liveView TTY progress (NO_COLOR-aware). |
+| `clientcli/` | jobs-client command surface: local + remote commands, store flock, liveView TTY progress (NO_COLOR-aware). `contextroot.go` owns source resolution — `repoRoot` (pure `.git` walk, the ONLY repo detection; no `git` subprocess), `defaultSource` (cwd walk-up for an omitted `--source`), `resolveContextRoot` (re-anchor to the context root). Local and remote MUST both go through `resolveSource` in that order or the local↔remote F join breaks. |
 | `tui/` | bubbletea admin TUI over `jobs-admin/1.0`: builds (watch/logs/cancel/delete), fleet, stats, refs. Never block in Update — network I/O only inside tea.Cmd goroutines. |
 | `builddef/`, `recipe/` | Build definition identity (canonical CBOR) + Starlark recipe evaluation — ports, seam-swapped. |
 | `bootstrap/` | Embedded seed artifacts (shell + fetchers per platform), idempotent seeding. |
@@ -91,14 +91,22 @@ nix develop -c go build ./...
   never materialised on disk — so only the manifest and config are cached
   blobs (`--cache-ttl` sweeps those); images reassemble from the local store
   without the server.
-- `jobs-client`:
-  - `build|run|develop --source <dir> [--dir …] [--build-file …] [--platform …]
+- `jobs-client` — every source-building command resolves `--source` from the
+  **current directory** when it is omitted: the nearest ancestor of the cwd
+  holding the recipe, searched no higher than the repo root (`--source-root`
+  overrides the ceiling, `--no-repo-root` pins it to the cwd, an explicit
+  `--dir` suppresses the search). The resolved `context: <root> (dir …, recipe
+  …)` is always printed to stderr. Identity is unaffected — the same
+  `(root, dir)` pair still yields the same F.
+  - `build|run|develop [--source <dir>] [--dir …] [--build-file …] [--platform …]
     [--shell-ref …] [--param k=v]…` — local hermetic build / build-then-exec
     entrypoint / interactive PTY shell in the build sandbox (flock held for the
     whole session).
-  - `image -o <tar> [--tag …] [--no-shell] (--source <dir> | <build-K>)` —
-    docker-loadable OCI image from a build output (by source or by key).
-  - `remote-build --server <id> --source <dir> [--cpu …] [--memory …]
+  - `image -o <tar> [--tag …] [--no-shell] [--source <dir>] [<build-K>]` —
+    docker-loadable OCI image from a build output. The **positional key** picks
+    the mode: given one, image it as-is; given none, build `--source` (the two
+    are mutually exclusive).
+  - `remote-build --server <id> [--source <dir>] [--cpu …] [--memory …]
     [--no-logs] [--conns N]` — push source, submit, watch to terminal, pull output
     home; the running steps' output streams alongside the progress block
     by default (`--no-logs` opts out).

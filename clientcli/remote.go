@@ -86,7 +86,7 @@ func remoteBuildCmd() *cli.Command {
 			&cli.StringFlag{Name: "server", Required: true, EnvVars: []string{"JOBS_SERVER"}, Usage: "endpoint ID of the jobs-server", Destination: &cfg.server},
 			&cli.StringSliceFlag{Name: "addr", EnvVars: []string{"JOBS_SERVER_ADDR"}, Usage: "direct server address host:port (repeatable; skips discovery and relays)"},
 			&cli.StringFlag{Name: "data-dir", EnvVars: []string{"JOBS_DATA_DIR"}, Value: defaultDataDir(), Usage: "client data directory (embedded store + cache)", Destination: &cfg.dataDir},
-			&cli.StringFlag{Name: "source", Required: true, Usage: "source directory to ingest and push as the build source", Destination: &cfg.source},
+			&cli.StringFlag{Name: "source", Usage: "source directory to ingest and push as the build source (default: the nearest ancestor of the current directory holding BUILD.jobs, searched up to the repo root)", Destination: &cfg.source},
 			&cli.StringFlag{Name: "dir", Usage: "build root within the source (where BUILD.jobs lives)", Destination: &cfg.dir},
 			&cli.StringFlag{Name: "source-root", Usage: "explicit context root (--source must live under it); default: the git repo root above --source", Destination: &cfg.sourceRoot},
 			&cli.BoolFlag{Name: "no-repo-root", Usage: "disable the git-root context default (ingest --source itself)", Destination: &cfg.noRepoRoot},
@@ -127,12 +127,15 @@ func (cfg *remoteConfig) run(c *cli.Context) error {
 	}
 	defer cs.Close()
 
-	if root, rdir, rerr := resolveContextRoot(cfg.source, cfg.dir, cfg.sourceRoot, cfg.noRepoRoot); rerr != nil {
+	// Same two calls in the same order as the local path (localConfig
+	// .resolveContext) — divergence would silently kill the local↔remote F
+	// join.
+	if root, rdir, rerr := resolveSource(cfg.source, cfg.dir, cfg.sourceRoot, cfg.buildFile, cfg.noRepoRoot); rerr != nil {
 		return rerr
 	} else {
 		cfg.source, cfg.dir = root, rdir
 	}
-	lv.Println("ingesting " + cfg.source)
+	lv.Println(contextLine(cfg.source, cfg.dir, cfg.buildFile))
 	sourceKey, err := cs.Store.IngestSourceDir(ctx, cfg.source)
 	if err != nil {
 		return fmt.Errorf("ingest source %s: %w", cfg.source, err)

@@ -36,7 +36,7 @@ type localConfig struct {
 func (cfg *localConfig) flags() []cli.Flag {
 	return []cli.Flag{
 		&cli.StringFlag{Name: "data-dir", EnvVars: []string{"JOBS_DATA_DIR"}, Value: defaultDataDir(), Usage: "client data directory (embedded store + cache)", Destination: &cfg.dataDir},
-		&cli.StringFlag{Name: "source", Required: true, Usage: "source directory to ingest as the build source", Destination: &cfg.source},
+		&cli.StringFlag{Name: "source", Usage: "source directory to ingest as the build source (default: the nearest ancestor of the current directory holding BUILD.jobs, searched up to the repo root)", Destination: &cfg.source},
 		&cli.StringFlag{Name: "dir", Usage: "build root within the source (where BUILD.jobs lives)", Destination: &cfg.dir},
 		&cli.StringFlag{Name: "build-file", Usage: "recipe path relative to dir (default BUILD.jobs)", Destination: &cfg.buildFile},
 		&cli.StringFlag{Name: "source-root", Usage: "explicit context root (--source must live under it); default: the git repo root above --source", Destination: &cfg.sourceRoot},
@@ -57,15 +57,18 @@ func (cfg *localConfig) effectiveShellRef() string {
 	return "shell:" + cfg.platform
 }
 
-// resolveContext applies the repo-root context default in place
-// (sibling-sources design §11.1) — must run before any ingest, and the rule
-// is identical on the remote path (the local↔remote F join depends on it).
-func (cfg *localConfig) resolveContext() error {
-	root, dir, err := resolveContextRoot(cfg.source, cfg.dir, cfg.sourceRoot, cfg.noRepoRoot)
+// resolveContext infers an omitted --source from the cwd and applies the
+// repo-root context default in place (sibling-sources design §11.1) — must
+// run before any ingest, and the rule is identical on the remote path (the
+// local↔remote F join depends on it). The resolution is reported on stderr:
+// the ingest root can be an entire repository, so it is always shown.
+func (cfg *localConfig) resolveContext(lv *liveView) error {
+	root, dir, err := resolveSource(cfg.source, cfg.dir, cfg.sourceRoot, cfg.buildFile, cfg.noRepoRoot)
 	if err != nil {
 		return err
 	}
 	cfg.source, cfg.dir = root, dir
+	lv.Println(contextLine(cfg.source, cfg.dir, cfg.buildFile))
 	return nil
 }
 
@@ -146,7 +149,8 @@ func buildCmd() *cli.Command {
 // and the output tree key; the refs land in the embedded store under
 // <data-dir>/store.
 func (cfg *localConfig) runBuild(c *cli.Context) error {
-	if err := cfg.resolveContext(); err != nil {
+	lv := cliLiveView(c)
+	if err := cfg.resolveContext(lv); err != nil {
 		return err
 	}
 	ctx, stop := signalCtx(c.Context)
@@ -173,7 +177,7 @@ func (cfg *localConfig) runBuild(c *cli.Context) error {
 	// returns F; the output tree is at ref build-output:F. Step progress
 	// renders through the live view: in-place →-block on a TTY stderr,
 	// jobs' classic plain →/✓/✗ lines otherwise.
-	lp := newLiveProgress(cliLiveView(c))
+	lp := newLiveProgress(lv)
 	defer lp.Close()
 	f, err := runner.BuildFromSource(ctx, cs.Store, cfg.developConfig(params, cs.CacheDir), runner.NewProgressSink(lp))
 	lp.Close()
@@ -213,7 +217,8 @@ func runCmd() *cli.Command {
 // the entrypoint's exit code through. Positional args are appended to the
 // entrypoint's args.
 func (cfg *localConfig) runRun(c *cli.Context) error {
-	if err := cfg.resolveContext(); err != nil {
+	lv := cliLiveView(c)
+	if err := cfg.resolveContext(lv); err != nil {
 		return err
 	}
 	ctx, stop := signalCtx(c.Context)
@@ -237,7 +242,7 @@ func (cfg *localConfig) runRun(c *cli.Context) error {
 	// time the entrypoint executes every step has finished, so the block is
 	// empty and the refresh ticker writes nothing — the child owns the
 	// terminal untouched. Close (idempotent) stops the ticker afterwards.
-	lp := newLiveProgress(cliLiveView(c))
+	lp := newLiveProgress(lv)
 	defer lp.Close()
 	code, err := runner.RunFromSource(ctx, cs.Store, cfg.developConfig(params, cs.CacheDir), c.Args().Slice(),
 		runner.RunIO{Stdin: os.Stdin, Stdout: os.Stdout, Stderr: os.Stderr}, runner.NewProgressSink(lp))
@@ -275,7 +280,9 @@ func developCmd() *cli.Command {
 // the WHOLE interactive session — jobs' `jobs develop` contract: cs.Close
 // (flock release) runs only after RunDevelop returns.
 func (cfg *localConfig) runDevelop(c *cli.Context) error {
-	if err := cfg.resolveContext(); err != nil {
+	// develop drives no progress block — the live view exists purely to place
+	// the context line on stderr before the PTY takes the terminal.
+	if err := cfg.resolveContext(cliLiveView(c)); err != nil {
 		return err
 	}
 	ctx, stop := signalCtx(c.Context)

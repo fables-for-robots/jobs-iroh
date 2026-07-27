@@ -54,12 +54,27 @@ No server needed — builds run hermetically against an embedded store under
 `--data-dir` (default `~/.local/share/jobs-iroh`):
 
 ```sh
-jobs-client build --source ./myapp                  # build → prints F + output key
-jobs-client run   --source ./myapp -- arg1          # build, then exec JOBS.entrypoint
-jobs-client develop --source ./myapp                # interactive shell in the build sandbox
-jobs-client image  --source ./myapp -o app.tar --tag myapp:dev
+cd myapp                                            # or any subdirectory of it
+jobs-client build                                   # build → prints F + output key
+jobs-client run -- arg1                             # build, then exec JOBS.entrypoint
+jobs-client develop                                 # interactive shell in the build sandbox
+jobs-client image -o app.tar --tag myapp:dev
 docker load -i app.tar
 ```
+
+Omitting `--source` builds where you stand: the nearest ancestor of the
+current directory holding a `BUILD.jobs`, searched no higher than the
+repository root. The whole repository becomes the ingest context — that is
+what makes sibling references (`../lib`, `//lib/common`) resolvable — and the
+build root is the directory the recipe was found in. Each command prints what
+it resolved:
+
+```
+context: /home/you/myrepo  (dir services/api, recipe BUILD.jobs)
+```
+
+Pass `--source <dir>` to name the tree explicitly; `--source-root` moves the
+ceiling, `--no-repo-root` pins it to the source itself.
 
 ## Quickstart: server, runner, remote build
 
@@ -70,8 +85,9 @@ jobs-server --data-dir /var/lib/jobs-iroh
 # 2. Runner(s), anywhere that can reach the server over iroh:
 jobs-runner --server <endpoint-id> [--addr host:port] [--size c1-m2]
 
-# 3. Client: push source, build remotely, pull the output home:
-jobs-client remote-build --server <endpoint-id> --source ./myapp
+# 3. Client: push source, build remotely, pull the output home
+#    (--source omitted → resolved from the cwd, exactly as for local builds):
+cd myapp && jobs-client remote-build --server <endpoint-id>
 jobs-client watch  --server <endpoint-id> --request-id <id>   # re-attach
 jobs-client status --server <endpoint-id>                     # one-shot tables
 jobs-client tui    --server <endpoint-id>                     # interactive admin
