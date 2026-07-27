@@ -1,5 +1,9 @@
 # jobs-iroh
 
+<p align="center">
+  <img src="docs/assets/jobs-logo.jpg" alt="iroh JOBS — Jonas' Own Build System" width="520">
+</p>
+
 A small, self-contained build system: one server, N runners, and a client,
 connected only by iroh QUIC. Builds are hermetic (rootless Linux namespace
 sandbox, no network inside), identified by content (canonical-CBOR
