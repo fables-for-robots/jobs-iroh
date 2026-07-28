@@ -90,6 +90,18 @@ const DefaultPoolMax = 12
 // the shard pool shrinks back to baseline.
 const poolIdleTTL = 90 * time.Second
 
+// Gate timing: on a connection younger than gateSettle a relayed control
+// path is an unfinished punch (they land ~5s after the dial), so the gate
+// waits up to gateWait for the upgrade — a transfer that starts moments
+// after boot would otherwise be pinned single-channel to the relay for its
+// whole (possibly very long) run. Past gateSettle, relayed is a settled
+// verdict and the gate skips extras immediately, as before.
+const (
+	gateSettle      = 30 * time.Second
+	defaultGateWait = 10 * time.Second
+	defaultGatePoll = 250 * time.Millisecond
+)
+
 // clampPoolMax maps Options.PoolMax onto the usable range: at least the
 // per-transfer width, at most control + maxDataConns-sized pool.
 func clampPoolMax(n, conns int) int {
@@ -149,6 +161,14 @@ type Client struct {
 	// pathFn reports the control path for the shard gate; nil means
 	// Client.Path. A test seam — production always uses the default.
 	pathFn func() (Path, bool)
+	// dialedAt is when the control connection was established; while it is
+	// younger than gateSettle a relayed path just means the punch has not
+	// landed yet, so the gate waits for it instead of skipping extras.
+	dialedAt time.Time
+	// gatePoll/gateWait pace and bound that wait; zero values mean the
+	// defaults (test seams).
+	gatePoll time.Duration
+	gateWait time.Duration
 	// gateLogged keeps the relayed-path skip to one log line per
 	// connection.
 	gateLogged atomic.Bool
@@ -178,7 +198,23 @@ func (c *Client) transferConns() int {
 		if pf == nil {
 			pf = c.Path
 		}
-		if p, ok := pf(); ok && p.Relayed {
+		p, ok := pf()
+		if ok && p.Relayed && time.Since(c.dialedAt) < gateSettle {
+			// Young connection: give the punch its window before deciding.
+			wait, poll := c.gateWait, c.gatePoll
+			if wait == 0 {
+				wait = defaultGateWait
+			}
+			if poll == 0 {
+				poll = defaultGatePoll
+			}
+			deadline := time.Now().Add(wait)
+			for ok && p.Relayed && time.Now().Before(deadline) {
+				time.Sleep(poll)
+				p, ok = pf()
+			}
+		}
+		if ok && p.Relayed {
 			if c.gateLogged.CompareAndSwap(false, true) {
 				c.log.Info("amberclient: extras skipped while the control path is relayed; sharding resumes when it goes direct")
 			}
@@ -247,6 +283,7 @@ func Dial(ctx context.Context, o Options) (*Client, error) {
 		id: id, alpn: alpn, cands: cands, bindAddr: o.BindAddr,
 		conns:      clampConns(o.Conns),
 		punchDials: len(o.Addrs) == 0,
+		dialedAt:   time.Now(),
 	}
 	c.pool = newShardPool(c.dialShard, log, c.conns-1, clampPoolMax(o.PoolMax, c.conns)-1, poolIdleTTL)
 	return c, nil

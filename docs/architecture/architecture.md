@@ -279,7 +279,10 @@ presence signals the 10s attach gather window (up from 5s; gather still
 early-exits when every promised shard lands), and each shard's attach runs
 under a budget safely below that window (a late attach would be a dead
 channel). Clients skip extras entirely — without demoting — while the
-control path itself is relayed. Unreachable candidates, failed attaches, or
+control path itself is relayed; on a young connection (< ~30s) the gate
+first waits briefly for the punch to land, so a transfer that starts
+moments after boot is not pinned single-channel to the relay for its whole
+run. Unreachable candidates, failed attaches, or
 a server without sharding degrade the transfer toward the single control
 stream: a connection that attaches zero shards demotes itself to
 single-channel for its lifetime, and a failed sharded transfer is retried
