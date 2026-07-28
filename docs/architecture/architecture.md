@@ -313,8 +313,10 @@ fetcher's build; buildfrom on its source value; pin reads
 `build-plugin-resolved:F`; buildrun reads `build-pinned:F`. Definitions
 travel in-band inside job messages, so a runner never misses a def read.
 Requests hold *interest* in nodes; cancellation drops interest, and a node
-with no interest and no running attempt is dropped from memory. Shared
-subtrees survive as long as anyone needs them.
+with no interest is dropped from memory, its queued job message best-effort
+deleted from the work queue. An attempt already in a runner completes and
+its result is dropped on arrival. Shared subtrees survive as long as
+anyone needs them.
 
 **Placement.** A placeable node's requirement = max(kind default, pinned
 `resources`, request override), rounded **up** to a fixed size-class ladder:
