@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.17.0 — 2026-07-28
+
+- **A NAT'd server now discovers and publishes its real public address.**
+  Seconds after startup the published discovery record gains
+  `ip:<public-ip>:<endpoint-port>` — a candidate remote peers can actually
+  dial and hole-punch toward — alongside the LAN addresses. This closes the
+  loop v0.16.0 opened: runners across the internet can now reach a server
+  behind a home NAT directly instead of riding the relay forever.
+- The fix lives in go-iroh; `go.mod` now replaces `github.com/tmc/go-iroh`
+  with the `draganm/go-iroh` fork (branch `fix-qad-observed-addr-race`),
+  which carries:
+  - `relay`: URL-built relay maps (including the built-in default map)
+    enable QUIC address discovery. **This was the true root cause** — with
+    the QUIC config nil in every default relay entry, no QAD probe ever ran,
+    so no endpoint could ever learn its public mapping. (v0.16.0's notes
+    blamed a read race in the QAD client; that race exists and is also
+    fixed, but it was secondary — the probe never ran at all.)
+  - `iroh`/`netreport`: QAD probes ride the endpoint's own transport and
+    UDP socket, so the discovered mapping is the endpoint's real public
+    `ip:port`. Previously each probe opened a throwaway socket, learning a
+    mapping that died with the socket and whose port nothing listened on —
+    and, since every probe rode a different mapping, relays disagreed and
+    NAT-type detection misreported symmetric NAT.
+  - `iroh`: external candidates split into pinned (`AddExternalAddr`) and
+    discovered (net report); a landing report no longer silently discards
+    the interface addresses the server and client pin.
+  - `netreport`: the observed-address read waits for the relay's report
+    instead of losing the post-handshake race.
+- Verified end to end on a NAT'd host: second `server advertised` record
+  carries the public mapping on the endpoint's own port, LAN addresses
+  intact, ~3s after startup.
+
 ## v0.16.0 — 2026-07-28
 
 - **A runner on a public IP can now reach a NAT'd server directly.** Nothing
