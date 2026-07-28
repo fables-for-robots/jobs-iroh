@@ -122,6 +122,12 @@ type Client struct {
 	// shard endpoints then bind the same relay/net-report stack so their
 	// relay-won connections punch to direct. Direct-addr dials stay bare.
 	punchDials bool
+	// pathFn reports the control path for the shard gate; nil means
+	// Client.Path. A test seam — production always uses the default.
+	pathFn func() (Path, bool)
+	// gateLogged keeps the relayed-path skip to one log line per
+	// connection.
+	gateLogged atomic.Bool
 
 	// demoted latches when this connection proves unable to shard (no
 	// attach landed in budget, or a sharded transfer failed that then
@@ -131,10 +137,25 @@ type Client struct {
 }
 
 // transferConns is the connection count for the next transfer: the
-// configured Conns until the connection demotes itself to 1.
+// configured Conns until the connection demotes itself to 1 — and 1,
+// without demoting, while the control path runs through a relay: extra
+// relay connections move no additional bytes, and once hole punching lands
+// (it commonly does moments after the dial) the next transfer shards again.
 func (c *Client) transferConns() int {
 	if c.demoted.Load() {
 		return 1
+	}
+	if c.conns > 1 {
+		pf := c.pathFn
+		if pf == nil {
+			pf = c.Path
+		}
+		if p, ok := pf(); ok && p.Relayed {
+			if c.gateLogged.CompareAndSwap(false, true) {
+				c.log.Info("amberclient: extras skipped while the control path is relayed; sharding resumes when it goes direct")
+			}
+			return 1
+		}
 	}
 	return c.conns
 }
