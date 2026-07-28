@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"io"
+	"reflect"
 	"testing"
 )
 
@@ -107,5 +108,58 @@ func TestRemoteError(t *testing.T) {
 	}
 	if re.Error() == "" {
 		t.Fatal("empty Error()")
+	}
+}
+
+func TestMsgDataEndpointsRoundTrip(t *testing.T) {
+	in := Msg{Type: TAccept, Token: []byte{1}, DataPorts: []uint16{4001, 4002},
+		DataEndpoints: []DataEndpointRec{
+			{ID: bytes.Repeat([]byte{7}, 32), Addrs: []string{"ip:192.168.1.5:4001", "relay:https://euc1-1.relay.example./"}},
+			{ID: bytes.Repeat([]byte{8}, 32), Addrs: []string{"ip:192.168.1.5:4002"}},
+		}}
+	var buf bytes.Buffer
+	if err := WriteMsg(&buf, in); err != nil {
+		t.Fatal(err)
+	}
+	out, err := ReadMsg(&buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(in, out) {
+		t.Fatalf("round trip mismatch:\n in %+v\nout %+v", in, out)
+	}
+}
+
+// Old peers must interoperate across field 16: an old decoder ignores it on
+// new frames, and a new decoder yields nil for its absence on old frames.
+func TestMsgDataEndpointsCompat(t *testing.T) {
+	type oldMsg struct {
+		Type      int      `cbor:"0,keyasint"`
+		Token     []byte   `cbor:"13,keyasint,omitempty"`
+		DataPorts []uint16 `cbor:"15,keyasint,omitempty"`
+	}
+	in := Msg{Type: TAccept, Token: []byte{1}, DataPorts: []uint16{4001},
+		DataEndpoints: []DataEndpointRec{{ID: bytes.Repeat([]byte{7}, 32), Addrs: []string{"ip:127.0.0.1:4001"}}}}
+	payload, err := encMode.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var old oldMsg
+	if err := decMode.Unmarshal(payload, &old); err != nil {
+		t.Fatalf("old decoder rejects new frame: %v", err)
+	}
+	if old.Type != TAccept || len(old.DataPorts) != 1 || len(old.Token) != 1 {
+		t.Fatalf("old decode mangled fields: %+v", old)
+	}
+	oldPayload, err := encMode.Marshal(oldMsg{Type: TAccept, Token: []byte{1}, DataPorts: []uint16{4001}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m Msg
+	if err := decMode.Unmarshal(oldPayload, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m.DataEndpoints != nil {
+		t.Fatalf("absent field decoded non-nil: %+v", m.DataEndpoints)
 	}
 }

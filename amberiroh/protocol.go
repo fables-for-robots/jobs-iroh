@@ -75,6 +75,19 @@ type RefInfo struct {
 }
 
 // Msg is the single frame payload type.
+// DataEndpointRec describes one of the server's data endpoints to a
+// sharding client: the endpoint's own identity (data endpoints carry their
+// own keys so each can hold a relay home connection — relays key sessions
+// by endpoint ID) and its dial candidates as netaddr.TransportAddr strings
+// ("ip:host:port", "relay:url"). The client trusts the identity because the
+// record arrives on the control connection, which authenticated the server;
+// the shard handshake then proves possession of the advertised key. Old
+// peers ignore the field and keep direct-dialing DataPorts.
+type DataEndpointRec struct {
+	ID    []byte   `cbor:"0,keyasint"`
+	Addrs []string `cbor:"1,keyasint,omitempty"`
+}
+
 type Msg struct {
 	Type        int       `cbor:"0,keyasint"`
 	Name        string    `cbor:"1,keyasint,omitempty"`
@@ -92,6 +105,10 @@ type Msg struct {
 	Token       []byte    `cbor:"13,keyasint,omitempty"` // transfer token for TAttach/TAccept (and TRef on sharded pulls)
 	DataConns   int       `cbor:"14,keyasint,omitempty"` // push/pull request: extra data connections the client will attach
 	DataPorts   []uint16  `cbor:"15,keyasint,omitempty"` // TAccept/TRef: server data-endpoint UDP ports for the extra connections
+	// DataEndpoints describes the data endpoints as punchable peers on
+	// TAccept/TRef. Its presence doubles as the capability signal that the
+	// server gathers attaches for the longer punch-friendly window.
+	DataEndpoints []DataEndpointRec `cbor:"16,keyasint,omitempty"`
 }
 
 var (
