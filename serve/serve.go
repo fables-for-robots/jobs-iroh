@@ -24,10 +24,13 @@ import (
 	natsserver "github.com/nats-io/nats-server/v2/server"
 	"github.com/nats-io/nats.go"
 	"github.com/tmc/go-iroh/iroh"
+	"github.com/tmc/go-iroh/netaddr"
+	"github.com/tmc/go-iroh/relay"
 	"golang.org/x/sync/errgroup"
 
 	"github.com/jobs-build/jobs-iroh/amber"
 	"github.com/jobs-build/jobs-iroh/bootstrap"
+	"github.com/jobs-build/jobs-iroh/hostaddr"
 	"github.com/jobs-build/jobs-iroh/natsiroh"
 	"github.com/jobs-build/jobs-iroh/sched"
 )
@@ -81,9 +84,10 @@ type Options struct {
 	// DataEndpoints is how many extra UDP endpoints the amber mounts bind
 	// for sharded transfers (0 = none, max 15): one socket's recv loop
 	// caps well below a fast link, so shards get dedicated server sockets.
-	// The ports are advertised in-band to sharding clients only —
-	// direct-path, never published; a client that cannot reach them falls
-	// back to the control connection's addresses.
+	// Each endpoint carries its own punchable identity; ports and identity
+	// records are advertised in-band to sharding clients only — never
+	// published. A client that cannot reach them falls back to the control
+	// connection's addresses.
 	DataEndpoints int
 	// Logger receives server logs; nil means slog.Default().
 	Logger *slog.Logger
@@ -178,8 +182,9 @@ func Run(ctx context.Context, opts Options) error {
 	if opts.BindAddr.IsValid() {
 		bindOpts = append(bindOpts, iroh.WithBindAddr(opts.BindAddr))
 	}
+	var relayMode relay.Mode
 	if opts.Announce {
-		relayMode, err := serverRelayMode(ctx, opts.RelayURL, log)
+		relayMode, err = serverRelayMode(ctx, opts.RelayURL, log)
 		if err != nil {
 			return err
 		}
@@ -208,31 +213,64 @@ func Run(ctx context.Context, opts Options) error {
 
 	amberSrv := amberiroh.New(log.With("component", "amber"), store.Objects(), store.RefStore())
 
-	// Extra data endpoints for sharded transfers, bound with the SAME
-	// secret key so shard dials authenticate the same server identity.
-	// Each carries only the two amber ALPNs; TAttach reaches the one
-	// amberSrv (and its transfer tokens) from any of them.
+	// Extra data endpoints for sharded transfers. Each carries only the two
+	// amber ALPNs; TAttach reaches the one amberSrv (and its transfer
+	// tokens) from any of them.
 	var dataRouters []*iroh.Router
 	if n := min(opts.DataEndpoints, 15); n > 0 {
-		// Bind every endpoint and publish the ports BEFORE any router
-		// accepts: SetDataPorts is an unsynchronized write the handlers
-		// read (ambserver documents "call before Serve").
+		// Bind every endpoint and publish ports + records BEFORE any router
+		// accepts: SetDataPorts/SetDataEndpoints are unsynchronized writes
+		// the handlers read (ambserver documents "call before Serve").
+		//
+		// Each data endpoint carries its OWN identity: a punchable endpoint
+		// needs its own relay home connection and QAD-discovered mapping,
+		// and relays key sessions by endpoint ID — sharing the server's key
+		// would clash with the main endpoint's session. Shard dials
+		// authenticate the identity advertised on the control connection
+		// (amberiroh.DataEndpointRec). One consequence for OLD clients:
+		// their dedicated-port dial expects the server's identity, fails the
+		// handshake against these endpoints, and falls back to the control
+		// candidates — they still shard, onto the main socket.
 		var deps []*iroh.Endpoint
+		var seeded [][]netip.AddrPort
 		var ports []uint16
 		for range n {
-			depOpts := []iroh.Option{iroh.WithSecretKey(sk)}
+			var depOpts []iroh.Option
 			if opts.BindAddr.IsValid() {
 				depOpts = append(depOpts, iroh.WithBindAddr(netip.AddrPortFrom(opts.BindAddr.Addr(), 0)))
+			}
+			if opts.Announce {
+				// Same rationale as the main endpoint's branch above: the
+				// relay is the punch coordination channel and the QAD probe
+				// target; without Announce there are no relays to probe.
+				depOpts = append(depOpts, iroh.WithRelayMode(relayMode), iroh.WithNetReport())
 			}
 			dep, err := iroh.Bind(ctx, depOpts...)
 			if err != nil {
 				return fmt.Errorf("bind data endpoint: %w", err)
 			}
 			defer dep.Shutdown(context.WithoutCancel(ctx))
+			if opts.Announce {
+				go func(dep *iroh.Endpoint) {
+					octx, cancel := context.WithTimeout(ctx, onlineTimeout)
+					defer cancel()
+					if err := dep.Online(octx); err != nil {
+						log.Warn("data endpoint relay connect failed; its punch candidates stay direct-only", "error", err)
+					}
+				}(dep)
+			}
 			deps = append(deps, dep)
+			seeded = append(seeded, seedDataEndpointAddrs(dep))
 			ports = append(ports, dep.LocalAddr().Port())
 		}
 		amberSrv.SetDataPorts(ports)
+		amberSrv.SetDataEndpoints(func() []amberiroh.DataEndpointRec {
+			recs := make([]amberiroh.DataEndpointRec, len(deps))
+			for i, dep := range deps {
+				recs[i] = dataEndpointRec(dep, seeded[i])
+			}
+			return recs
+		})
 		amberOnly := map[string]iroh.ProtocolHandler{
 			ALPNRunnerAmber: amberConnHandler(amberSrv),
 			ALPNAmberAdmin:  amberConnHandler(amberSrv),
@@ -351,4 +389,43 @@ func logConns(log *slog.Logger, service string, h iroh.ProtocolHandler) iroh.Pro
 		l.Info("disconnected", "error", err)
 		return err
 	})
+}
+
+// dataEndpointRec snapshots one data endpoint's identity and live dial
+// candidates for a TAccept/TRef frame — read per frame, so the relay and
+// QAD candidates appear as soon as the endpoint learns them. The seeded
+// interface addresses are unioned in explicitly: they are what a LAN client
+// races and what a punching peer aims at first.
+func dataEndpointRec(dep *iroh.Endpoint, seeded []netip.AddrPort) amberiroh.DataEndpointRec {
+	id := dep.ID().Bytes()
+	rec := amberiroh.DataEndpointRec{ID: id[:]}
+	seen := map[string]bool{}
+	add := func(s string) {
+		if !seen[s] {
+			seen[s] = true
+			rec.Addrs = append(rec.Addrs, s)
+		}
+	}
+	for _, ta := range dep.Addr().Addrs() {
+		add(ta.String())
+	}
+	for _, ap := range seeded {
+		add(netaddr.IPAddr{Addr: ap}.String())
+	}
+	return rec
+}
+
+// seedDataEndpointAddrs mirrors announce's direct-address seeding for one
+// data endpoint: interface addresses on its own port become dial and QNT
+// punch candidates. Best-effort — a failed walk leaves the endpoint bare,
+// like the client's seedLocalCandidates.
+func seedDataEndpointAddrs(dep *iroh.Endpoint) []netip.AddrPort {
+	addrs, err := hostaddr.LocalAddrPorts(dep.LocalAddr().Port())
+	if err != nil {
+		return nil
+	}
+	for _, ap := range addrs {
+		dep.AddExternalAddr(ap)
+	}
+	return addrs
 }

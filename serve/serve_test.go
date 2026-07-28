@@ -7,6 +7,8 @@ import (
 	"time"
 
 	"github.com/jobs-build/jobs-iroh/amberiroh"
+	irohkey "github.com/tmc/go-iroh/key"
+
 	"github.com/tmc/go-iroh/iroh"
 	"github.com/tmc/go-iroh/netaddr"
 
@@ -130,5 +132,39 @@ func TestAmberRefListOverAdminALPN(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("ref %q not in listing (%d refs)", "smoke", len(msg.Refs))
+	}
+}
+
+func TestDataEndpointRecSnapshot(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ep, err := iroh.Bind(ctx, iroh.WithBindAddr(netip.MustParseAddrPort("127.0.0.1:0")))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ep.Shutdown(context.Background())
+
+	seeded := []netip.AddrPort{netip.AddrPortFrom(netip.MustParseAddr("127.0.0.1"), ep.LocalAddr().Port())}
+	rec := dataEndpointRec(ep, seeded)
+
+	id, err := irohkey.EndpointIDFromSlice(rec.ID)
+	if err != nil {
+		t.Fatalf("rec ID: %v", err)
+	}
+	if id != ep.ID() {
+		t.Fatalf("rec ID %s, want endpoint's %s", id, ep.ID())
+	}
+	found := false
+	for _, s := range rec.Addrs {
+		ta, err := netaddr.ParseTransportAddr(s)
+		if err != nil {
+			t.Fatalf("advertised candidate %q does not parse: %v", s, err)
+		}
+		if ip, ok := ta.(netaddr.IPAddr); ok && ip.Addr == seeded[0] {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("seeded addr %s missing from advertised candidates %v", seeded[0], rec.Addrs)
 	}
 }
