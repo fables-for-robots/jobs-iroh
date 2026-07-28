@@ -36,6 +36,13 @@ type shardConn interface {
 // authenticated.
 type poolDialer func(ctx context.Context, i int, ports []uint16, eps []amberiroh.DataEndpointRec) (shardConn, func(), irohkey.EndpointID, error)
 
+// poolEntryMaxUses rotates a pooled connection before quic-go's initial
+// 100-stream budget can run dry against servers that do not retire attach
+// streams (pre-closeStream servers; also a live safety margin while the
+// transport-level retirement gap on migrated paths is open). The proactive
+// redial costs ~1s once per 90 transfers instead of a starved 8s attach.
+const poolEntryMaxUses = 90
+
 // relayGrace is how long a pooled entry may stay on a relay path before
 // acquire evicts and replaces it: hole punching normally lands ~5s after
 // the dial, so a connection still relayed after this long has failed its
@@ -47,6 +54,7 @@ type poolEntry struct {
 	close    func()
 	id       irohkey.EndpointID
 	streams  int
+	uses     int // transfers served; rotation guard, see poolEntryMaxUses
 	dialed   time.Time
 	lastUsed time.Time
 	// path reports the connection's current transport path; nil when the
@@ -121,6 +129,9 @@ func (p *shardPool) acquire(ctx context.Context, k int, ports []uint16, eps []am
 					break
 				}
 			}
+		}
+		if !stale && e.streams == 0 && e.uses >= poolEntryMaxUses {
+			stale = true
 		}
 		if !stale && e.streams == 0 && e.path != nil && time.Since(e.dialed) > relayGrace {
 			if pth, ok := e.path(); ok && pth.Relayed {
@@ -226,6 +237,7 @@ func (p *shardPool) acquire(ctx context.Context, k int, ports []uint16, eps []am
 			break
 		}
 		e.streams++
+		e.uses++
 		e.lastUsed = time.Now()
 		picked = append(picked, e)
 	}

@@ -370,3 +370,21 @@ func TestAttachZeroOnFreshDialsDemotes(t *testing.T) {
 		t.Fatal("zero-attach on all-fresh dials is the topology verdict; must demote")
 	}
 }
+
+func TestPoolRotatesEntriesBeforeStreamBudget(t *testing.T) {
+	d := &stubDialer{}
+	p := testPool(d, 3, 11, time.Hour)
+	recs := testRecs(t, 3)
+	for range poolEntryMaxUses {
+		_, _, rel := p.acquire(context.Background(), 3, nil, recs)
+		rel()
+	}
+	if dials, closed := d.counts(); dials != 3 || closed != 0 {
+		t.Fatalf("dials %d closed %d before the cap, want 3/0", dials, closed)
+	}
+	_, _, rel := p.acquire(context.Background(), 3, nil, recs)
+	defer rel()
+	if dials, closed := d.counts(); dials != 6 || closed != 3 {
+		t.Fatalf("dials %d closed %d at the cap, want 6/3 (all rotated)", dials, closed)
+	}
+}

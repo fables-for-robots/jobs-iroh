@@ -111,6 +111,20 @@ func (t *transfers) gather(token []byte, n int, wait time.Duration) []io.ReadWri
 	return out
 }
 
+// closeStream fully terminates a server-side stream: Close finishes the
+// send side (FIN), CancelRead sends STOP_SENDING so the client→server half
+// completes without the handler reading to EOF. Without the cancel the
+// stream never retires and its MAX_STREAMS credit is never returned — a
+// sharding client that reuses one connection for many transfers runs dry
+// at exactly the initial stream budget (observed in the field as
+// OpenStreamSync hanging after precisely 100 attaches).
+func closeStream(rw io.Closer) {
+	_ = rw.Close()
+	if cr, ok := rw.(interface{ CancelRead(code uint64) }); ok {
+		cr.CancelRead(0)
+	}
+}
+
 // drop unregisters the token; streams attached but never gathered are
 // closed.
 func (t *transfers) drop(token []byte) {
@@ -124,7 +138,7 @@ func (t *transfers) drop(token []byte) {
 	for {
 		select {
 		case rw := <-ch:
-			rw.Close()
+			closeStream(rw)
 		default:
 			return
 		}
@@ -167,7 +181,7 @@ func (s *Server) lockRef(name string) (unlock func()) {
 func (s *Server) HandleStream(remote string, rw io.ReadWriteCloser) {
 	m, err := ReadMsg(rw)
 	if err != nil {
-		rw.Close()
+		closeStream(rw)
 		s.log.Error("read request", "error", err)
 		return
 	}
@@ -179,11 +193,11 @@ func (s *Server) HandleStream(remote string, rw io.ReadWriteCloser) {
 			return
 		}
 		_ = WriteMsg(rw, Msg{Type: TErr, Code: CodeBadRequest, Text: "unknown transfer token"})
-		rw.Close()
+		closeStream(rw)
 		s.log.Warn("attach with unknown token", "remote", remote)
 		return
 	}
-	defer rw.Close()
+	defer closeStream(rw)
 	switch m.Type {
 	case TRefList:
 		err = s.handleRefList(rw)
@@ -337,7 +351,7 @@ func (s *Server) shardChannels(rw io.ReadWriter, dataConns int) ([]io.ReadWriter
 	release := func() {
 		s.transfers.drop(token)
 		for _, e := range extras {
-			e.Close()
+			closeStream(e)
 		}
 	}
 	return channels, release, nil
@@ -408,7 +422,7 @@ func (s *Server) handlePull(rw io.ReadWriter, m Msg) error {
 		defer func() {
 			s.transfers.drop(token)
 			for _, e := range extras {
-				e.Close()
+				closeStream(e)
 			}
 		}()
 		for _, e := range extras {
