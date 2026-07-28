@@ -200,7 +200,7 @@ func (c *Client) attachExtras(ctx context.Context, token []byte, ports []uint16,
 			defer wg.Done()
 			stream, err := e.conn.OpenStreamConn(actx)
 			if err != nil {
-				attachErrs[ei] = err
+				attachErrs[ei] = fmt.Errorf("open stream: %w", err)
 				return
 			}
 			// The TAttach frame must land inside the budget too; once it is
@@ -211,7 +211,7 @@ func (c *Client) attachExtras(ctx context.Context, token []byte, ports []uint16,
 			}
 			err = amberiroh.WriteMsg(stream, amberiroh.Msg{Type: amberiroh.TAttach, Token: token})
 			if err != nil || actx.Err() != nil {
-				attachErrs[ei] = errors.Join(err, actx.Err())
+				attachErrs[ei] = fmt.Errorf("write attach: %w", errors.Join(err, actx.Err()))
 				CloseStream(stream)
 				return
 			}
@@ -248,6 +248,15 @@ func (c *Client) attachExtras(ctx context.Context, token []byte, ports []uint16,
 		})
 	}
 	c.pool.discard(failed...)
+	if len(streams) > 0 {
+		reusedOK := 0
+		for ei, e := range entries {
+			if slots[ei] != nil && !fresh[e] {
+				reusedOK++
+			}
+		}
+		c.log.Info("amberclient: shards attached", "attached", len(streams), "reused", reusedOK, "failed", len(failed))
+	}
 
 	// A cancelled transfer proves nothing about the path (mirrors
 	// retrySingle's guard) — only a live context's zero-attach does. And a
