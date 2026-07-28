@@ -1,5 +1,21 @@
 # Changelog
 
+## v0.18.0 — 2026-07-28
+
+- **Cancelling a build now removes its queued jobs from the work queue.**
+  Cancellation used to be pure bookkeeping: job messages already published
+  to the JOBS stream stayed there, so runners picked up and fully executed
+  work nobody wanted (results dropped on arrival). The scheduler now
+  remembers each queued job's stream sequence and best-effort deletes the
+  message when a node loses its last interested request — cancel, delete
+  and watcher-loss eviction alike. Work no runner has picked up never runs.
+- Scope: an attempt already delivered to a runner still completes and its
+  result is dropped, exactly as before — "wasteful but never wrong" is
+  unchanged, there is just less waste. Deleting the message of a running
+  attempt also stops the work queue redelivering it to another runner if
+  the first dies mid-run. Job messages orphaned by a server restart still
+  drain through runners as before.
+
 ## v0.17.1 — 2026-07-28
 
 - **A relayed connection now goes direct in seconds, not never.** v0.17.0
