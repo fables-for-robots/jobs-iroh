@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.20.1 — 2026-07-29
+
+- **Relay-stuck shard connections are no longer locked in by the pool.**
+  Field capture showed a v0.20.0 runner with a direct control path whose
+  bulk transfer bytes still crossed the iroh relay: its shard connections
+  had attached via the relay, never hole-punched to direct, and the pool —
+  which reuses any live connection — preserved them indefinitely (v0.19.0
+  accidentally avoided this by redialing per transfer). The pool now
+  tracks each entry's transport path; an idle entry still relayed ~30s
+  after its dial (punching normally lands in ~5s) is evicted and redialed
+  at the next acquire, getting a fresh punch attempt instead of reusing
+  the relay forever.
+- Shard connections' paths are now visible: the runner logs every pooled
+  connection's path at dial and on every change (`shard connection path`,
+  like the control links), and the eviction logs a WARN naming the stuck
+  endpoint. The server logs each data endpoint's advertised address set as
+  it evolves (`data endpoint advertised`) — whether those records ever
+  contain a public QAD candidate is the next diagnostic for punch
+  failures.
+- Client-only + server logging; no wire changes.
+
 ## v0.20.0 — 2026-07-28
 
 - **Shard connections are now pooled and reused across transfers.** Since
