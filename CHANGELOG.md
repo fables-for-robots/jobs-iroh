@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.20.3 — 2026-07-29
+
+- **Pooled shard connections no longer starve after exactly 100 transfers.**
+  Live-debugged on a Hetzner runner ↔ NAT'd server pair: transfers ran in
+  waves and stalled because every pooled shard connection hit quic-go's
+  initial 100-stream budget — attach/op streams never fully retired
+  server-side on relay-won-then-hole-punched connections, so `MAX_STREAMS`
+  credit never flowed back and the 101st `OpenStreamSync` hung for the
+  whole attach budget. Two-sided fix: the server now fully terminates
+  every stream it closes (`CancelRead`/STOP_SENDING completes the
+  client→server half without reading to EOF), and the client pool rotates
+  entries after 90 uses — so even against older servers the cost is a ~1s
+  proactive redial per 90 transfers instead of a starved 8s attach.
+  (Why the transport auto-retirement differs between loopback and migrated
+  paths remains a go-iroh fork investigation; the reproducer and the
+  exactly-100 signature are documented in the commit history.)
+- A zero-attach on *reused* pool entries no longer latches the sticky
+  demote: the stale entries are discarded for redial and the demote stays
+  reserved for fresh dials failing (the true topology verdict).
+- Diagnostics that made this findable are now permanent: per-shard attach
+  results (`shards attached`, attach WARNs distinguishing stream-open from
+  attach-write), pooled-connection path logging, and server-side
+  connect/disconnect logs on the data-endpoint routers.
+
 ## v0.20.2 — 2026-07-29
 
 - **A transfer that starts right after boot no longer gets pinned to the
