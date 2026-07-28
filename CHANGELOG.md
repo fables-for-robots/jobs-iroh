@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.20.2 — 2026-07-29
+
+- **A transfer that starts right after boot no longer gets pinned to the
+  relay.** Field logs showed a job dispatched 0.5s after runner start:
+  the control path was still relayed (punches land ~5s in), so the shard
+  gate skipped extras and the whole multi-minute pull ran single-channel —
+  starting on the relay, and unable to widen mid-flight since a transfer's
+  channel set is fixed at start. On a connection younger than 30s the gate
+  now waits up to 10s for the punch before deciding; a settled relay-bound
+  path still skips immediately, so relay-only topologies see no new
+  stalls.
+- Diagnosis confirmed server-side health along the way: all data
+  endpoints QAD-learn their public candidate ~3s after server boot (the
+  new `data endpoint advertised` lines).
+
 ## v0.20.1 — 2026-07-29
 
 - **Relay-stuck shard connections are no longer locked in by the pool.**
