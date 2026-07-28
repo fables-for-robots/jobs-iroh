@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.19.0 — 2026-07-28
+
+- **Sharded store transfers now hole-punch through NAT.** A NAT'd server's
+  dedicated data endpoints were unreachable from outside — their
+  kernel-assigned UDP ports have no NAT mapping, and the control
+  connection's punched pinhole is four-tuple-scoped — so every shard attach
+  timed out, the client demoted itself, and whole builds' inputs crossed on
+  a single QUIC connection (~1.5 MB/s observed Hetzner ↔ NAT'd server).
+  Data endpoints now carry their own iroh identities with a relay home
+  connection and QUIC address discovery, advertised in-band on
+  `TAccept`/`TRef`; shard dials race the dedicated port with the advertised
+  candidates and, on discovery-dialed clients, bind the relay/net-report
+  stack — a relay-won shard punches to direct mid-transfer exactly like the
+  control connection does. The record's presence also signals the widened
+  10s attach gather window (early-exit unchanged).
+- Extras are now skipped — without the sticky demote — while the control
+  path itself is relayed: extra relay connections move no additional bytes,
+  and sharding resumes on the next transfer once hole punching lands.
+- Compatibility: old runners/clients ignore the new field; their
+  dedicated-port dial fails the new endpoints' identity check and falls
+  back to the control candidates, so they still shard onto the main socket
+  (correct, just without the socket spread). Old servers omit the field and
+  new clients run the previous path unchanged. No ALPN bump.
+
 ## v0.18.0 — 2026-07-28
 
 - **Cancelling a build now removes its queued jobs from the work queue.**
