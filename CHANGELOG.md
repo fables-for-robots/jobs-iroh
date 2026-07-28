@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.20.0 — 2026-07-28
+
+- **Shard connections are now pooled and reused across transfers.** Since
+  v0.19.0 every sharded transfer re-paid the punch ramp per shard — relay
+  connect, `TAttach`, ~5s riding the relay until the direct path lands —
+  and threw the warmed NAT mappings away at transfer end. Connections now
+  live in a per-client pool: each transfer attaches a fresh stream on
+  pooled connections (the attach protocol binds streams, not connections,
+  to a transfer), so the ramp is paid once per connection. The pool keeps
+  `Conns` total connections at rest (default 4, control included), grows
+  under concurrent transfers toward `PoolMax` (new option, default 12),
+  and shrinks back after ~90s idle. Dead or identity-rotated connections
+  (server restarts) are evicted and redialed transparently.
+- Runnerd, the registry and jobs-client all inherit the pool through
+  `amberclient` — no flag changes; within one `remote-build` the source
+  push and output pull now share connections too.
+- Client-only change: no wire or server changes, works against any server
+  version.
+
 ## v0.19.0 — 2026-07-28
 
 - **Sharded store transfers now hole-punch through NAT.** A NAT'd server's
