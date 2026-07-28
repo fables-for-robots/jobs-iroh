@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.17.1 — 2026-07-28
+
+- **A relayed connection now goes direct in seconds, not never.** v0.17.0
+  made the server publish a punchable public address, but nothing punched at
+  the right moment: go-iroh only attempted a hole punch when the dial itself
+  carried IP addresses — exactly what a relay-won dial lacks — leaving the
+  first attempt to a 60-second upgrade tick. Measured on a relay-forced
+  connection: direct path selected after 65s before, after 5s now. The
+  `draganm/go-iroh` fork gains `NATTraversalRemoteAddrsReady` (closed when
+  the first remote traversal candidate arrives — a peer `ADD_ADDRESS` frame
+  or a seeded address) and punches on it immediately.
+- The 60s upgrade tick becomes a pure fallback and stops doing harm: on an
+  already-direct connection it no longer spends a QNT round; on a relayed
+  one it no longer runs `ValidateDirectPath` (which opens a path over the
+  *current* four-tuple — the relay itself — so it could never help and only
+  stalled the path actor for its full 5s validation timeout, once per tick
+  per remote, while also leaking a phantom path each time).
+- New go-iroh regression test pins the bound: a relay-only dial must reach a
+  selected direct path within seconds of the handshake.
+- Expected runner behavior on upgrade: `server connection goes through a
+  relay` at dial, then `server connection is direct` a few seconds later
+  once hole punching lands.
+
 ## v0.17.0 — 2026-07-28
 
 - **A NAT'd server now discovers and publishes its real public address.**
