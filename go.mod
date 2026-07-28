@@ -16,7 +16,7 @@ require (
 	github.com/nats-io/nats.go v1.52.0
 	github.com/onsi/ginkgo/v2 v2.31.0
 	github.com/onsi/gomega v1.42.0
-	github.com/tmc/go-iroh v0.0.0-20260714221401-b17af420bb03
+	github.com/tmc/go-iroh v0.0.0-00010101000000-000000000000
 	github.com/ulikunitz/xz v0.5.15
 	github.com/urfave/cli/v2 v2.27.7
 	go.starlark.net v0.0.0-20260613233743-8ba36ccb83fb
@@ -116,4 +116,4 @@ require (
 	lukechampine.com/blake3 v1.4.1 // indirect
 )
 
-replace github.com/tmc/go-iroh => github.com/draganm/go-iroh v0.0.0-20260728084527-241b9c744aeb
+replace github.com/tmc/go-iroh => github.com/draganm/go-iroh v0.0.0-20260728231250-783e41263e0a
