@@ -143,6 +143,20 @@ func (e *env) getRef(name string) (key.Key, bool) {
 	return k, ok
 }
 
+// jobsMsgCount returns the JOBS work-queue stream's message count.
+func (e *env) jobsMsgCount() uint64 {
+	e.t.Helper()
+	st, err := e.js.Stream(e.ctx, wire.StreamJobs)
+	if err != nil {
+		e.t.Fatalf("jobs stream: %v", err)
+	}
+	info, err := st.Info(e.ctx)
+	if err != nil {
+		e.t.Fatalf("jobs stream info: %v", err)
+	}
+	return info.State.Msgs
+}
+
 // fakeRunner consumes lanes of the real work queue and records every job.
 type fakeRunner struct {
 	mu   sync.Mutex
@@ -650,6 +664,10 @@ func TestCancel(t *testing.T) {
 	}
 	defer stop()
 
+	if n := e.jobsMsgCount(); n != 1 {
+		t.Fatalf("JOBS msgs after submit = %d, want 1 (queued buildfrom)", n)
+	}
+
 	if err := e.s.Cancel(e.ctx, sub.RequestID); err != nil {
 		t.Fatalf("cancel: %v", err)
 	}
@@ -676,25 +694,30 @@ func TestCancel(t *testing.T) {
 		t.Fatalf("NodesTracked = %d, want 0 (zero-interest nodes leave the table)", stats.NodesTracked)
 	}
 
-	// The queued buildfrom job is still in the work queue. A fake runner
-	// completes it — the result must be dropped (node unknown) and its refs
-	// never committed: wasteful, never wrong.
-	done := make(chan struct{}, 1)
-	e.startRunner([]wire.Class{"c0.2-m1"}, func(job wire.Job) *wire.Result {
-		res := e.standardHandler(builddef.Pinned{})(job)
-		select {
-		case done <- struct{}{}:
-		default:
-		}
-		return res
-	})
-	select {
-	case <-done:
-	case <-time.After(30 * time.Second):
-		t.Fatal("orphaned job never consumed")
+	// The queued buildfrom job was purged from the work queue at cancel.
+	if n := e.jobsMsgCount(); n != 0 {
+		t.Fatalf("JOBS msgs after cancel = %d, want 0 (purged)", n)
+	}
+
+	// Backstop unchanged: a late result for an evicted node (e.g. from an
+	// attempt that was already in a runner) is dropped and its refs never
+	// committed — wasteful, never wrong.
+	k, _ := wire.ParseKey(sub.K)
+	nodeName := wire.NodeName(wire.KindBuildFrom, k)
+	orphanOut := e.ingestFile([]byte("orphan output"))
+	res := wire.Result{
+		Node:   nodeName,
+		Gen:    1,
+		Runner: "fake-runner",
+		Class:  wire.ClassOK,
+		Refs:   []wire.RefProposal{{Name: "build-from:" + k.String(), Key: orphanOut[:]}},
+	}
+	if _, err := e.js.PublishMsg(e.ctx,
+		&nats.Msg{Subject: wire.ResultsSubject(nodeName), Data: wire.MustEncode(res)},
+		jetstream.WithMsgID(wire.ResultMsgID(nodeName, res.Gen))); err != nil {
+		t.Fatalf("publish orphan result: %v", err)
 	}
 	time.Sleep(500 * time.Millisecond) // let the (dropped) result flow through
-	k, _ := wire.ParseKey(sub.K)
 	assertRefs(e, map[string]bool{"build-from:" + k.String(): false})
 
 	// Delete removes the request entirely.
@@ -706,6 +729,61 @@ func TestCancel(t *testing.T) {
 	}
 	if err := e.s.Delete(e.ctx, sub.RequestID); ErrorCode(err) != api.CodeNotFound {
 		t.Fatalf("second delete error = %v, want not-found", err)
+	}
+}
+
+// TestCancelSharedInterestKeepsJob: eviction only purges nodes nobody else
+// needs — a job message backing a node shared with a live request stays.
+func TestCancelSharedInterestKeepsJob(t *testing.T) {
+	e := newEnv(t)
+	defBytes := e.treeDef("shared-cancel")
+
+	subA, err := e.s.Submit(e.ctx, api.SubmitRequest{Def: defBytes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	subB, err := e.s.Submit(e.ctx, api.SubmitRequest{Def: defBytes})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := e.jobsMsgCount(); n != 1 {
+		t.Fatalf("JOBS msgs after two joined submits = %d, want 1", n)
+	}
+
+	if err := e.s.Cancel(e.ctx, subA.RequestID); err != nil {
+		t.Fatalf("cancel A: %v", err)
+	}
+	if n := e.jobsMsgCount(); n != 1 {
+		t.Fatalf("JOBS msgs after cancelling one of two = %d, want 1 (B still interested)", n)
+	}
+
+	if err := e.s.Cancel(e.ctx, subB.RequestID); err != nil {
+		t.Fatalf("cancel B: %v", err)
+	}
+	if n := e.jobsMsgCount(); n != 0 {
+		t.Fatalf("JOBS msgs after cancelling both = %d, want 0", n)
+	}
+}
+
+// TestCancelAfterDone: cancelling a finished request must not error — the
+// evicted nodes are done, their queue messages long since acked, and the
+// purge must skip them (phase guard).
+func TestCancelAfterDone(t *testing.T) {
+	e := newEnv(t)
+	e.startRunner([]wire.Class{"c0.2-m1", "c1-m1"}, e.standardHandler(builddef.Pinned{}))
+
+	sub, err := e.s.Submit(e.ctx, api.SubmitRequest{Def: e.treeDef("cancel-after-done")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap := e.watchTerminal(sub.RequestID); snap.Phase != "done" {
+		t.Fatalf("terminal phase = %s, want done", snap.Phase)
+	}
+	if err := e.s.Cancel(e.ctx, sub.RequestID); err != nil {
+		t.Fatalf("cancel after done: %v", err)
+	}
+	if n := e.jobsMsgCount(); n != 0 {
+		t.Fatalf("JOBS msgs = %d, want 0", n)
 	}
 }
 

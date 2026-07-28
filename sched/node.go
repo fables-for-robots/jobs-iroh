@@ -57,6 +57,7 @@ type node struct {
 	lastResultGen uint64
 
 	runner     string
+	queueSeq   uint64 // JOBS stream seq of the current queued job msg (0 = none)
 	errSummary string
 	enqueuedAt time.Time
 	startedAt  time.Time
@@ -513,6 +514,7 @@ func (s *Sched) enqueueLocked(n *node) {
 	n.runner = ""
 	n.startedAt = time.Time{}
 	n.enqueuedAt = time.Now()
+	n.queueSeq = 0
 
 	req := s.requirementLocked(n)
 	class, fits := wire.ClassFor(req)
@@ -540,7 +542,7 @@ func (s *Sched) enqueueLocked(n *node) {
 	}
 	subject := wire.JobsSubject(n.platform, class)
 	s.ensureLaneLocked(n.platform, class)
-	_, err = s.js.PublishMsg(s.ctx, &nats.Msg{Subject: subject, Data: wire.MustEncode(job)},
+	ack, err := s.js.PublishMsg(s.ctx, &nats.Msg{Subject: subject, Data: wire.MustEncode(job)},
 		jetstream.WithMsgID(wire.JobMsgID(n.name, n.gen)))
 	if err != nil {
 		if s.closed || s.ctx.Err() != nil {
@@ -551,6 +553,7 @@ func (s *Sched) enqueueLocked(n *node) {
 		s.armReenqueueLocked(n, s.retryBase)
 		return
 	}
+	n.queueSeq = ack.Sequence
 	n.phase = wire.PhaseQueued
 	s.putNodeStatusLocked(n)
 	s.bumpLocked()
@@ -608,9 +611,10 @@ func LaneConsumerConfig(platform string, class wire.Class) jetstream.ConsumerCon
 
 // dropInterestLocked removes reqID's interest from the target's closure and
 // evicts every node left with zero interest: cancellation and watcher-loss
-// cleanup are the same path. Running/queued work is NOT chased — a job whose
-// node left the table is dropped when its result arrives ("wasteful but
-// never wrong").
+// cleanup are the same path. An evicted node's queued job message is
+// best-effort deleted from the work queue; an attempt already in a runner
+// is not chased — it completes and its result is dropped on arrival
+// ("wasteful but never wrong").
 func (s *Sched) dropInterestLocked(reqID string, target *node) {
 	if target == nil {
 		return
@@ -636,6 +640,15 @@ func (s *Sched) dropInterestLocked(reqID string, target *node) {
 		// table occupant (a resubmit may have re-created the id).
 		if cur := s.nodes[n.id]; cur != n {
 			continue
+		}
+		// Best-effort queue purge: an evicted node's undelivered job message
+		// need never run. Deleting a delivered-but-unacked message (running,
+		// or queued but already in a runner) stops AckWait redelivery, not
+		// the in-flight attempt — its result is dropped on arrival as before.
+		if n.queueSeq != 0 && (n.phase == wire.PhaseQueued || n.phase == wire.PhaseRunning) {
+			if err := s.jobs.DeleteMsg(s.ctx, n.queueSeq); err != nil {
+				s.log.Debug("queued job purge failed", "node", n.name, "seq", n.queueSeq, "error", err)
+			}
 		}
 		delete(s.nodes, n.id)
 		// Unlink from surviving deps so they never advance a ghost. The

@@ -77,6 +77,7 @@ type Sched struct {
 	store *amber.Store
 	nc    *nats.Conn
 	js    jetstream.JetStream
+	jobs  jetstream.Stream // JOBS stream handle (queued-job purge on eviction)
 	kv    jetstream.KeyValue
 	log   *slog.Logger
 
@@ -128,13 +129,14 @@ func New(ctx context.Context, o Options) (*Sched, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sched: jetstream: %w", err)
 	}
-	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
+	jobsStream, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
 		Name:        wire.StreamJobs,
 		Description: "jobs-iroh work queue (one msg per placeable node attempt)",
 		Subjects:    []string{wire.SubjectJobsRoot + ".>"},
 		Retention:   jetstream.WorkQueuePolicy,
 		Duplicates:  10 * time.Minute,
-	}); err != nil {
+	})
+	if err != nil {
 		return nil, fmt.Errorf("sched: create %s stream: %w", wire.StreamJobs, err)
 	}
 	if _, err := js.CreateOrUpdateStream(ctx, jetstream.StreamConfig{
@@ -182,6 +184,7 @@ func New(ctx context.Context, o Options) (*Sched, error) {
 		store:     o.Store,
 		nc:        o.NC,
 		js:        js,
+		jobs:      jobsStream,
 		kv:        kv,
 		log:       log,
 		ctx:       sctx,

@@ -168,9 +168,10 @@ func newRequestID() (string, error) {
 }
 
 // Cancel drops the request's interest: nodes needed by nobody else leave
-// the table; in-flight jobs are not chased — their results are dropped on
-// arrival (running once too often is wasteful, never wrong). The request
-// stays inspectable until Delete.
+// the table and their queued job messages are best-effort purged from the
+// work queue. In-flight attempts are not chased — their results are
+// dropped on arrival (running once too often is wasteful, never wrong).
+// The request stays inspectable until Delete.
 func (s *Sched) Cancel(ctx context.Context, requestID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
