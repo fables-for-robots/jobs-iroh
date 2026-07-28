@@ -266,14 +266,27 @@ transfer token, and the client attaches one stream per extra QUIC
 connection — each on its own endpoint and UDP socket, since one socket's
 loop caps throughput — so the want loop deals every round across all
 channels. The server can bind dedicated data endpoints
-(`--data-endpoints`, default 3, same identity key) whose ports are offered
-in-band; unreachable data ports, failed attaches, or a server without
-sharding all degrade the transfer toward the single control stream. Each
-shard's attach runs under a budget safely below the server's 5s gather
-window (a late attach would be a dead channel), a connection that attaches
-zero shards demotes itself to single-channel for its lifetime, and a failed
-sharded transfer is retried once unsharded (push is force-mode, pull
-resumable — running twice is never wrong) before the error surfaces. Push is
+(`--data-endpoints`, default 3), each with its **own punchable identity**:
+when announcing, every data endpoint holds a relay home connection and
+QAD-learns its public mapping, and `TAccept`/`TRef` advertise per-endpoint
+`DataEndpoints` records — identity plus live dial candidates — alongside
+the `DataPorts` LAN fast path. A sharding client races the dedicated port
+with the advertised candidates under the record's identity; on
+discovery-dialed clients the shard endpoints bind the control dial's
+relay/net-report stack, so a relay-won shard hole-punches to direct
+mid-transfer exactly like the control connection does. The record's
+presence signals the 10s attach gather window (up from 5s; gather still
+early-exits when every promised shard lands), and each shard's attach runs
+under a budget safely below that window (a late attach would be a dead
+channel). Clients skip extras entirely — without demoting — while the
+control path itself is relayed. Unreachable candidates, failed attaches, or
+a server without sharding degrade the transfer toward the single control
+stream: a connection that attaches zero shards demotes itself to
+single-channel for its lifetime, and a failed sharded transfer is retried
+once unsharded (push is force-mode, pull resumable — running twice is never
+wrong) before the error surfaces. Old clients ignore the records: their
+dedicated-port dial fails the identity check and falls back to the control
+candidates, sharding onto the main socket. Push is
 force-mode (last-write-wins); Pull verifies every object against its key
 (the peer is untrusted) and writes the local ref only after the full
 closure is present — objects-before-ref holds across the wire too.

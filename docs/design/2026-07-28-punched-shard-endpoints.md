@@ -109,6 +109,13 @@ to today's path. Every old/new pairing stays *correct* (at worst
 single-connection slow), so no ALPN fence is needed — the fence rule
 (CLAUDE.md invariants) is for wrong results, not slow ones.
 
+One old-client wrinkle the per-endpoint keys introduce: an old client's
+dedicated-port dial authenticates the *server's* identity, which a new
+data endpoint no longer presents — the handshake fails and the client
+falls back to the control candidates. Old clients therefore still shard,
+but onto the main socket (no data-endpoint spread) even on a LAN.
+Correct-but-slower, consistent with the no-fence rule.
+
 **Field presence is the capability signal.** A client that sees
 `DataEndpoints` knows the server gathers for 10s and may spend an 8s attach
 budget; absence means an old server's 5s window and today's 3s budget
