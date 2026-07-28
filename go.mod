@@ -116,4 +116,4 @@ require (
 	lukechampine.com/blake3 v1.4.1 // indirect
 )
 
-replace github.com/tmc/go-iroh => github.com/draganm/go-iroh v0.0.0-20260728072317-a42871abdbce
+replace github.com/tmc/go-iroh => github.com/draganm/go-iroh v0.0.0-20260728084527-241b9c744aeb

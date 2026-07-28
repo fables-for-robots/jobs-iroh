@@ -76,8 +76,8 @@ github.com/docker/cli v29.5.3+incompatible h1:nbEFfz774vBwQ5KRYv7c/AghjReqnGISvr
 github.com/docker/cli v29.5.3+incompatible/go.mod h1:JLrzqnKDaYBop7H2jaqPtU4hHvMKP+vjCwu2uszcLI8=
 github.com/docker/docker-credential-helpers v0.9.3 h1:gAm/VtF9wgqJMoxzT3Gj5p4AqIjCBS4wrsOh9yRqcz8=
 github.com/docker/docker-credential-helpers v0.9.3/go.mod h1:x+4Gbw9aGmChi3qTLZj8Dfn0TD20M/fuWy0E5+WDeCo=
-github.com/draganm/go-iroh v0.0.0-20260728072317-a42871abdbce h1:gApUsyApvQUq3xAbemyM+bhukmNV52fKqREzi1uA7Ek=
-github.com/draganm/go-iroh v0.0.0-20260728072317-a42871abdbce/go.mod h1:7SPQyxZbjXmUQUhDjGH78kpg9Vr92o20I9j5mw8njSU=
+github.com/draganm/go-iroh v0.0.0-20260728084527-241b9c744aeb h1:lIuJ7oidKeZnbqU394traJQtrHX/rlaLMcFCDzZTif8=
+github.com/draganm/go-iroh v0.0.0-20260728084527-241b9c744aeb/go.mod h1:7SPQyxZbjXmUQUhDjGH78kpg9Vr92o20I9j5mw8njSU=
 github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f h1:Y/CXytFA4m6baUTXGLOoWe4PQhGxaX0KpnayAqC48p4=
 github.com/erikgeiser/coninput v0.0.0-20211004153227-1c3628e74d0f/go.mod h1:vw97MGsxSvLiUE2X8qFplwetxpGLQrlU1Q9AUEIzCaM=
 github.com/fxamacker/cbor/v2 v2.9.2 h1:X4Ksno9+x3cz0TZv69ec1hxP/+tymuR8PXQJyDwfh78=
