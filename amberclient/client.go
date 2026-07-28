@@ -118,6 +118,10 @@ type Client struct {
 	cands    []netaddr.TransportAddr
 	bindAddr netip.AddrPort
 	conns    int
+	// punchDials records that the control dial went through discovery —
+	// shard endpoints then bind the same relay/net-report stack so their
+	// relay-won connections punch to direct. Direct-addr dials stay bare.
+	punchDials bool
 
 	// demoted latches when this connection proves unable to shard (no
 	// attach landed in budget, or a sharded transfer failed that then
@@ -192,7 +196,8 @@ func Dial(ctx context.Context, o Options) (*Client, error) {
 	return &Client{
 		conn: conn, ep: ep, log: log,
 		id: id, alpn: alpn, cands: cands, bindAddr: o.BindAddr,
-		conns: clampConns(o.Conns),
+		conns:      clampConns(o.Conns),
+		punchDials: len(o.Addrs) == 0,
 	}, nil
 }
 
@@ -362,7 +367,7 @@ func (c *Client) pullOnce(ctx context.Context, st *amber.Store, name string, mtr
 	// server never gathered would otherwise park the want loop forever.
 	channels := []io.ReadWriter{stream}
 	if len(m.Token) > 0 && conns > 1 {
-		extras, closeExtras := c.attachExtras(ctx, m.Token, m.DataPorts, conns-1)
+		extras, closeExtras := c.attachExtras(ctx, m.Token, m.DataPorts, m.DataEndpoints, conns-1)
 		defer closeExtras()
 		for _, ex := range extras {
 			channels = append(channels, &watchdogConn{Conn: ex, ctx: ctx})

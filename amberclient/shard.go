@@ -22,12 +22,14 @@ import (
 	"github.com/jobs-build/jobs-iroh/amberiroh"
 	"github.com/tmc/go-iroh/iroh"
 	"github.com/tmc/go-iroh/netaddr"
+	"github.com/tmc/go-iroh/relay"
 
 	"github.com/jobs-build/jobs-iroh/amber"
 )
 
 // Attach timing. The server serves whatever shards arrived within its gather
-// window (ambserver's attachWait, 5s) — but a TAttach landing LATER is
+// window (ambserver's attachWait, 10s; 5s on pre-DataEndpoints servers) —
+// but a TAttach landing LATER is
 // silently parked on a channel nothing ever reads. Handing such a dead
 // channel to the want loop deadlocks a pull and fails a push whose ref the
 // server already committed. So a shard's whole attach — dial, stream, TAttach
@@ -43,15 +45,42 @@ const (
 	// port fails only by timeout, so the sub-budget keeps room for the
 	// control-candidate fallback.
 	dedicatedDialTimeout = 1500 * time.Millisecond
+	// punchAttachBudget replaces attachBudget when the server advertised
+	// DataEndpoints (which is also the signal that it gathers for 10s): a
+	// punching attach pays a relay connect before its TAttach, and the
+	// budget must still land safely inside the server's window.
+	punchAttachBudget = 8 * time.Second
 )
 
-// extraConn opens one more connection to the same server on its own
-// endpoint. When the server advertised dedicated data ports, the connection
-// first tries port ports[i%len] on the address the control connection
-// actually reached (spreading load across the server's sockets); a filtered
-// or unreachable port falls back to the control candidates within ctx's
-// remaining budget.
-func (c *Client) extraConn(ctx context.Context, i int, ports []uint16) (*iroh.Conn, *iroh.Endpoint, error) {
+// extraConn opens one more connection for shard i. A server that advertised
+// DataEndpoints records gets a record-authenticated dial: the dedicated
+// port (on the address the control connection reached) races the record's
+// own candidates. On a discovery-dialed client the shard endpoint binds
+// with the control dial's full stack — relay mode, net report, seeded local
+// candidates — which is what feeds QNT punch coordination, so a relay-won
+// shard upgrades to direct mid-transfer exactly like the control connection
+// did. A direct-addr client (Options.Addrs) stays bare, mirroring the
+// control dial's own direct branch. Without records, the legacy path runs:
+// dedicated ports under the server identity, then the control candidates.
+func (c *Client) extraConn(ctx context.Context, i int, ports []uint16, eps []amberiroh.DataEndpointRec) (*iroh.Conn, *iroh.Endpoint, error) {
+	ctrlIP, haveCtrlIP := c.remoteIP()
+	id, cands, ok, terr := shardTarget(i, ctrlIP, haveCtrlIP, ports, eps, !c.punchDials)
+	if terr != nil {
+		return nil, nil, terr
+	}
+	if ok {
+		ep, err := c.bindShardEndpoint(ctx)
+		if err != nil {
+			return nil, nil, err
+		}
+		conn, err := raceConnect(ctx, ep, id, c.alpn, cands)
+		if err != nil {
+			_ = ep.Shutdown(context.WithoutCancel(ctx))
+			return nil, nil, err
+		}
+		return conn, ep, nil
+	}
+
 	var bindOpts []iroh.Option
 	if c.bindAddr.IsValid() {
 		// Same host as the pinned bind, port 0: every shard needs its own
@@ -62,15 +91,13 @@ func (c *Client) extraConn(ctx context.Context, i int, ports []uint16) (*iroh.Co
 	if err != nil {
 		return nil, nil, err
 	}
-	if len(ports) > 0 {
-		if ip, ok := c.remoteIP(); ok {
-			dctx, cancel := context.WithTimeout(ctx, dedicatedDialTimeout)
-			cand := []netaddr.TransportAddr{netaddr.IPAddr{Addr: netip.AddrPortFrom(ip, ports[i%len(ports)])}}
-			conn, derr := raceConnect(dctx, ep, c.id, c.alpn, cand)
-			cancel()
-			if derr == nil {
-				return conn, ep, nil
-			}
+	if len(ports) > 0 && haveCtrlIP {
+		dctx, cancel := context.WithTimeout(ctx, dedicatedDialTimeout)
+		cand := []netaddr.TransportAddr{netaddr.IPAddr{Addr: netip.AddrPortFrom(ctrlIP, ports[i%len(ports)])}}
+		conn, derr := raceConnect(dctx, ep, c.id, c.alpn, cand)
+		cancel()
+		if derr == nil {
+			return conn, ep, nil
 		}
 	}
 	conn, err := raceConnect(ctx, ep, c.id, c.alpn, c.cands)
@@ -79,6 +106,27 @@ func (c *Client) extraConn(ctx context.Context, i int, ports []uint16) (*iroh.Co
 		return nil, nil, err
 	}
 	return conn, ep, nil
+}
+
+// bindShardEndpoint binds one record-authenticated shard's endpoint.
+func (c *Client) bindShardEndpoint(ctx context.Context) (*iroh.Endpoint, error) {
+	var opts []iroh.Option
+	if c.bindAddr.IsValid() {
+		opts = append(opts, iroh.WithBindAddr(netip.AddrPortFrom(c.bindAddr.Addr(), 0)))
+	}
+	if c.punchDials {
+		// See bindAndResolve's discovery branch for why each piece exists;
+		// mDNS/pkarr are omitted — the candidates are already provided.
+		opts = append(opts, iroh.WithRelayMode(relay.ModeDefault()), iroh.WithNetReport())
+	}
+	ep, err := iroh.Bind(ctx, opts...)
+	if err != nil {
+		return nil, err
+	}
+	if c.punchDials {
+		seedLocalCandidates(ep)
+	}
+	return ep, nil
 }
 
 // remoteIP is the address the control connection actually reached the
@@ -104,7 +152,11 @@ func (c *Client) remoteIP() (netip.Addr, bool) {
 // shard attaches, the client demotes itself: this connection's topology
 // evidently cannot shard (relay-only path, filtered ports), and paying the
 // attach stall on every subsequent transfer would be pure waste.
-func (c *Client) attachExtras(ctx context.Context, token []byte, ports []uint16, n int) ([]net.Conn, func()) {
+func (c *Client) attachExtras(ctx context.Context, token []byte, ports []uint16, eps []amberiroh.DataEndpointRec, n int) ([]net.Conn, func()) {
+	budget := attachBudget
+	if len(eps) > 0 && c.punchDials {
+		budget = punchAttachBudget
+	}
 	type extra struct {
 		stream net.Conn
 		close  func()
@@ -115,10 +167,10 @@ func (c *Client) attachExtras(ctx context.Context, token []byte, ports []uint16,
 		wg.Add(1)
 		go func(i int) {
 			defer wg.Done()
-			actx, cancel := context.WithTimeout(ctx, attachBudget)
+			actx, cancel := context.WithTimeout(ctx, budget)
 			defer cancel()
 
-			conn, ep, err := c.extraConn(actx, i, ports)
+			conn, ep, err := c.extraConn(actx, i, ports, eps)
 			if err != nil {
 				c.log.Debug("amberclient: shard attach failed", "shard", i, "error", err)
 				return
@@ -233,7 +285,7 @@ func (c *Client) runSenders(ctx context.Context, ctrl io.ReadWriter, st *amber.S
 		return fmt.Errorf("%w: type %d, want TAccept or TWants", amberiroh.ErrProtocol, first.Type)
 	}
 
-	extras, closeExtras := c.attachExtras(ctx, first.Token, first.DataPorts, conns-1)
+	extras, closeExtras := c.attachExtras(ctx, first.Token, first.DataPorts, first.DataEndpoints, conns-1)
 	defer closeExtras()
 	// No read watchdog here, unlike pull: a push channel legitimately sits
 	// in a read for as long as the server takes to verify and store a whole
