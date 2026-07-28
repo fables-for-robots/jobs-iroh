@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.21.0 — 2026-07-29
+
+- **Want rounds are dealt by observed per-channel throughput.** Round-robin
+  dealing let one slow channel (say, a shard stuck on the relay while its
+  siblings punched) pace every round, since a round barriers on its slowest
+  shard. `Receive` now samples each channel's wire bytes per round and
+  deals the next round proportionally (keys weighed by their embedded
+  lengths); a starved channel keeps a probe-sized share so it can earn its
+  weight back after upgrading.
+- **go-iroh fork: `net.Conn` stream wrappers now close both directions.**
+  The root of v0.20.3's stream starvation lived in the wrapper contract:
+  `Close()` only FIN-closed the send side, so whenever the peer's FIN
+  arrived after this side's last read — the common case over real latency —
+  the stream never completed and its `MAX_STREAMS` credit never returned.
+  `streamConn.Close` now also `CancelRead`s (fork commit `783e412`, with
+  130-stream regression tests on direct and relay-won-punched
+  connections). jobs-iroh's own belt-and-braces from v0.20.3 (server-side
+  `CancelRead` on every close path, 90-use pool rotation) stay in place.
+
 ## v0.20.3 — 2026-07-29
 
 - **Pooled shard connections no longer starve after exactly 100 transfers.**
