@@ -219,3 +219,80 @@ func TestPoolDrain(t *testing.T) {
 		t.Fatalf("closed pool returned %d entries, want 0", len(got))
 	}
 }
+
+func TestPoolEvictsRelayStuckEntries(t *testing.T) {
+	d := &stubDialer{}
+	p := testPool(d, 3, 11, time.Hour)
+	recs := testRecs(t, 3)
+
+	_, rel := p.acquire(context.Background(), 3, nil, recs)
+	rel()
+
+	// Age all entries past the grace and mark one relayed, one direct, one
+	// path-unknown: only the relayed one may be evicted.
+	p.mu.Lock()
+	for i, e := range p.entries {
+		e.dialed = time.Now().Add(-2 * relayGrace)
+		switch i {
+		case 0:
+			e.path = func() (Path, bool) { return Path{Relayed: true}, true }
+		case 1:
+			e.path = func() (Path, bool) { return Path{Relayed: false}, true }
+		default:
+			e.path = nil
+		}
+	}
+	p.mu.Unlock()
+
+	_, rel2 := p.acquire(context.Background(), 3, nil, recs)
+	defer rel2()
+	dials, closed := d.counts()
+	if closed != 1 {
+		t.Fatalf("closed %d, want 1 (only the relay-stuck entry)", closed)
+	}
+	if dials != 4 {
+		t.Fatalf("dials %d, want 4 (one replacement)", dials)
+	}
+}
+
+func TestPoolKeepsYoungRelayedEntries(t *testing.T) {
+	d := &stubDialer{}
+	p := testPool(d, 3, 11, time.Hour)
+	recs := testRecs(t, 3)
+
+	_, rel := p.acquire(context.Background(), 3, nil, recs)
+	rel()
+	p.mu.Lock()
+	for _, e := range p.entries {
+		e.path = func() (Path, bool) { return Path{Relayed: true}, true } // still inside grace
+	}
+	p.mu.Unlock()
+
+	_, rel2 := p.acquire(context.Background(), 3, nil, recs)
+	defer rel2()
+	if dials, closed := d.counts(); dials != 3 || closed != 0 {
+		t.Fatalf("dials %d closed %d, want 3/0 (grace not elapsed, punch may still land)", dials, closed)
+	}
+}
+
+func TestPoolNeverEvictsBusyRelayedEntries(t *testing.T) {
+	d := &stubDialer{}
+	p := testPool(d, 3, 11, time.Hour)
+	recs := testRecs(t, 3)
+
+	held, relHold := p.acquire(context.Background(), 3, nil, recs)
+	defer relHold()
+	p.mu.Lock()
+	for _, e := range p.entries {
+		e.dialed = time.Now().Add(-2 * relayGrace)
+		e.path = func() (Path, bool) { return Path{Relayed: true}, true }
+	}
+	p.mu.Unlock()
+
+	_, rel2 := p.acquire(context.Background(), 3, nil, recs)
+	defer rel2()
+	if _, closed := d.counts(); closed != 0 {
+		t.Fatalf("closed %d, want 0 (entries carry another transfer's streams)", closed)
+	}
+	_ = held
+}

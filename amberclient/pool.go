@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/jobs-build/jobs-iroh/amberiroh"
+	"github.com/tmc/go-iroh/iroh"
 	irohkey "github.com/tmc/go-iroh/key"
 )
 
@@ -35,12 +36,28 @@ type shardConn interface {
 // authenticated.
 type poolDialer func(ctx context.Context, i int, ports []uint16, eps []amberiroh.DataEndpointRec) (shardConn, func(), irohkey.EndpointID, error)
 
+// relayGrace is how long a pooled entry may stay on a relay path before
+// acquire evicts and replaces it: hole punching normally lands ~5s after
+// the dial, so a connection still relayed after this long has failed its
+// punch — redialing gets a fresh attempt instead of locking the relay in.
+const relayGrace = 30 * time.Second
+
 type poolEntry struct {
 	conn     shardConn
 	close    func()
 	id       irohkey.EndpointID
 	streams  int
+	dialed   time.Time
 	lastUsed time.Time
+	// path reports the connection's current transport path; nil when the
+	// conn cannot report one (test stubs). Wired from the conn itself at
+	// entry creation.
+	path func() (Path, bool)
+}
+
+// pathReporter is the slice of *iroh.Conn that exposes path snapshots.
+type pathReporter interface {
+	Paths() []iroh.PathInfo
 }
 
 // shardPool owns shard-connection lifecycle for one Client. Entries are
@@ -86,9 +103,11 @@ func (p *shardPool) acquire(ctx context.Context, k int, ports []uint16, eps []am
 		p.sweep.Stop()
 	}
 
-	// Evict dead connections and, when records are present, entries whose
-	// identity the server no longer advertises — an identity rotation
-	// means a server restart, so those connections are dead or dying.
+	// Evict dead connections; entries whose identity the server no longer
+	// advertises (an identity rotation means a server restart, so those
+	// connections are dead or dying); and idle entries stuck on a relay
+	// past the punch grace — reusing those would lock the relay in for
+	// every future transfer, while a redial gets a fresh punch attempt.
 	live := p.entries[:0]
 	for _, e := range p.entries {
 		stale := e.conn.Context().Err() != nil
@@ -99,6 +118,13 @@ func (p *shardPool) acquire(ctx context.Context, k int, ports []uint16, eps []am
 					stale = false
 					break
 				}
+			}
+		}
+		if !stale && e.streams == 0 && e.path != nil && time.Since(e.dialed) > relayGrace {
+			if pth, ok := e.path(); ok && pth.Relayed {
+				p.log.Warn("amberclient: pooled shard connection still relayed after grace; redialing",
+					append([]any{"endpoint", e.id.Short(), "age", time.Since(e.dialed).Round(time.Second).String()}, pth.LogAttrs()...)...)
+				stale = true
 			}
 		}
 		if stale {
@@ -158,7 +184,11 @@ func (p *shardPool) acquire(ctx context.Context, k int, ports []uint16, eps []am
 				p.log.Debug("amberclient: pool dial failed", "slot", i, "error", err)
 				return
 			}
-			dialed[si] = &poolEntry{conn: conn, close: closeFn, id: id, lastUsed: time.Now()}
+			e := &poolEntry{conn: conn, close: closeFn, id: id, dialed: time.Now(), lastUsed: time.Now()}
+			if pr, ok := conn.(pathReporter); ok {
+				e.path = func() (Path, bool) { return pathOf(pr.Paths()) }
+			}
+			dialed[si] = e
 		}(si, i)
 	}
 	wg.Wait()

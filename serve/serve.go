@@ -262,6 +262,14 @@ func Run(ctx context.Context, opts Options) error {
 			deps = append(deps, dep)
 			seeded = append(seeded, seedDataEndpointAddrs(dep))
 			ports = append(ports, dep.LocalAddr().Port())
+			// Log every address-set change: whether a data endpoint ever
+			// learned its public QAD mapping decides whether off-LAN shards
+			// can punch to it — this line is the observable for that.
+			go func(port uint16, dep *iroh.Endpoint) {
+				for a := range dep.WatchAddr().Stream(ctx) {
+					log.Info("data endpoint advertised", "port", port, "addr", a)
+				}
+			}(dep.LocalAddr().Port(), dep)
 		}
 		amberSrv.SetDataPorts(ports)
 		amberSrv.SetDataEndpoints(func() []amberiroh.DataEndpointRec {

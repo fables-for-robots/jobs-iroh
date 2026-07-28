@@ -88,6 +88,7 @@ func (c *Client) dialShard(ctx context.Context, i int, ports []uint16, eps []amb
 			_ = ep.Shutdown(context.WithoutCancel(ctx))
 			return nil, nil, irohkey.EndpointID{}, err
 		}
+		c.watchShardPath(conn, id)
 		return conn, teardown(conn, ep), id, nil
 	}
 
@@ -107,6 +108,7 @@ func (c *Client) dialShard(ctx context.Context, i int, ports []uint16, eps []amb
 		conn, derr := raceConnect(dctx, ep, c.id, c.alpn, cand)
 		cancel()
 		if derr == nil {
+			c.watchShardPath(conn, c.id)
 			return conn, teardown(conn, ep), c.id, nil
 		}
 	}
@@ -115,7 +117,19 @@ func (c *Client) dialShard(ctx context.Context, i int, ports []uint16, eps []amb
 		_ = ep.Shutdown(context.WithoutCancel(ctx))
 		return nil, nil, irohkey.EndpointID{}, err
 	}
+	c.watchShardPath(conn, c.id)
 	return conn, teardown(conn, ep), c.id, nil
+}
+
+// watchShardPath logs a shard connection's transport path and every later
+// change — the per-shard analogue of the control links' reportPath. A shard
+// commonly starts relayed and upgrades once hole punching lands; one that
+// never does is what the pool's relayGrace eviction catches.
+func (c *Client) watchShardPath(conn *iroh.Conn, id irohkey.EndpointID) {
+	WatchPath(context.Background(), conn, func(p Path) {
+		c.log.Info("amberclient: shard connection path",
+			append([]any{"link", "store-shard", "endpoint", id.Short()}, p.LogAttrs()...)...)
+	})
 }
 
 // bindShardEndpoint binds one record-authenticated shard's endpoint.

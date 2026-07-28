@@ -290,7 +290,10 @@ candidates, sharding onto the main socket. Shard connections are pooled per
 client: acquired per transfer (a fresh stream + `TAttach` each), released
 open, grown under concurrent transfers (`Conns`→`PoolMax` totals, default
 4→12) and shrunk back after ~90s idle — so the punch ramp is paid once per
-connection, not per transfer. Push is
+connection, not per transfer. Every pooled connection's path is logged
+(dial and changes), and an idle entry still relayed ~30s after its dial —
+a failed punch — is evicted and redialed at the next acquire rather than
+reused, so a relay never gets locked in. Push is
 force-mode (last-write-wins); Pull verifies every object against its key
 (the peer is untrusted) and writes the local ref only after the full
 closure is present — objects-before-ref holds across the wire too.
