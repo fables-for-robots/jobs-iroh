@@ -13,10 +13,12 @@ import (
 	irohkey "github.com/tmc/go-iroh/key"
 )
 
-// stubConn is a fake shardConn whose liveness is its context.
+// stubConn is a fake shardConn whose liveness is its context; failOpen
+// simulates a connection whose path died between transfers.
 type stubConn struct {
-	ctx    context.Context
-	cancel context.CancelFunc
+	ctx      context.Context
+	cancel   context.CancelFunc
+	failOpen bool
 }
 
 func newStubConn() *stubConn {
@@ -26,6 +28,9 @@ func newStubConn() *stubConn {
 
 func (s *stubConn) Context() context.Context { return s.ctx }
 func (s *stubConn) OpenStreamConn(ctx context.Context) (net.Conn, error) {
+	if s.failOpen {
+		return nil, context.DeadlineExceeded
+	}
 	c, _ := net.Pipe()
 	return c, nil
 }
@@ -33,11 +38,13 @@ func (s *stubConn) Close() error { s.cancel(); return nil }
 
 // stubDialer counts dials and records closes; each dial's identity comes
 // from the records exactly like the real dialer (shardTarget's i%len).
+// failOpenNew makes every future dial's conn refuse stream opens.
 type stubDialer struct {
-	mu     sync.Mutex
-	dials  int
-	closed int
-	conns  []*stubConn
+	mu          sync.Mutex
+	dials       int
+	closed      int
+	failOpenNew bool
+	conns       []*stubConn
 }
 
 func (d *stubDialer) dial(ctx context.Context, i int, ports []uint16, eps []amberiroh.DataEndpointRec) (shardConn, func(), irohkey.EndpointID, error) {
@@ -45,6 +52,7 @@ func (d *stubDialer) dial(ctx context.Context, i int, ports []uint16, eps []ambe
 	defer d.mu.Unlock()
 	d.dials++
 	c := newStubConn()
+	c.failOpen = d.failOpenNew
 	d.conns = append(d.conns, c)
 	var id irohkey.EndpointID
 	if len(eps) > 0 {
@@ -86,12 +94,12 @@ func TestPoolReusesAcrossSequentialAcquires(t *testing.T) {
 	p := testPool(d, 3, 11, time.Hour)
 	recs := testRecs(t, 3)
 
-	first, rel := p.acquire(context.Background(), 3, nil, recs)
+	first, _, rel := p.acquire(context.Background(), 3, nil, recs)
 	if len(first) != 3 {
 		t.Fatalf("acquired %d, want 3", len(first))
 	}
 	rel()
-	second, rel2 := p.acquire(context.Background(), 3, nil, recs)
+	second, _, rel2 := p.acquire(context.Background(), 3, nil, recs)
 	defer rel2()
 	if dials, _ := d.counts(); dials != 3 {
 		t.Fatalf("dials %d, want 3 (reuse)", dials)
@@ -112,9 +120,9 @@ func TestPoolGrowsUnderConcurrency(t *testing.T) {
 	p := testPool(d, 3, 11, time.Hour)
 	recs := testRecs(t, 3)
 
-	a, relA := p.acquire(context.Background(), 3, nil, recs)
+	a, _, relA := p.acquire(context.Background(), 3, nil, recs)
 	defer relA()
-	b, relB := p.acquire(context.Background(), 3, nil, recs)
+	b, _, relB := p.acquire(context.Background(), 3, nil, recs)
 	defer relB()
 	if dials, _ := d.counts(); dials != 6 {
 		t.Fatalf("dials %d, want 6 (target 3*2 active)", dials)
@@ -131,9 +139,9 @@ func TestPoolCapsAtMax(t *testing.T) {
 	p := testPool(d, 3, 4, time.Hour)
 	recs := testRecs(t, 3)
 
-	a, relA := p.acquire(context.Background(), 3, nil, recs)
+	a, _, relA := p.acquire(context.Background(), 3, nil, recs)
 	defer relA()
-	b, relB := p.acquire(context.Background(), 3, nil, recs)
+	b, _, relB := p.acquire(context.Background(), 3, nil, recs)
 	defer relB()
 	if dials, _ := d.counts(); dials > 4 {
 		t.Fatalf("dials %d, want ≤ max 4", dials)
@@ -148,11 +156,11 @@ func TestPoolEvictsDeadConns(t *testing.T) {
 	p := testPool(d, 3, 11, time.Hour)
 	recs := testRecs(t, 3)
 
-	first, rel := p.acquire(context.Background(), 3, nil, recs)
+	first, _, rel := p.acquire(context.Background(), 3, nil, recs)
 	rel()
 	first[0].conn.(*stubConn).cancel()
 
-	_, rel2 := p.acquire(context.Background(), 3, nil, recs)
+	_, _, rel2 := p.acquire(context.Background(), 3, nil, recs)
 	defer rel2()
 	dials, closed := d.counts()
 	if dials != 4 {
@@ -167,9 +175,9 @@ func TestPoolEvictsRotatedIdentities(t *testing.T) {
 	d := &stubDialer{}
 	p := testPool(d, 3, 11, time.Hour)
 
-	_, rel := p.acquire(context.Background(), 3, nil, testRecs(t, 3))
+	_, _, rel := p.acquire(context.Background(), 3, nil, testRecs(t, 3))
 	rel()
-	_, rel2 := p.acquire(context.Background(), 3, nil, testRecs(t, 3))
+	_, _, rel2 := p.acquire(context.Background(), 3, nil, testRecs(t, 3))
 	defer rel2()
 	dials, closed := d.counts()
 	if dials != 6 || closed != 3 {
@@ -182,8 +190,8 @@ func TestPoolIdleScaleDown(t *testing.T) {
 	p := testPool(d, 3, 11, 30*time.Millisecond)
 	recs := testRecs(t, 3)
 
-	_, relA := p.acquire(context.Background(), 3, nil, recs)
-	_, relB := p.acquire(context.Background(), 3, nil, recs)
+	_, _, relA := p.acquire(context.Background(), 3, nil, recs)
+	_, _, relB := p.acquire(context.Background(), 3, nil, recs)
 	relA()
 	relB()
 	deadline := time.Now().Add(2 * time.Second)
@@ -207,13 +215,13 @@ func TestPoolIdleScaleDown(t *testing.T) {
 func TestPoolDrain(t *testing.T) {
 	d := &stubDialer{}
 	p := testPool(d, 3, 11, time.Hour)
-	_, rel := p.acquire(context.Background(), 3, nil, testRecs(t, 3))
+	_, _, rel := p.acquire(context.Background(), 3, nil, testRecs(t, 3))
 	rel()
 	p.drain()
 	if _, closed := d.counts(); closed != 3 {
 		t.Fatalf("closed %d, want all 3 on drain", closed)
 	}
-	got, rel2 := p.acquire(context.Background(), 3, nil, testRecs(t, 3))
+	got, _, rel2 := p.acquire(context.Background(), 3, nil, testRecs(t, 3))
 	rel2()
 	if len(got) != 0 {
 		t.Fatalf("closed pool returned %d entries, want 0", len(got))
@@ -225,7 +233,7 @@ func TestPoolEvictsRelayStuckEntries(t *testing.T) {
 	p := testPool(d, 3, 11, time.Hour)
 	recs := testRecs(t, 3)
 
-	_, rel := p.acquire(context.Background(), 3, nil, recs)
+	_, _, rel := p.acquire(context.Background(), 3, nil, recs)
 	rel()
 
 	// Age all entries past the grace and mark one relayed, one direct, one
@@ -244,7 +252,7 @@ func TestPoolEvictsRelayStuckEntries(t *testing.T) {
 	}
 	p.mu.Unlock()
 
-	_, rel2 := p.acquire(context.Background(), 3, nil, recs)
+	_, _, rel2 := p.acquire(context.Background(), 3, nil, recs)
 	defer rel2()
 	dials, closed := d.counts()
 	if closed != 1 {
@@ -260,7 +268,7 @@ func TestPoolKeepsYoungRelayedEntries(t *testing.T) {
 	p := testPool(d, 3, 11, time.Hour)
 	recs := testRecs(t, 3)
 
-	_, rel := p.acquire(context.Background(), 3, nil, recs)
+	_, _, rel := p.acquire(context.Background(), 3, nil, recs)
 	rel()
 	p.mu.Lock()
 	for _, e := range p.entries {
@@ -268,7 +276,7 @@ func TestPoolKeepsYoungRelayedEntries(t *testing.T) {
 	}
 	p.mu.Unlock()
 
-	_, rel2 := p.acquire(context.Background(), 3, nil, recs)
+	_, _, rel2 := p.acquire(context.Background(), 3, nil, recs)
 	defer rel2()
 	if dials, closed := d.counts(); dials != 3 || closed != 0 {
 		t.Fatalf("dials %d closed %d, want 3/0 (grace not elapsed, punch may still land)", dials, closed)
@@ -280,7 +288,7 @@ func TestPoolNeverEvictsBusyRelayedEntries(t *testing.T) {
 	p := testPool(d, 3, 11, time.Hour)
 	recs := testRecs(t, 3)
 
-	held, relHold := p.acquire(context.Background(), 3, nil, recs)
+	held, _, relHold := p.acquire(context.Background(), 3, nil, recs)
 	defer relHold()
 	p.mu.Lock()
 	for _, e := range p.entries {
@@ -289,10 +297,76 @@ func TestPoolNeverEvictsBusyRelayedEntries(t *testing.T) {
 	}
 	p.mu.Unlock()
 
-	_, rel2 := p.acquire(context.Background(), 3, nil, recs)
+	_, _, rel2 := p.acquire(context.Background(), 3, nil, recs)
 	defer rel2()
 	if _, closed := d.counts(); closed != 0 {
 		t.Fatalf("closed %d, want 0 (entries carry another transfer's streams)", closed)
 	}
 	_ = held
+}
+
+func TestPoolDiscardRemovesAndCloses(t *testing.T) {
+	d := &stubDialer{}
+	p := testPool(d, 3, 11, time.Hour)
+	recs := testRecs(t, 3)
+	first, _, rel := p.acquire(context.Background(), 3, nil, recs)
+	rel()
+	p.discard(first[0])
+	if _, closed := d.counts(); closed != 1 {
+		t.Fatalf("closed %d, want 1", closed)
+	}
+	_, _, rel2 := p.acquire(context.Background(), 3, nil, recs)
+	defer rel2()
+	if dials, _ := d.counts(); dials != 4 {
+		t.Fatalf("dials %d, want 4 (discarded entry redialed)", dials)
+	}
+}
+
+// failOpen makes a stubConn refuse stream opens — the shape of a pooled
+// connection whose path went dead between transfers.
+func TestAttachZeroOnReusedEntriesDiscardsWithoutDemote(t *testing.T) {
+	d := &stubDialer{}
+	p := testPool(d, 3, 11, time.Hour)
+	recs := testRecs(t, 3)
+	c := &Client{conns: 4, log: slog.New(slog.NewTextHandler(io.Discard, nil)), pool: p}
+
+	// Warm the pool, then break every conn's stream-open path.
+	_, _, rel := p.acquire(context.Background(), 3, nil, recs)
+	rel()
+	d.mu.Lock()
+	for _, sc := range d.conns {
+		sc.failOpen = true
+	}
+	d.mu.Unlock()
+
+	streams, closeAll := c.attachExtras(context.Background(), []byte("tok"), nil, recs, 3)
+	closeAll()
+	if len(streams) != 0 {
+		t.Fatalf("attached %d, want 0", len(streams))
+	}
+	if c.demoted.Load() {
+		t.Fatal("zero-attach on reused entries must not demote")
+	}
+	p.mu.Lock()
+	n := len(p.entries)
+	p.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("pool holds %d entries, want 0 (zombies discarded)", n)
+	}
+}
+
+func TestAttachZeroOnFreshDialsDemotes(t *testing.T) {
+	d := &stubDialer{failOpenNew: true}
+	p := testPool(d, 3, 11, time.Hour)
+	recs := testRecs(t, 3)
+	c := &Client{conns: 4, log: slog.New(slog.NewTextHandler(io.Discard, nil)), pool: p}
+
+	streams, closeAll := c.attachExtras(context.Background(), []byte("tok"), nil, recs, 3)
+	closeAll()
+	if len(streams) != 0 {
+		t.Fatalf("attached %d, want 0", len(streams))
+	}
+	if !c.demoted.Load() {
+		t.Fatal("zero-attach on all-fresh dials is the topology verdict; must demote")
+	}
 }

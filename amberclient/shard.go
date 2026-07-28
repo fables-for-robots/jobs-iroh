@@ -190,8 +190,9 @@ func (c *Client) attachExtras(ctx context.Context, token []byte, ports []uint16,
 	actx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 
-	entries, release := c.pool.acquire(actx, n, ports, eps)
+	entries, fresh, release := c.pool.acquire(actx, n, ports, eps)
 	slots := make([]net.Conn, len(entries))
+	attachErrs := make([]error, len(entries))
 	var wg sync.WaitGroup
 	for ei, e := range entries {
 		wg.Add(1)
@@ -199,7 +200,7 @@ func (c *Client) attachExtras(ctx context.Context, token []byte, ports []uint16,
 			defer wg.Done()
 			stream, err := e.conn.OpenStreamConn(actx)
 			if err != nil {
-				c.log.Debug("amberclient: shard attach failed", "shard", ei, "error", err)
+				attachErrs[ei] = err
 				return
 			}
 			// The TAttach frame must land inside the budget too; once it is
@@ -210,6 +211,7 @@ func (c *Client) attachExtras(ctx context.Context, token []byte, ports []uint16,
 			}
 			err = amberiroh.WriteMsg(stream, amberiroh.Msg{Type: amberiroh.TAttach, Token: token})
 			if err != nil || actx.Err() != nil {
+				attachErrs[ei] = errors.Join(err, actx.Err())
 				CloseStream(stream)
 				return
 			}
@@ -219,13 +221,25 @@ func (c *Client) attachExtras(ctx context.Context, token []byte, ports []uint16,
 	}
 	wg.Wait()
 
+	// A failed attach on a pooled connection means it went bad between
+	// transfers (the liveness check cannot see a blackholed path until
+	// QUIC's idle timeout declares it): discard it so the next acquire
+	// redials instead of tripping over the same zombie.
+	var failed []*poolEntry
+	anyReused := false
 	var streams []net.Conn
 	var closers []func()
-	for _, s := range slots {
-		if s == nil {
+	for ei, e := range entries {
+		if !fresh[e] {
+			anyReused = true
+		}
+		if slots[ei] == nil {
+			failed = append(failed, e)
+			c.log.Warn("amberclient: shard attach failed",
+				"shard", ei, "endpoint", e.id.Short(), "reused", !fresh[e], "error", attachErrs[ei])
 			continue
 		}
-		stream := s
+		stream := slots[ei]
 		stop := context.AfterFunc(ctx, func() { _ = stream.SetDeadline(time.Now()) })
 		streams = append(streams, stream)
 		closers = append(closers, func() {
@@ -233,10 +247,19 @@ func (c *Client) attachExtras(ctx context.Context, token []byte, ports []uint16,
 			CloseStream(stream)
 		})
 	}
+	c.pool.discard(failed...)
+
 	// A cancelled transfer proves nothing about the path (mirrors
-	// retrySingle's guard) — only a live context's zero-attach does.
+	// retrySingle's guard) — only a live context's zero-attach does. And a
+	// zero-attach involving REUSED entries is a stale-pool verdict, not a
+	// topology one: the entries are discarded above and the next transfer
+	// redials, so the sticky demote stays reserved for fresh dials failing.
 	if len(streams) == 0 && ctx.Err() == nil {
-		c.demote("no shard attached within budget")
+		if anyReused {
+			c.log.Warn("amberclient: pooled shard connections failed to attach; discarded for redial")
+		} else {
+			c.demote("no shard attached within budget")
+		}
 	}
 	return streams, func() {
 		for _, cl := range closers {

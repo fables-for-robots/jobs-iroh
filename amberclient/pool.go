@@ -88,15 +88,17 @@ func newShardPool(dial poolDialer, log *slog.Logger, baseline, max int, idleTTL 
 	return &shardPool{dial: dial, log: log, baseline: baseline, max: max, idleTTL: idleTTL}
 }
 
-// acquire returns up to k live entries for one transfer and a release that
-// MUST be called when the transfer ends. Dials happen under ctx (the
-// caller's attach budget); failures reduce parallelism, exactly like a
-// failed attach always has.
-func (p *shardPool) acquire(ctx context.Context, k int, ports []uint16, eps []amberiroh.DataEndpointRec) ([]*poolEntry, func()) {
+// acquire returns up to k live entries for one transfer, a per-entry
+// freshness map (true = dialed by THIS acquire, false = reused from the
+// pool — the distinction decides whether an attach failure is a topology
+// verdict or just a stale entry), and a release that MUST be called when
+// the transfer ends. Dials happen under ctx (the caller's attach budget);
+// failures reduce parallelism, exactly like a failed attach always has.
+func (p *shardPool) acquire(ctx context.Context, k int, ports []uint16, eps []amberiroh.DataEndpointRec) ([]*poolEntry, map[*poolEntry]bool, func()) {
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
-		return nil, func() {}
+		return nil, nil, func() {}
 	}
 	p.active++
 	if p.sweep != nil {
@@ -192,6 +194,7 @@ func (p *shardPool) acquire(ctx context.Context, k int, ports []uint16, eps []am
 		}(si, i)
 	}
 	wg.Wait()
+	fresh := map[*poolEntry]bool{}
 	var lateClose []*poolEntry
 	p.mu.Lock()
 	for _, e := range dialed {
@@ -202,6 +205,7 @@ func (p *shardPool) acquire(ctx context.Context, k int, ports []uint16, eps []am
 			lateClose = append(lateClose, e)
 			continue
 		}
+		fresh[e] = true
 		p.entries = append(p.entries, e)
 	}
 	p.mu.Unlock()
@@ -245,7 +249,36 @@ func (p *shardPool) acquire(ctx context.Context, k int, ports []uint16, eps []am
 			}
 		})
 	}
-	return picked, release
+	return picked, fresh, release
+}
+
+// discard removes entries from the pool and closes them — for connections
+// that proved unusable at attach time (a hung or failed stream open on a
+// pooled conn means it went bad between transfers; the next acquire then
+// redials cleanly instead of tripping over it again).
+func (p *shardPool) discard(entries ...*poolEntry) {
+	if len(entries) == 0 {
+		return
+	}
+	drop := map[*poolEntry]bool{}
+	for _, e := range entries {
+		drop[e] = true
+	}
+	p.mu.Lock()
+	keep := p.entries[:0]
+	var closing []*poolEntry
+	for _, e := range p.entries {
+		if drop[e] {
+			closing = append(closing, e)
+			continue
+		}
+		keep = append(keep, e)
+	}
+	p.entries = keep
+	p.mu.Unlock()
+	for _, e := range closing {
+		e.close()
+	}
 }
 
 // scaleDown closes idle entries back to baseline, keeping the most

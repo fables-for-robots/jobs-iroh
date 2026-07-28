@@ -280,8 +280,8 @@ func Run(ctx context.Context, opts Options) error {
 			return recs
 		})
 		amberOnly := map[string]iroh.ProtocolHandler{
-			ALPNRunnerAmber: amberConnHandler(amberSrv),
-			ALPNAmberAdmin:  amberConnHandler(amberSrv),
+			ALPNRunnerAmber: logConns(log, "runner-amber-data", amberConnHandler(amberSrv)),
+			ALPNAmberAdmin:  logConns(log, "amber-admin-data", amberConnHandler(amberSrv)),
 		}
 		for _, dep := range deps {
 			dr, err := iroh.NewRouter(dep, amberOnly, &iroh.RouterConfig{Logger: log})
