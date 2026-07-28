@@ -21,6 +21,7 @@ import (
 
 	"github.com/jobs-build/jobs-iroh/amberiroh"
 	"github.com/tmc/go-iroh/iroh"
+	irohkey "github.com/tmc/go-iroh/key"
 	"github.com/tmc/go-iroh/netaddr"
 	"github.com/tmc/go-iroh/relay"
 
@@ -52,33 +53,42 @@ const (
 	punchAttachBudget = 8 * time.Second
 )
 
-// extraConn opens one more connection for shard i. A server that advertised
-// DataEndpoints records gets a record-authenticated dial: the dedicated
-// port (on the address the control connection reached) races the record's
-// own candidates. On a discovery-dialed client the shard endpoint binds
-// with the control dial's full stack — relay mode, net report, seeded local
-// candidates — which is what feeds QNT punch coordination, so a relay-won
-// shard upgrades to direct mid-transfer exactly like the control connection
-// did. A direct-addr client (Options.Addrs) stays bare, mirroring the
-// control dial's own direct branch. Without records, the legacy path runs:
+// dialShard opens one shard connection for pool slot i (the pool's
+// dialer). A server that advertised DataEndpoints records gets a
+// record-authenticated dial: the dedicated port (on the address the
+// control connection reached) races the record's own candidates. On a
+// discovery-dialed client the shard endpoint binds with the control dial's
+// full stack — relay mode, net report, seeded local candidates — which is
+// what feeds QNT punch coordination, so a relay-won shard upgrades to
+// direct while pooled, exactly like the control connection did. A
+// direct-addr client (Options.Addrs) stays bare, mirroring the control
+// dial's own direct branch. Without records, the legacy path runs:
 // dedicated ports under the server identity, then the control candidates.
-func (c *Client) extraConn(ctx context.Context, i int, ports []uint16, eps []amberiroh.DataEndpointRec) (*iroh.Conn, *iroh.Endpoint, error) {
+// The returned teardown closes the connection AND its endpoint; the
+// returned identity keys the pool entry.
+func (c *Client) dialShard(ctx context.Context, i int, ports []uint16, eps []amberiroh.DataEndpointRec) (shardConn, func(), irohkey.EndpointID, error) {
 	ctrlIP, haveCtrlIP := c.remoteIP()
 	id, cands, ok, terr := shardTarget(i, ctrlIP, haveCtrlIP, ports, eps, !c.punchDials)
 	if terr != nil {
-		return nil, nil, terr
+		return nil, nil, irohkey.EndpointID{}, terr
+	}
+	teardown := func(conn *iroh.Conn, ep *iroh.Endpoint) func() {
+		return func() {
+			_ = conn.Close()
+			_ = ep.Shutdown(context.Background())
+		}
 	}
 	if ok {
 		ep, err := c.bindShardEndpoint(ctx)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, irohkey.EndpointID{}, err
 		}
 		conn, err := raceConnect(ctx, ep, id, c.alpn, cands)
 		if err != nil {
 			_ = ep.Shutdown(context.WithoutCancel(ctx))
-			return nil, nil, err
+			return nil, nil, irohkey.EndpointID{}, err
 		}
-		return conn, ep, nil
+		return conn, teardown(conn, ep), id, nil
 	}
 
 	var bindOpts []iroh.Option
@@ -89,7 +99,7 @@ func (c *Client) extraConn(ctx context.Context, i int, ports []uint16, eps []amb
 	}
 	ep, err := iroh.Bind(ctx, bindOpts...)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, irohkey.EndpointID{}, err
 	}
 	if len(ports) > 0 && haveCtrlIP {
 		dctx, cancel := context.WithTimeout(ctx, dedicatedDialTimeout)
@@ -97,15 +107,15 @@ func (c *Client) extraConn(ctx context.Context, i int, ports []uint16, eps []amb
 		conn, derr := raceConnect(dctx, ep, c.id, c.alpn, cand)
 		cancel()
 		if derr == nil {
-			return conn, ep, nil
+			return conn, teardown(conn, ep), c.id, nil
 		}
 	}
 	conn, err := raceConnect(ctx, ep, c.id, c.alpn, c.cands)
 	if err != nil {
 		_ = ep.Shutdown(context.WithoutCancel(ctx))
-		return nil, nil, err
+		return nil, nil, irohkey.EndpointID{}, err
 	}
-	return conn, ep, nil
+	return conn, teardown(conn, ep), c.id, nil
 }
 
 // bindShardEndpoint binds one record-authenticated shard's endpoint.
@@ -143,45 +153,39 @@ func (c *Client) remoteIP() (netip.Addr, bool) {
 	return ip.Unmap(), true
 }
 
-// attachExtras opens up to n extra connections concurrently, attaches each
-// to the transfer token, and returns the attached streams with a closer.
-// Failures (or attaches that would miss the server's gather window — see
-// attachBudget) reduce parallelism instead of failing the transfer. Every
-// returned stream is armed with ctx cancellation exactly like the control
-// stream, so a cancelled transfer unblocks all channels. When not a single
-// shard attaches, the client demotes itself: this connection's topology
-// evidently cannot shard (relay-only path, filtered ports), and paying the
-// attach stall on every subsequent transfer would be pure waste.
+// attachExtras acquires up to n pooled shard connections, attaches one
+// fresh stream per connection to the transfer token, and returns the
+// attached streams with a closer. Connections belong to the pool and stay
+// open across transfers — the closer closes only the streams, then
+// releases the acquisition. Failures (or attaches that would miss the
+// server's gather window — see attachBudget) reduce parallelism instead of
+// failing the transfer. Every returned stream is armed with ctx
+// cancellation exactly like the control stream, so a cancelled transfer
+// unblocks all channels. When not a single shard attaches, the client
+// demotes itself: this connection's topology evidently cannot shard
+// (relay-only path, filtered ports), and paying the attach stall on every
+// subsequent transfer would be pure waste.
 func (c *Client) attachExtras(ctx context.Context, token []byte, ports []uint16, eps []amberiroh.DataEndpointRec, n int) ([]net.Conn, func()) {
+	if n <= 0 {
+		return nil, func() {}
+	}
 	budget := attachBudget
 	if len(eps) > 0 && c.punchDials {
 		budget = punchAttachBudget
 	}
-	type extra struct {
-		stream net.Conn
-		close  func()
-	}
-	slots := make([]*extra, n)
-	var wg sync.WaitGroup
-	for i := range n {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			actx, cancel := context.WithTimeout(ctx, budget)
-			defer cancel()
+	actx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
 
-			conn, ep, err := c.extraConn(actx, i, ports, eps)
+	entries, release := c.pool.acquire(actx, n, ports, eps)
+	slots := make([]net.Conn, len(entries))
+	var wg sync.WaitGroup
+	for ei, e := range entries {
+		wg.Add(1)
+		go func(ei int, e *poolEntry) {
+			defer wg.Done()
+			stream, err := e.conn.OpenStreamConn(actx)
 			if err != nil {
-				c.log.Debug("amberclient: shard attach failed", "shard", i, "error", err)
-				return
-			}
-			teardown := func() {
-				_ = conn.Close()
-				_ = ep.Shutdown(context.WithoutCancel(ctx))
-			}
-			stream, err := conn.OpenStreamConn(actx)
-			if err != nil {
-				teardown()
+				c.log.Debug("amberclient: shard attach failed", "shard", ei, "error", err)
 				return
 			}
 			// The TAttach frame must land inside the budget too; once it is
@@ -193,36 +197,38 @@ func (c *Client) attachExtras(ctx context.Context, token []byte, ports []uint16,
 			err = amberiroh.WriteMsg(stream, amberiroh.Msg{Type: amberiroh.TAttach, Token: token})
 			if err != nil || actx.Err() != nil {
 				CloseStream(stream)
-				teardown()
 				return
 			}
 			_ = stream.SetWriteDeadline(time.Time{})
-			stop := context.AfterFunc(ctx, func() { _ = stream.SetDeadline(time.Now()) })
-			slots[i] = &extra{stream: stream, close: func() {
-				stop()
-				CloseStream(stream)
-				teardown()
-			}}
-		}(i)
+			slots[ei] = stream
+		}(ei, e)
 	}
 	wg.Wait()
+
 	var streams []net.Conn
 	var closers []func()
-	for _, e := range slots {
-		if e != nil {
-			streams = append(streams, e.stream)
-			closers = append(closers, e.close)
+	for _, s := range slots {
+		if s == nil {
+			continue
 		}
+		stream := s
+		stop := context.AfterFunc(ctx, func() { _ = stream.SetDeadline(time.Now()) })
+		streams = append(streams, stream)
+		closers = append(closers, func() {
+			stop()
+			CloseStream(stream)
+		})
 	}
 	// A cancelled transfer proves nothing about the path (mirrors
 	// retrySingle's guard) — only a live context's zero-attach does.
-	if len(streams) == 0 && n > 0 && ctx.Err() == nil {
+	if len(streams) == 0 && ctx.Err() == nil {
 		c.demote("no shard attached within budget")
 	}
 	return streams, func() {
 		for _, cl := range closers {
 			cl()
 		}
+		release()
 	}
 }
 

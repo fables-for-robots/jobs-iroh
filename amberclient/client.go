@@ -71,12 +71,36 @@ type Options struct {
 	// sharding. A server without sharding support falls back to the
 	// single control stream.
 	Conns int
+	// PoolMax caps the client's TOTAL connections (control included) as
+	// concurrent transfers grow the shard pool. 0 means DefaultPoolMax;
+	// values are clamped to [Conns, 17]. At rest the pool shrinks back to
+	// Conns total.
+	PoolMax int
 	// Logger receives client logs; nil means slog.Default().
 	Logger *slog.Logger
 }
 
 // DefaultConns is the connections per transfer when Options.Conns is 0.
 const DefaultConns = 4
+
+// DefaultPoolMax is the total-connection cap when Options.PoolMax is 0.
+const DefaultPoolMax = 12
+
+// poolIdleTTL is how long a client sits with no active transfer before
+// the shard pool shrinks back to baseline.
+const poolIdleTTL = 90 * time.Second
+
+// clampPoolMax maps Options.PoolMax onto the usable range: at least the
+// per-transfer width, at most control + maxDataConns-sized pool.
+func clampPoolMax(n, conns int) int {
+	switch {
+	case n == 0:
+		n = DefaultPoolMax
+	case n < conns:
+		n = conns
+	}
+	return min(n, 17)
+}
 
 // clampConns maps Options.Conns onto the usable range.
 func clampConns(n int) int {
@@ -134,6 +158,10 @@ type Client struct {
 	// succeeded unsharded) — every later transfer skips the shard attempt.
 	// A redial probes afresh.
 	demoted atomic.Bool
+
+	// pool owns the shard connections: punched once, reused across
+	// transfers, grown under concurrency, shrunk after idle.
+	pool *shardPool
 }
 
 // transferConns is the connection count for the next transfer: the
@@ -214,16 +242,20 @@ func Dial(ctx context.Context, o Options) (*Client, error) {
 		return nil, fmt.Errorf("amberclient: connect %s: %w", id, err)
 	}
 	log.Debug("amberclient connected", "endpoint", id.String(), "alpn", alpn)
-	return &Client{
+	c := &Client{
 		conn: conn, ep: ep, log: log,
 		id: id, alpn: alpn, cands: cands, bindAddr: o.BindAddr,
 		conns:      clampConns(o.Conns),
 		punchDials: len(o.Addrs) == 0,
-	}, nil
+	}
+	c.pool = newShardPool(c.dialShard, log, c.conns-1, clampPoolMax(o.PoolMax, c.conns)-1, poolIdleTTL)
+	return c, nil
 }
 
-// Close tears down the connection and shuts down the client endpoint.
+// Close tears down the shard pool, the control connection and the client
+// endpoint.
 func (c *Client) Close() error {
+	c.pool.drain()
 	err := c.conn.Close()
 	if serr := c.ep.Shutdown(context.Background()); serr != nil {
 		err = errors.Join(err, serr)

@@ -145,20 +145,38 @@ func (p *shardPool) acquire(ctx context.Context, k int, ports []uint16, eps []am
 	}
 	p.mu.Unlock()
 
-	for _, i := range slots {
-		conn, closeFn, id, err := p.dial(ctx, i, ports, eps)
-		if err != nil {
-			p.log.Debug("amberclient: pool dial failed", "slot", i, "error", err)
+	// Dials run in parallel — each shard's ramp (relay connect, punch) is
+	// independent, and the caller's attach budget bounds them all via ctx.
+	dialed := make([]*poolEntry, len(slots))
+	var wg sync.WaitGroup
+	for si, i := range slots {
+		wg.Add(1)
+		go func(si, i int) {
+			defer wg.Done()
+			conn, closeFn, id, err := p.dial(ctx, i, ports, eps)
+			if err != nil {
+				p.log.Debug("amberclient: pool dial failed", "slot", i, "error", err)
+				return
+			}
+			dialed[si] = &poolEntry{conn: conn, close: closeFn, id: id, lastUsed: time.Now()}
+		}(si, i)
+	}
+	wg.Wait()
+	var lateClose []*poolEntry
+	p.mu.Lock()
+	for _, e := range dialed {
+		if e == nil {
 			continue
 		}
-		p.mu.Lock()
 		if p.closed {
-			p.mu.Unlock()
-			closeFn()
+			lateClose = append(lateClose, e)
 			continue
 		}
-		p.entries = append(p.entries, &poolEntry{conn: conn, close: closeFn, id: id, lastUsed: time.Now()})
-		p.mu.Unlock()
+		p.entries = append(p.entries, e)
+	}
+	p.mu.Unlock()
+	for _, e := range lateClose {
+		e.close()
 	}
 
 	p.mu.Lock()
