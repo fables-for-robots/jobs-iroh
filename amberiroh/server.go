@@ -27,7 +27,8 @@ type Server struct {
 
 	// attachWait bounds how long a sharded transfer waits for the
 	// client's promised data connections before proceeding with
-	// whatever attached.
+	// whatever attached. 10s covers a punching attach — relay connect
+	// then TAttach — while gather's early exit keeps fast attaches free.
 	attachWait time.Duration
 	transfers  transfers
 	// dataPorts are the UDP ports of the extra data endpoints, offered
@@ -35,6 +36,10 @@ type Server struct {
 	// sockets (one endpoint's socket loop caps out well below a fast
 	// link).
 	dataPorts []uint16
+	// dataEndpoints, when set, snapshots the data endpoints' identities and
+	// live dial candidates for TAccept/TRef — a closure because relay and
+	// QAD candidates appear asynchronously after bind.
+	dataEndpoints func() []DataEndpointRec
 
 	mu       sync.Mutex
 	refLocks map[string]*sync.Mutex
@@ -129,12 +134,16 @@ func (t *transfers) drop(token []byte) {
 // New wires a Server over an open packstore and refstore. The caller keeps
 // ownership of both and closes them after the server stops.
 func New(log *slog.Logger, objects *packstore.Store, refs *refstore.Store) *Server {
-	return &Server{log: log, objects: objects, refs: refs, attachWait: 5 * time.Second, refLocks: map[string]*sync.Mutex{}}
+	return &Server{log: log, objects: objects, refs: refs, attachWait: 10 * time.Second, refLocks: map[string]*sync.Mutex{}}
 }
 
 // SetDataPorts records the data-endpoint ports advertised to sharding
 // clients. Call before Serve.
 func (s *Server) SetDataPorts(ports []uint16) { s.dataPorts = ports }
+
+// SetDataEndpoints installs the data-endpoint snapshot advertised to
+// sharding clients; call before Serve, like SetDataPorts.
+func (s *Server) SetDataEndpoints(f func() []DataEndpointRec) { s.dataEndpoints = f }
 
 // lockRef serializes ref commits per name so compare-and-swap is
 // race-free under concurrent pushes. Entries are never removed; the map
@@ -311,7 +320,11 @@ func (s *Server) shardChannels(rw io.ReadWriter, dataConns int) ([]io.ReadWriter
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := WriteMsg(rw, Msg{Type: TAccept, Token: token, DataPorts: s.dataPorts}); err != nil {
+	accept := Msg{Type: TAccept, Token: token, DataPorts: s.dataPorts}
+	if s.dataEndpoints != nil {
+		accept.DataEndpoints = s.dataEndpoints()
+	}
+	if err := WriteMsg(rw, accept); err != nil {
 		s.transfers.drop(token)
 		return nil, nil, err
 	}
@@ -378,6 +391,9 @@ func (s *Server) handlePull(rw io.ReadWriter, m Msg) error {
 		}
 		ref.Token = token
 		ref.DataPorts = s.dataPorts
+		if s.dataEndpoints != nil {
+			ref.DataEndpoints = s.dataEndpoints()
+		}
 	}
 	if err := WriteMsg(rw, ref); err != nil {
 		if token != nil {
