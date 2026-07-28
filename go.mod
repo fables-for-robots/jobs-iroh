@@ -115,3 +115,5 @@ require (
 	gotest.tools/v3 v3.5.2 // indirect
 	lukechampine.com/blake3 v1.4.1 // indirect
 )
+
+replace github.com/tmc/go-iroh => github.com/draganm/go-iroh v0.0.0-20260728000936-e5fbf541a6c6

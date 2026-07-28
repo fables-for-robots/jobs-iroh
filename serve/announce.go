@@ -187,12 +187,12 @@ func publishAddrChanges(seq iter.Seq[netaddr.EndpointAddr], pinned []netip.AddrP
 // --advertise-addr list, or the interface walk — into the endpoint's live
 // address set.
 //
-// The merge is not belt-and-braces: a net report REPLACES the endpoint's
-// external candidate set rather than extending it (go-iroh
-// setExternalNATTraversalCandidates), so everything AddExternalAddr contributed
-// is gone from Endpoint.Addr the moment the first report lands. Without
-// re-merging, the record would trade its LAN addresses for the public one
-// instead of carrying both.
+// Our go-iroh (the draganm fork) keeps AddExternalAddr-pinned addresses apart
+// from net-report-discovered ones, so Endpoint.Addr already carries both. The
+// merge stays anyway: it makes the published record's completeness a property
+// of THIS code rather than of the library's internal candidate bookkeeping,
+// which upstream once got wrong (a landing report replaced the whole set,
+// silently trading the LAN addresses for the public one).
 func pinnedAddr(live netaddr.EndpointAddr, pinned []netip.AddrPort) netaddr.EndpointAddr {
 	for _, ap := range pinned {
 		live = live.WithIP(ap)

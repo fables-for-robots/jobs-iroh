@@ -17,11 +17,11 @@ func addrSet(addrs ...netaddr.TransportAddr) netaddr.EndpointAddr {
 	return netaddr.NewEndpointAddr(irohkey.EndpointID{}, addrs...)
 }
 
-// TestPinnedAddrKeepsDiscoveredAndPinned covers the whole point of pinning:
-// go-iroh's net report REPLACES the endpoint's external candidate set when it
-// lands, dropping everything announce contributed via AddExternalAddr. The
-// live set then carries only the discovered public mapping; merging the pinned
-// list back in is what keeps LAN peers resolvable.
+// TestPinnedAddrKeepsDiscoveredAndPinned covers the merge guarantee: whatever
+// the endpoint's live address set holds, the published record also carries
+// every pinned address. (Upstream go-iroh once dropped AddExternalAddr
+// contributions when a net report landed; our fork fixed that, but the record's
+// completeness must not depend on library internals.)
 func TestPinnedAddrKeepsDiscoveredAndPinned(t *testing.T) {
 	// What ep.Addr() looks like after a net report replaced the candidates:
 	// wildcard bind + relay + the QAD-discovered public mapping.
