@@ -1,6 +1,7 @@
 package amberiroh
 
 import (
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"strings"
@@ -192,5 +193,82 @@ func TestKeyCodec(t *testing.T) {
 	}
 	if _, err := decodeKeys([][]byte{{1, 2, 3}}); err == nil {
 		t.Fatal("short key must fail")
+	}
+}
+
+var lengthKeySeq uint32
+
+// lengthKey builds a distinct key whose embedded logical length is n.
+func lengthKey(t *testing.T, n uint64) key.Key {
+	t.Helper()
+	lengthKeySeq++
+	var h [key.Size]byte
+	binary.BigEndian.PutUint32(h[:4], lengthKeySeq)
+	k, err := key.NewFromHash(key.Blob, n, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return k
+}
+
+func TestDealWantsProportionalToWeights(t *testing.T) {
+	var wants []key.Key
+	for range 100 {
+		wants = append(wants, lengthKey(t, 1000))
+	}
+	shards := dealWants(wants, []int64{3000, 1000})
+	if len(shards) != 2 {
+		t.Fatalf("shards %d, want 2", len(shards))
+	}
+	total := len(shards[0]) + len(shards[1])
+	if total != 100 {
+		t.Fatalf("dealt %d keys, want 100", total)
+	}
+	// 3:1 weights over uniform keys: the fast channel gets ~75, slow ~25.
+	if len(shards[0]) < 65 || len(shards[0]) > 85 {
+		t.Fatalf("fast shard got %d of 100, want ~75", len(shards[0]))
+	}
+}
+
+func TestDealWantsZeroWeightsFallBackToEven(t *testing.T) {
+	var wants []key.Key
+	for range 10 {
+		wants = append(wants, lengthKey(t, 100))
+	}
+	shards := dealWants(wants, []int64{0, 0})
+	if len(shards[0]) != 5 || len(shards[1]) != 5 {
+		t.Fatalf("zero weights: %d/%d, want 5/5", len(shards[0]), len(shards[1]))
+	}
+}
+
+func TestDealWantsSingleChannel(t *testing.T) {
+	wants := []key.Key{lengthKey(t, 1), lengthKey(t, 2)}
+	shards := dealWants(wants, []int64{7})
+	if len(shards) != 1 || len(shards[0]) != 2 {
+		t.Fatalf("single channel must carry everything")
+	}
+}
+
+func TestDealWantsCoversAllKeysOnce(t *testing.T) {
+	var wants []key.Key
+	for i := range 31 {
+		wants = append(wants, lengthKey(t, uint64(i+1)*17))
+	}
+	shards := dealWants(wants, []int64{5, 0, 2})
+	seen := map[key.Key]int{}
+	n := 0
+	for _, sh := range shards {
+		for _, k := range sh {
+			seen[k]++
+			n++
+		}
+	}
+	if n != 31 {
+		t.Fatalf("dealt %d keys, want 31", n)
+	}
+	for k, c := range seen {
+		if c != 1 {
+			t.Fatalf("key %s dealt %d times", k, c)
+		}
 	}
 }

@@ -181,6 +181,12 @@ func Receive(channels []io.ReadWriter, st *packstore.Store, root key.Key, jobs i
 		return n
 	}
 	frontier := []key.Key{root}
+	// Per-channel throughput sampling for dealWants: each round's byte
+	// deltas weight the next round's shards, so channel-speed asymmetry
+	// (a relayed straggler among punched siblings) stops dictating the
+	// whole round's pace.
+	prevWire := make([]int64, len(channels))
+	weights := make([]int64, len(channels))
 	for {
 		wants, err := Wants(st, frontier, jobs)
 		if err != nil {
@@ -202,7 +208,11 @@ func Receive(channels []io.ReadWriter, st *packstore.Store, root key.Key, jobs i
 			return stats, nil
 		}
 
-		shards := shardWants(wants, len(channels))
+		for i, cr := range crs {
+			weights[i] = cr.n - prevWire[i]
+			prevWire[i] = cr.n
+		}
+		shards := dealWants(wants, weights)
 		type active struct {
 			idx     int
 			packSrc io.Reader
@@ -325,6 +335,46 @@ func shardWants(wants []key.Key, n int) [][]key.Key {
 	shards := make([][]key.Key, n)
 	for i, k := range wants {
 		shards[i%n] = append(shards[i%n], k)
+	}
+	return shards
+}
+
+// dealWants distributes wants across len(weights) shards proportionally to
+// the weights — observed per-channel throughput, so a slow channel (say, a
+// shard stuck on the relay while its siblings punched) stops being the
+// per-round straggler every other channel barriers on. Keys are weighed by
+// their embedded logical lengths; each key goes to the channel with the
+// lowest assigned-bytes-to-weight ratio (ties to the lower index).
+// Non-positive weights are floored to 1 so no channel is locked out — it
+// keeps a probe-sized share and earns its weight back.
+func dealWants(wants []key.Key, weights []int64) [][]key.Key {
+	n := len(weights)
+	shards := make([][]key.Key, n)
+	if n == 1 {
+		shards[0] = wants
+		return shards
+	}
+	w := make([]float64, n)
+	for i, wt := range weights {
+		if wt < 1 {
+			wt = 1
+		}
+		w[i] = float64(wt)
+	}
+	assigned := make([]float64, n)
+	for _, k := range wants {
+		best := 0
+		for i := 1; i < n; i++ {
+			if assigned[i]/w[i] < assigned[best]/w[best] {
+				best = i
+			}
+		}
+		bytes := float64(k.Length())
+		if bytes < 1 {
+			bytes = 1
+		}
+		assigned[best] += bytes
+		shards[best] = append(shards[best], k)
 	}
 	return shards
 }
