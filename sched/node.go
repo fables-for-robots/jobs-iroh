@@ -695,11 +695,14 @@ func (s *Sched) applyRecipeLabelLocked(n *node, refs []wire.RefProposal) {
 		return
 	}
 	n.label = label
+	relabelled := 0
 	for d := range n.dependents {
 		if d.id.kind == wire.KindBuildValue {
 			d.label = label
+			relabelled++
 		}
 	}
+	s.log.Debug("recipe label applied", "node", n.name, "label", label, "buildvalues", relabelled)
 }
 
 // namedInput pairs a recipe-declared name with its input, for unfold-time

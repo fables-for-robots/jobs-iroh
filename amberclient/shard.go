@@ -255,7 +255,7 @@ func (c *Client) attachExtras(ctx context.Context, token []byte, ports []uint16,
 				reusedOK++
 			}
 		}
-		c.log.Info("amberclient: shards attached", "attached", len(streams), "reused", reusedOK, "failed", len(failed))
+		c.log.Debug("amberclient: shards attached", "attached", len(streams), "reused", reusedOK, "failed", len(failed))
 	}
 
 	// A cancelled transfer proves nothing about the path (mirrors
