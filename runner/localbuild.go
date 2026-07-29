@@ -222,14 +222,14 @@ func (d *developDriver) ensurePinDeps(f key.Key, p *Progress) error {
 		return err
 	}
 	for name, in := range pr.Plugins {
-		if err := d.ensureInput(in, p.Sub()); err != nil {
+		if err := d.ensureInput(in, name, p.Sub()); err != nil {
 			return fmt.Errorf("plugin %s: %w", name, err)
 		}
 	}
 	// Resolution deps are pin-stage dependencies exactly like plugins
 	// (resolution-deps design §6.3): build each before RunPin materializes it.
 	for name, in := range pr.Deps {
-		if err := d.ensureInput(in, p.Sub()); err != nil {
+		if err := d.ensureInput(in, name, p.Sub()); err != nil {
 			return fmt.Errorf("resolution dep %s: %w", name, err)
 		}
 	}
@@ -254,7 +254,7 @@ func (d *developDriver) ensureInputs(f key.Key, p *Progress) error {
 		return err
 	}
 	for _, pi := range pinned.Inputs {
-		if err := d.ensureInput(builddef.Input{Kind: pi.Kind, Definition: pi.Definition}, p.Sub()); err != nil {
+		if err := d.ensureInput(builddef.Input{Kind: pi.Kind, Definition: pi.Definition}, pi.Name, p.Sub()); err != nil {
 			return fmt.Errorf("input %s: %w", pi.Name, err)
 		}
 	}

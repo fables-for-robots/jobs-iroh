@@ -41,7 +41,7 @@ func TestEnsureInput_TreeIsNoOp(t *testing.T) {
 	}
 
 	p := NewProgress(io.Discard)
-	if err := d.ensureInput(in, p); err != nil {
+	if err := d.ensureInput(in, "", p); err != nil {
 		t.Fatalf("ensureInput for tree input returned unexpected error: %v", err)
 	}
 }

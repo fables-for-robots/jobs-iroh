@@ -54,7 +54,9 @@ type developDriver struct {
 
 // ensureInput makes one builddef.Input's value present: ingest its definition
 // (so it is readable by key), then build or import it by kind.
-func (d *developDriver) ensureInput(in builddef.Input, p *Progress) error {
+// ensureInput drives one input to done. name is the recipe-declared
+// display name for progress labels; empty falls back to key forms.
+func (d *developDriver) ensureInput(in builddef.Input, name string, p *Progress) error {
 	if _, err := d.st.IngestFile(d.ctx, in.Definition); err != nil {
 		return fmt.Errorf("ingest input definition: %w", err)
 	}
@@ -70,7 +72,7 @@ func (d *developDriver) ensureInput(in builddef.Input, p *Progress) error {
 		}
 		return d.ensureImport(k, idef, p)
 	case builddef.KindBuild:
-		return d.ensureBuild(k, p)
+		return d.ensureBuild(k, name, p)
 	case builddef.KindTree:
 		// A tree input is already-present content (a sub-build's source, a
 		// subtree of the build root). There is nothing to build or import; the
@@ -106,7 +108,7 @@ func (d *developDriver) ensureImport(k key.Key, idef importdef.Definition, p *Pr
 	// against the self-seeded refs inside RunImport; a miss fails there with a
 	// clear message.
 	if len(idef.FetcherDef) > 0 {
-		if err := d.ensureInput(builddef.Input{Kind: builddef.KindBuild, Definition: idef.FetcherDef}, p); err != nil {
+		if err := d.ensureInput(builddef.Input{Kind: builddef.KindBuild, Definition: idef.FetcherDef}, "fetcher "+idef.Fetcher, p); err != nil {
 			return fmt.Errorf("build fetcher for import: %w", err)
 		}
 	}
@@ -146,7 +148,7 @@ func importFetchLabel(idef importdef.Definition) string {
 	return s
 }
 
-func (d *developDriver) ensureBuild(k key.Key, p *Progress) error {
+func (d *developDriver) ensureBuild(k key.Key, name string, p *Progress) error {
 	node := "build|" + k.String()
 	if d.visited[node] {
 		return nil
@@ -160,7 +162,7 @@ func (d *developDriver) ensureBuild(k key.Key, p *Progress) error {
 	if _, ok, err := d.st.ResolveBuildOutput(d.ctx, k); err != nil {
 		return err
 	} else if ok {
-		p.Cached("build " + k.String() + " (build)")
+		p.Cached("build "+buildLabel(k, name)+" (build)")
 		d.visited[node] = true
 		return nil
 	}
@@ -174,10 +176,10 @@ func (d *developDriver) ensureBuild(k key.Key, p *Progress) error {
 	if err != nil {
 		return fmt.Errorf("decode build def %s: %w", k.String(), err)
 	}
-	if err := d.ensureInput(def.Source, p.Sub()); err != nil {
+	if err := d.ensureInput(def.Source, "", p.Sub()); err != nil {
 		return fmt.Errorf("build %s source: %w", k.String(), err)
 	}
-	done := p.Start("build-from " + k.String() + " (build)")
+	done := p.Start("build-from " + buildLabel(k, name) + " (build)")
 	bfOut := RunBuildFrom(d.ctx, d.st, d.rw, d.brc, k)
 	if err := outcomeErr("build-from "+k.String(), bfOut); err != nil {
 		done(err)
@@ -189,6 +191,15 @@ func (d *developDriver) ensureBuild(k key.Key, p *Progress) error {
 	}
 	d.visited[node] = true
 	return nil
+}
+
+// buildLabel renders a build step's display name: the recipe dep name
+// when known, else the def key.
+func buildLabel(k key.Key, name string) string {
+	if name != "" {
+		return name
+	}
+	return k.String()
 }
 
 // outcomeErr turns a non-success Outcome into a descriptive error.
