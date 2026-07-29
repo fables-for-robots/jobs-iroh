@@ -1,6 +1,6 @@
 # amber-store-iroh — subsystem map for the jobs-iroh port
 
-Source: `/home/dragan/fables-for-robots/amber-store-iroh` (module `github.com/jobs-build/amber-store-iroh`, Go 1.26.5, read-only).
+Source: `~/fables-for-robots/amber-store-iroh` (module `github.com/jobs-build/amber-store-iroh`, Go 1.26.5, read-only).
 All `file:line` cites are into that repo unless prefixed. go-iroh cites are into the module cache copy of
 `github.com/tmc/go-iroh@v0.0.0-20260714221401-b17af420bb03`.
 

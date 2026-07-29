@@ -5,7 +5,7 @@ Scope: `events/` (schema, Emitter, Job/OutputWriter), `wire/` (runner↔engine f
 `enginewire.go`), `sched/msg` (the post-cutover actor message set — the *actual* current
 wire vocabulary), `sched/buildactor` (log store + snapshot assembly), `console/viewtypes.go`
 (SPA view contract), `architecture/events.md`. All paths relative to
-`/home/dragan/fables-for-robots/jobs`.
+`~/fables-for-robots/jobs`.
 
 **Historical layering warning.** The repo carries TWO generations of observe/wire surface:
 
@@ -164,7 +164,7 @@ that publishes to NATS instead of HTTP-POSTing to a collector.
 must add its own framing: either a `uint32` length prefix per CBOR message, or rely on
 CBOR's self-delimiting property with a streaming `cbor.Decoder` per direction. Precedent
 in-house: the nats-iroh tunnel writes a 1-byte stream preamble so the acceptor sees the
-stream at all (`/home/dragan/fables-for-robots/nats-iroh/nats_iroh_test.go:20-24,40`).
+stream at all (`~/fables-for-robots/nats-iroh/nats_iroh_test.go:20-24,40`).
 
 Union shape (reusable pattern): numeric `Type` + one pointer field per variant,
 **append-only wire numbers** (`wire/wire.go:164-210`); `sched/msg`'s alternative is a

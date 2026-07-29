@@ -1,9 +1,9 @@
 # amber-store-core API map — embedding as the jobs-iroh CAS
 
 Source examined (read-only module cache):
-`/home/dragan/go/pkg/mod/github.com/jobs-build/amber-store-core@v0.0.0-20260720222444-a37d35fa4ecf`
+`$GOMODCACHE/github.com/jobs-build/amber-store-core@v0.0.0-20260720222444-a37d35fa4ecf`
 (all `file:line` cites below are relative to that root unless prefixed `jobs/`, which means
-`/home/dragan/fables-for-robots/jobs/`).
+`~/fables-for-robots/jobs/`).
 
 Module: `github.com/jobs-build/amber-store-core`, Go 1.26.3 (go.mod:1-3).
 Notable deps: pebble/v2 (refstore), fxamacker/cbor/v2, klauspost/compress (zstd),
@@ -346,7 +346,7 @@ Server-side push flow: accept pack stream on jobs-runner-amber → `Stage` → `
 
 draganm/amber-store's `remotesync` (jobs uses it via client HTTP) is absent from core, but
 its building blocks are all present. The algorithm to port onto iroh streams
-(reference impl: `/home/dragan/go/pkg/mod/github.com/draganm/amber-store@v0.0.0-20260625100352-a621bbdb2cf3/remotesync/{push,pull,batch}.go`):
+(reference impl: `$GOMODCACHE/github.com/draganm/amber-store@v0.0.0-20260625100352-a621bbdb2cf3/remotesync/{push,pull,batch}.go`):
 
 - **Pull** (runner ← server): resolve ref → root key; walk locally:
   `fstree.ReachableKeys` stopping at objects already present (draganm's `localMissing`
@@ -402,7 +402,7 @@ goroutine, :82-98). Store open/close pair (cmd/amber-store/store.go:17-37).
 
 ## 11. Cut-points: where draganm/amber-store leaks into jobs today
 
-Import census over `/home/dragan/fables-for-robots/jobs` (non-test): `key` ×84,
+Import census over `~/fables-for-robots/jobs` (non-test): `key` ×84,
 `client` ×21, `reference` ×11, `fstree` ×8, `remotesync` ×7, `refstore`/`packstore`/
 `amberpack` ×3 each, plus `embedded`, `daemon`, `server`, `remoteclient`, `remotes`,
 `sshsign`, `allowlist`, `grant`, `inbox`, `tarexport`, `tarextract`, `chunkers`,

@@ -1,7 +1,7 @@
 # jobs runner build machinery — subsystem map for the jobs-iroh port
 
-Source: `/home/dragan/fables-for-robots/jobs/runner` (+ `/home/dragan/fables-for-robots/jobs/amber`, the store seam).
-All paths below are relative to `/home/dragan/fables-for-robots/jobs` unless absolute.
+Source: `~/fables-for-robots/jobs/runner` (+ `~/fables-for-robots/jobs/amber`, the store seam).
+All paths below are relative to `~/fables-for-robots/jobs` unless absolute.
 
 ## 0. What is current vs. legacy (actor-scheduler cutover, 2026-07-17)
 

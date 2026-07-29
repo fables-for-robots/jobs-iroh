@@ -2,9 +2,9 @@
 
 Scope: `jobs/builddef`, `jobs/importdef`, `jobs/resources`, plus the identity plumbing they
 depend on (`jobs/amber` key derivation) and the stage/scheduler call sites that make identity a
-cross-layer invariant. All paths relative to `/home/dragan/fables-for-robots/jobs` unless noted.
+cross-layer invariant. All paths relative to `~/fables-for-robots/jobs` unless noted.
 Module-cache paths for draganm/amber-store refer to
-`/home/dragan/go/pkg/mod/github.com/draganm/amber-store@v0.0.3-0.20260630160628-b64348bb6d71`
+`$GOMODCACHE/github.com/draganm/amber-store@v0.0.3-0.20260630160628-b64348bb6d71`
 (repo pins `v0.0.4-0.20260716135919-118a9ba965a8`, go.mod:—`github.com/draganm/amber-store`; the
 key/fstree packages are stable across those revs).
 

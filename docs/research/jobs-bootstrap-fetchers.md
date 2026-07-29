@@ -1,6 +1,6 @@
 # jobs subsystem map — self-bootstrapping (embedded seed) + fetchers
 
-Source repo: `/home/dragan/fables-for-robots/jobs` (all file:line references below are relative to it).
+Source repo: `~/fables-for-robots/jobs` (all file:line references below are relative to it).
 Scope: `bootstrap/`, `fetchers/`, `fetchers.toml`, `scripts/gen-seed.sh`,
 `docs/superpowers/specs/2026-07-10-recipe-declared-fetchers-design.md`, `architecture/bootstrap.md`.
 Purpose: implementation map for porting this subsystem into jobs-iroh (amber-store-core CAS, single

@@ -1,6 +1,6 @@
 # jobs end-user CLI subsystem map (`internal/jobscli` + `cmd/`)
 
-Source: `/home/dragan/fables-for-robots/jobs` (read-only survey, 2026-07-22, post actor-scheduler cutover).
+Source: `~/fables-for-robots/jobs` (read-only survey, 2026-07-22, post actor-scheduler cutover).
 All paths below are relative to that repo unless absolute. This maps what **jobs-iroh's `jobs-client`
 must replicate**: local build (`run`), `develop`, `image`, `remote-build`, `status`, plus the store
 layout, the local scheduler, and the remote flow. Port cut-points (draganm/amber-store leakage) are

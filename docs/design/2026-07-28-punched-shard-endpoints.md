@@ -18,7 +18,7 @@ why:
 
 ```
 09:50:32 WARN server connection goes through a relay …    link=store
-09:50:37 INFO server connection is direct  addr=ip:31.165.170.159:40968
+09:50:37 INFO server connection is direct  addr=ip:203.0.113.7:40968
 09:51:10 INFO amberclient: sharded transfers disabled for this connection
               reason="no shard attached within budget"
 ```

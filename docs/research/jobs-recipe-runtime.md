@@ -3,7 +3,7 @@
 Scope: `jobs/recipe` (the hermetic Starlark runtime) + `jobs/plugins/goplugin` (the worked plugin
 example), plus the exact runner-side call seam (`jobs/runner/buildeval.go` etc.) and the
 `builddef`/`importdef` schemas the runtime constructs. All paths relative to
-`/home/dragan/fables-for-robots/jobs` unless absolute. Goal: a fresh engineer can re-implement the
+`~/fables-for-robots/jobs` unless absolute. Goal: a fresh engineer can re-implement the
 port so `BUILD.jobs` files from `github.com/jobs-build/examples` evaluate identically on
 amber-store-core.
 

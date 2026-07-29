@@ -58,7 +58,7 @@ reach, relocate `SendPack` to test scope, then repoint 9 import lines across
 - [ ] **Step 1: Copy the five source files**
 
 ```bash
-cd /home/dragan/fables-for-robots/jobs-iroh
+cd ~/jobs-iroh
 mkdir -p amberiroh
 U=../amber-store-iroh
 cp $U/protocol/protocol.go   amberiroh/protocol.go
@@ -71,7 +71,7 @@ cp $U/relaymode/relaymode.go amberiroh/relaymode.go
 - [ ] **Step 2: Copy the six test files**
 
 ```bash
-cd /home/dragan/fables-for-robots/jobs-iroh
+cd ~/jobs-iroh
 U=../amber-store-iroh
 cp $U/protocol/protocol_test.go  amberiroh/protocol_test.go
 cp $U/protocol/pack_test.go      amberiroh/pack_test.go
@@ -87,7 +87,7 @@ Every file (source and test) currently declares `package protocol`,
 `package wantsync`, `package server`, or `package relaymode`.
 
 ```bash
-cd /home/dragan/fables-for-robots/jobs-iroh/amberiroh
+cd ~/jobs-iroh/amberiroh
 sed -i -E 's|^package (protocol|wantsync|server|relaymode)$|package amberiroh|' *.go
 grep -h '^package ' *.go | sort -u   # expect exactly: package amberiroh
 ```
@@ -98,7 +98,7 @@ Cross-package references become bare identifiers, and the imports that
 provided them disappear.
 
 ```bash
-cd /home/dragan/fables-for-robots/jobs-iroh/amberiroh
+cd ~/jobs-iroh/amberiroh
 # remove self-imports
 sed -i '/"github.com\/jobs-build\/amber-store-iroh\/\(protocol\|wantsync\|relaymode\|server\)"/d' *.go
 # drop qualifiers
@@ -156,7 +156,7 @@ the zero-copy push path `amberclient` uses.
 Then update the five call sites, all now in-package:
 
 ```bash
-cd /home/dragan/fables-for-robots/jobs-iroh/amberiroh
+cd ~/jobs-iroh/amberiroh
 sed -i -E 's/\bSendPack\(/sendPack(/g' pack_test.go server_test.go loop_test.go
 # SendPackRecords must NOT be renamed - verify:
 grep -n 'sendPackRecords' *.go   # expect: no output
@@ -165,7 +165,7 @@ grep -n 'sendPackRecords' *.go   # expect: no output
 - [ ] **Step 8: Format**
 
 ```bash
-cd /home/dragan/fables-for-robots/jobs-iroh
+cd ~/jobs-iroh
 nix develop -c gofmt -w amberiroh/
 ```
 
@@ -173,7 +173,7 @@ nix develop -c gofmt -w amberiroh/
 
 Run:
 ```bash
-cd /home/dragan/fables-for-robots/jobs-iroh
+cd ~/jobs-iroh
 nix develop -c bash -c 'export GOPRIVATE="github.com/jobs-build/*"; \
   go build ./amberiroh/... && go vet ./amberiroh/... && go test ./amberiroh/...'
 ```
@@ -185,7 +185,7 @@ make them pass.
 - [ ] **Step 10: Commit**
 
 ```bash
-cd /home/dragan/fables-for-robots/jobs-iroh
+cd ~/jobs-iroh
 git add amberiroh/
 git commit -m "amberiroh: vendor amber-store-iroh as one in-tree package
 
@@ -220,7 +220,7 @@ All six upstream test files move with assertions unchanged."
 - [ ] **Step 1: Rewrite imports and qualifiers**
 
 ```bash
-cd /home/dragan/fables-for-robots/jobs-iroh
+cd ~/jobs-iroh
 FILES="amberclient/client.go amberclient/shard.go runnerd/sync.go \
 registryd/sync.go serve/serve.go serve/announce.go serve/serve_test.go"
 
@@ -239,7 +239,7 @@ each file by hand (keep one).
 
 Verify:
 ```bash
-cd /home/dragan/fables-for-robots/jobs-iroh
+cd ~/jobs-iroh
 for f in amberclient/client.go amberclient/shard.go; do
   echo -n "$f: "; grep -c 'jobs-iroh/amberiroh' $f
 done   # expect 1 each
@@ -248,7 +248,7 @@ done   # expect 1 each
 - [ ] **Step 3: Drop the dependency and tidy**
 
 ```bash
-cd /home/dragan/fables-for-robots/jobs-iroh
+cd ~/jobs-iroh
 nix develop -c bash -c 'export GOPRIVATE="github.com/jobs-build/*"; \
   gofmt -w . && go mod edit -droprequire=github.com/jobs-build/amber-store-iroh && go mod tidy'
 ```
@@ -257,7 +257,7 @@ nix develop -c bash -c 'export GOPRIVATE="github.com/jobs-build/*"; \
 
 Run:
 ```bash
-cd /home/dragan/fables-for-robots/jobs-iroh
+cd ~/jobs-iroh
 grep -c 'amber-store-iroh' go.mod go.sum
 ```
 Expected: `go.mod:0` and `go.sum:0`. A non-zero count means something still
@@ -267,7 +267,7 @@ imports it and `go mod tidy` put it back — the goal has silently failed.
 
 Run:
 ```bash
-cd /home/dragan/fables-for-robots/jobs-iroh
+cd ~/jobs-iroh
 nix develop -c bash -c 'export GOPRIVATE="github.com/jobs-build/*"; \
   go build ./... && go vet ./... && gofmt -l . && go test ./...'
 ```
@@ -278,7 +278,7 @@ Expected: build and vet clean, `gofmt -l` prints nothing, all 31 packages
 
 Run:
 ```bash
-cd /home/dragan/fables-for-robots/jobs-iroh
+cd ~/jobs-iroh
 nix develop -c bash -c 'export GOPRIVATE="github.com/jobs-build/*"; \
   go run golang.org/x/tools/cmd/deadcode@latest -filter amberiroh ./cmd/...'
 ```
@@ -288,7 +288,7 @@ Expected: no output (previously reported `SendPack`, `Server.Serve`,
 - [ ] **Step 7: Commit**
 
 ```bash
-cd /home/dragan/fables-for-robots/jobs-iroh
+cd ~/jobs-iroh
 git add -A
 git commit -m "Drop the amber-store-iroh dependency
 
@@ -324,7 +324,7 @@ In `CLAUDE.md`, insert after the `amberclient/` row:
 
 Run:
 ```bash
-cd /home/dragan/fables-for-robots/jobs-iroh
+cd ~/jobs-iroh
 grep -n 'amber-store-iroh' README.md CLAUDE.md
 ```
 Update any line that describes amber-store-iroh as a dependency. Leave
@@ -334,7 +334,7 @@ record.
 - [ ] **Step 3: Commit**
 
 ```bash
-cd /home/dragan/fables-for-robots/jobs-iroh
+cd ~/jobs-iroh
 git add CLAUDE.md README.md
 git commit -m "docs: amberiroh package map entry, drop amber-store-iroh as a dependency"
 ```
@@ -361,7 +361,7 @@ This is the **only** change in the release commit.
 
 Run:
 ```bash
-cd /home/dragan/fables-for-robots/jobs-iroh
+cd ~/jobs-iroh
 nix develop -c bash -c 'export GOPRIVATE="github.com/jobs-build/*"; \
   go build ./... && go run ./cmd/jobs-server --version'
 ```
@@ -370,7 +370,7 @@ Expected: version string contains `0.13.0`.
 - [ ] **Step 3: Commit, tag, push**
 
 ```bash
-cd /home/dragan/fables-for-robots/jobs-iroh
+cd ~/jobs-iroh
 git add version/version.go
 git commit -m "Release v0.13.0: jobs-build org, amberiroh in-tree"
 git tag v0.13.0
@@ -383,7 +383,7 @@ git push origin v0.13.0
 Body uses bold lead sentences in prose, matching prior releases.
 
 ```bash
-cd /home/dragan/fables-for-robots/jobs-iroh
+cd ~/jobs-iroh
 nix develop -c gh release create v0.13.0 --verify-tag \
   --repo jobs-build/jobs-iroh \
   --title "v0.13.0 — jobs-build org, amberiroh in-tree" \
@@ -404,7 +404,7 @@ EOF
 
 Run:
 ```bash
-D=$(mktemp -d); cd /home/dragan/fables-for-robots/jobs-iroh
+D=$(mktemp -d); cd ~/jobs-iroh
 nix develop -c bash -c "cd $D && export GOPRIVATE='github.com/jobs-build/*' \
   && export GOMODCACHE=$D/mc && go mod init t >/dev/null \
   && go get github.com/jobs-build/jobs-iroh@v0.13.0 && echo TAG_RESOLVES"
@@ -431,7 +431,7 @@ running Step 2.
 A dirty tree flips Go's `vcs.modified` stamp, so verify cleanliness first.
 
 ```bash
-cd /home/dragan/fables-for-robots/jobs-iroh
+cd ~/jobs-iroh
 git status --porcelain    # must be empty
 nix develop -c bash -c 'export GOPRIVATE="github.com/jobs-build/*"
   CGO_ENABLED=0 GOARCH=arm64 go build -o deploy/jobs-registry/jobs-registry-arm64 ./cmd/jobs-registry
@@ -442,9 +442,9 @@ ls -l deploy/jobs-registry/jobs-registry-*
 - [ ] **Step 2: Buildx multi-arch push**
 
 ```bash
-cd /home/dragan/fables-for-robots/jobs-iroh
+cd ~/jobs-iroh
 REV=$(git rev-parse HEAD)
-sudo docker --config /home/dragan/.docker buildx build \
+sudo docker --config ~/.docker buildx build \
   --builder jobs-multi \
   --platform linux/amd64,linux/arm64 \
   --provenance=false --sbom=false \
@@ -465,8 +465,8 @@ image still advertises `fables-for-robots`.
 - [ ] **Step 3: Verify the manifest list and clean up**
 
 ```bash
-sudo docker --config /home/dragan/.docker buildx imagetools inspect dmilhdef/jobs-registry:v0.13.0
-rm -f /home/dragan/fables-for-robots/jobs-iroh/deploy/jobs-registry/jobs-registry-{amd64,arm64}
+sudo docker --config ~/.docker buildx imagetools inspect dmilhdef/jobs-registry:v0.13.0
+rm -f ~/jobs-iroh/deploy/jobs-registry/jobs-registry-{amd64,arm64}
 ```
 Expected: exactly two platform entries (`linux/amd64`, `linux/arm64`), no
 `unknown/unknown` attestation rows.
@@ -491,7 +491,7 @@ to v0.11.0"), so a patch bump matches convention.
 assimilate currently points at a jobs-iroh pseudo-version; move it to the tag.
 
 ```bash
-cd /home/dragan/fables-for-robots/assimilate
+cd ~/fables-for-robots/assimilate
 nix develop -c bash -c 'export GOPRIVATE="github.com/jobs-build/*"; \
   go get github.com/jobs-build/jobs-iroh@v0.13.0 && go mod tidy'
 grep jobs-iroh go.mod
@@ -502,7 +502,7 @@ Expected: `github.com/jobs-build/jobs-iroh v0.13.0` (no `-0.2026…` suffix).
 
 Run:
 ```bash
-cd /home/dragan/fables-for-robots/assimilate
+cd ~/fables-for-robots/assimilate
 grep -c 'amber-store-iroh' go.mod
 ```
 Expected: `0`. It was an indirect dep via jobs-iroh; Task 2 removed it, so it
@@ -511,7 +511,7 @@ should drop out here too.
 - [ ] **Step 3: Build, vet, test**
 
 ```bash
-cd /home/dragan/fables-for-robots/assimilate
+cd ~/fables-for-robots/assimilate
 nix develop -c bash -c 'export GOPRIVATE="github.com/jobs-build/*"; \
   gofmt -l . && go build ./... && go vet ./... && go test ./...'
 ```
@@ -523,7 +523,7 @@ Expected: `gofmt -l` silent, all 10 packages `ok`.
 
 The go.mod change invalidates the pinned `vendorHash`. Get the new one:
 ```bash
-cd /home/dragan/fables-for-robots/assimilate
+cd ~/fables-for-robots/assimilate
 nix build .#assimilate -L 2>&1 | grep -A1 'specified:'
 ```
 Copy the `got:` value into `package.nix` line 9, then re-run to confirm:
@@ -535,7 +535,7 @@ Expected: builds clean. Skipping this breaks the CI `nix build` job.
 - [ ] **Step 5: Commit, tag, push**
 
 ```bash
-cd /home/dragan/fables-for-robots/assimilate
+cd ~/fables-for-robots/assimilate
 git add -A
 git commit -m "Release v0.2.3: jobs-iroh v0.13.0
 
@@ -552,7 +552,7 @@ git push origin v0.2.3
 - [ ] **Step 6: GitHub release**
 
 ```bash
-cd /home/dragan/fables-for-robots/assimilate
+cd ~/fables-for-robots/assimilate
 nix develop -c gh release create v0.2.3 --verify-tag \
   --repo jobs-build/assimilate \
   --title "v0.2.3" \

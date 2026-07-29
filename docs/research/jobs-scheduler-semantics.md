@@ -1,6 +1,6 @@
 # JOBS Scheduler Semantics — Implementation Spec for jobs-iroh
 
-**Extracted:** 2026-07-22, from `/home/dragan/fables-for-robots/jobs` (branch state after the
+**Extracted:** 2026-07-22, from `~/fables-for-robots/jobs` (branch state after the
 2026-07-17 actor-scheduler cutover). This is a *semantics* spec: what a single-process
 goroutine+NATS reimplementation must preserve, extracted from the grain scheduler (`sched/`),
 its design spec (`docs/superpowers/specs/2026-07-17-actor-model-orchestration-design.md`), and

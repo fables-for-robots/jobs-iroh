@@ -3,7 +3,7 @@
 Scope: `jobs/sandbox` (rootless namespace jail + cgroup v2) and `jobs/amberfuse` (read-only FUSE
 tree mount), plus the runner-side code that *assembles* sandboxes (the consumers that define the
 mount contract: `/jobs/store`, `/jobs/deps`, `/build`, `/jobs/shell`). All paths relative to
-`/home/dragan/fables-for-robots/jobs` unless absolute.
+`~/fables-for-robots/jobs` unless absolute.
 
 Headline: **the `sandbox` package is 100% store-agnostic — verified** (imports are stdlib +
 `golang.org/x/sys/unix` only; the sole "amber" occurrence is a comment, `sandbox/reexec_linux.go:56`).
