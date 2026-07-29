@@ -47,3 +47,31 @@ func TestRequireLabelFirstWins(t *testing.T) {
 		t.Fatalf("empty edge name must leave label empty, got %q", unnamed.label)
 	}
 }
+
+func TestApplyRecipeLabelOverridesPipeline(t *testing.T) {
+	e := newEnv(t)
+	e.s.mu.Lock()
+	defer e.s.mu.Unlock()
+
+	var k key.Key
+	k[0] = 9
+	bv := e.s.require(wire.KindBuildValue, k, nil, testPlatform, nil, nil, "dep_name")
+	pin := e.s.require(wire.KindPin, k, nil, testPlatform, bv, nil, "dep_name")
+
+	e.s.applyRecipeLabelLocked(pin, []wire.RefProposal{
+		{Name: "some-other:ref"},
+		{Name: "build-pinned:" + k.String(), Label: "nice name"},
+	})
+	if pin.label != "nice name" {
+		t.Fatalf("pin label %q, want recipe override", pin.label)
+	}
+	if bv.label != "nice name" {
+		t.Fatalf("buildvalue dependent label %q, want recipe override", bv.label)
+	}
+
+	// No labeled build-pinned proposal: labels stay put.
+	e.s.applyRecipeLabelLocked(pin, []wire.RefProposal{{Name: "build-pinned:" + k.String()}})
+	if pin.label != "nice name" {
+		t.Fatalf("unlabeled proposal must not clear, got %q", pin.label)
+	}
+}

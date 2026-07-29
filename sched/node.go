@@ -677,6 +677,31 @@ func (s *Sched) dropInterestLocked(reqID string, target *node) {
 	s.bumpLocked()
 }
 
+// applyRecipeLabelLocked overrides the display labels of n and its
+// buildvalue dependents with the recipe's own `name =`, carried as the
+// Label on a build-pinned ref proposal (runner/buildeval.go keeps it out
+// of the Pinned bytes — never identity). Recipe names beat the dep-name /
+// dir defaults; nodes created later (the buildrun) inherit the overridden
+// buildvalue label. Callers hold s.mu.
+func (s *Sched) applyRecipeLabelLocked(n *node, refs []wire.RefProposal) {
+	label := ""
+	for _, r := range refs {
+		if r.Label != "" && strings.HasPrefix(r.Name, "build-pinned:") {
+			label = r.Label
+			break
+		}
+	}
+	if label == "" {
+		return
+	}
+	n.label = label
+	for d := range n.dependents {
+		if d.id.kind == wire.KindBuildValue {
+			d.label = label
+		}
+	}
+}
+
 // namedInput pairs a recipe-declared name with its input, for unfold-time
 // node labeling.
 type namedInput struct {

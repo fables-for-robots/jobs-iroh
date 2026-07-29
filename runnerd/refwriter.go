@@ -48,9 +48,12 @@ func (w *collectRefWriter) WriteRef(ctx context.Context, name string, k key.Key)
 
 func (w *collectRefWriter) WriteRefs(ctx context.Context, refs []runner.Ref) (runner.PushTotals, error) {
 	for _, r := range refs {
-		if err := w.WriteRef(ctx, r.Name, r.Key); err != nil {
+		if err := w.st.PutRef(ctx, r.Name, r.Key); err != nil {
 			return runner.PushTotals{}, err
 		}
+		w.mu.Lock()
+		w.refs = append(w.refs, wire.RefProposal{Name: r.Name, Key: r.Key[:], Label: r.Label})
+		w.mu.Unlock()
 	}
 	return runner.PushTotals{}, nil
 }

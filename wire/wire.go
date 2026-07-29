@@ -154,6 +154,9 @@ type Job struct {
 type RefProposal struct {
 	Name string `cbor:"name"`
 	Key  []byte `cbor:"key"`
+	// Label is an optional display name riding a build-pinned proposal (the
+	// recipe's `name =`); never identity, ignored by old servers.
+	Label string `cbor:"label,omitempty"`
 }
 
 // Rusage is the attempt's resource report.

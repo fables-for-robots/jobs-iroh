@@ -105,6 +105,7 @@ func (s *Sched) handleResult(data []byte) {
 		switch {
 		case commitErr == nil:
 			n.consecRetry, n.consecControl = 0, 0
+			s.applyRecipeLabelLocked(n, res.Refs)
 			s.nodeDoneLocked(n)
 		case isGateError(commitErr):
 			// A gate rejection means a broken or hostile runner — hard, one
