@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.22.1 — 2026-07-29
+
+- **The recipe's `name =` now overrides the default labels.** A build
+  declaring `name = "shiny demo build"` shows that name on its buildrun
+  (and pipeline) in every labeled surface, beating the dir/dep-name
+  defaults. The name rides the `build-pinned` ref proposal's new optional
+  `Label` (it was already kept out of the Pinned bytes, so KP identity is
+  untouched); the server applies it when the pin commits. Old runners
+  simply don't send it; old servers ignore it.
+- The per-transfer `shards attached` and per-pin label log lines drop to
+  Debug — steady-state client output stays clean.
+
 ## v0.22.0 — 2026-07-29
 
 - **Build progress shows names, not CAS keys.** Every surface that printed
