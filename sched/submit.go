@@ -135,7 +135,7 @@ func (s *Sched) Submit(ctx context.Context, req api.SubmitRequest) (api.Submitte
 	// consults s.requests, so the very first enqueue already carries the
 	// request's resources.
 	s.requests[id] = r
-	r.target = s.require(wire.KindBuildValue, k, req.Def, def.Platform, nil, map[string]struct{}{id: {}})
+	r.target = s.require(wire.KindBuildValue, k, req.Def, def.Platform, nil, map[string]struct{}{id: {}}, req.Label)
 	snap := s.assembleLocked(r)
 	s.putRequestStatusLocked(r, snap)
 	s.bumpLocked()
@@ -372,6 +372,7 @@ func (s *Sched) assembleLocked(r *request) api.Snapshot {
 		}
 		nodes = append(nodes, api.NodeSnap{
 			Node:       n.name,
+			Label:      n.label,
 			Phase:      phase,
 			Gen:        n.gen,
 			Runner:     n.runner,

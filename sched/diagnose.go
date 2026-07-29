@@ -60,6 +60,7 @@ func (s *Sched) diagnoseNode(ctx context.Context, name string, maxAttempts int, 
 		nd.Platform = n.platform
 		nd.Phase = n.phase
 		nd.Gen = n.gen
+		nd.Label = n.label
 		if n.phase == wire.PhaseFailed {
 			synth = s.synthAttemptLocked(n)
 		}

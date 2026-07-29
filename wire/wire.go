@@ -207,6 +207,9 @@ type FailureRecord struct {
 	Node     string `cbor:"node"`
 	Gen      uint64 `cbor:"gen"`
 	Platform string `cbor:"platform,omitempty"`
+	// Label is the node's display-only name (recipe dep name, dir,
+	// fetcher) at failure time; optional, never identity-bearing.
+	Label string `cbor:"label,omitempty"`
 
 	Origin      string `cbor:"origin"`
 	Disposition string `cbor:"disposition"`

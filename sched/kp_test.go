@@ -320,14 +320,14 @@ func TestSubbuildCycleDetection(t *testing.T) {
 
 	// B's buildrun now requires build(defA) — bv_KA is in its dependent
 	// ancestry, closing the cycle.
-	s.requireInputLocked(runB, builddef.Input{Kind: builddef.KindBuild, Definition: defA})
+	s.requireInputLocked(runB, builddef.Input{Kind: builddef.KindBuild, Definition: defA}, "")
 	phase, summary := runB.phase, runB.errSummary
 	_, cycleNodeCreated := s.nodes[nodeID{kind: wire.KindBuildValue, key: kA}]
 	cycleNodeIsBvA := s.nodes[nodeID{kind: wire.KindBuildValue, key: kA}] == bvA
 
 	// Control: requiring an UNRELATED build input from the intact runA joins
 	// normally and fails nothing.
-	s.requireInputLocked(runA, builddef.Input{Kind: builddef.KindBuild, Definition: defC})
+	s.requireInputLocked(runA, builddef.Input{Kind: builddef.KindBuild, Definition: defC}, "")
 	_, unrelatedCreated := s.nodes[nodeID{kind: wire.KindBuildValue, key: kC}]
 	phaseA := runA.phase
 	s.mu.Unlock()

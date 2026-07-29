@@ -28,6 +28,7 @@ func (s *Sched) recordFailureLocked(n *node, res *wire.Result, origin, dispositi
 		Node:        n.name,
 		Gen:         n.gen,
 		Platform:    n.platform,
+		Label:       n.label,
 		Origin:      origin,
 		Disposition: disposition,
 		ErrSummary:  summary,

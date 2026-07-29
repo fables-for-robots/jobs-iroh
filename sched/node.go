@@ -49,6 +49,9 @@ type node struct {
 	pinnedRes resources.Resources    // buildrun: Pinned.Resources
 	caches    []builddef.PinnedCache // buildrun: Pinned.Caches (gate ground truth)
 	pinInputs []builddef.Input       // pin: plugins ∪ resolution deps (stable order)
+	// label is the node's display-only name: the recipe dep name (or dir /
+	// fetcher) it was first required under. Never part of identity.
+	label string
 	runInputs []builddef.Input       // buildrun: Pinned.Inputs
 
 	// Failure/retry accounting.
@@ -99,7 +102,7 @@ func resKind(kind string) string {
 // doneness fast-path, unfold its deps, and enqueue it if ready. def and
 // platform fill missing node fields, never overwrite. extra is additional
 // request-id interest (submit targets). Callers hold s.mu.
-func (s *Sched) require(kind string, k key.Key, def []byte, platform string, parent *node, extra map[string]struct{}) *node {
+func (s *Sched) require(kind string, k key.Key, def []byte, platform string, parent *node, extra map[string]struct{}, label string) *node {
 	id := nodeID{kind: kind, key: k}
 	n, existed := s.nodes[id]
 	if !existed {
@@ -119,6 +122,9 @@ func (s *Sched) require(kind string, k key.Key, def []byte, platform string, par
 	}
 	if n.platform == "" {
 		n.platform = platform
+	}
+	if n.label == "" {
+		n.label = label
 	}
 	if parent != nil {
 		if _, dup := parent.deps[n]; !dup {
@@ -221,13 +227,16 @@ func (s *Sched) unfoldLocked(n *node) {
 		if def.Platform != "" {
 			n.platform = def.Platform
 		}
+		if n.label == "" {
+			n.label = "fetch " + def.Fetcher
+		}
 		if len(def.FetcherDef) > 0 {
 			fk, err := (builddef.Input{Kind: builddef.KindBuild, Definition: def.FetcherDef}).Key()
 			if err != nil {
 				s.failNodeLocked(n, "fetcher build def key: "+err.Error())
 				return
 			}
-			s.require(wire.KindBuildValue, fk, def.FetcherDef, n.platform, n, nil)
+			s.require(wire.KindBuildValue, fk, def.FetcherDef, n.platform, n, nil, "fetcher "+def.Fetcher)
 		}
 
 	case wire.KindBuildFrom:
@@ -243,7 +252,10 @@ func (s *Sched) unfoldLocked(n *node) {
 		if def.Platform != "" {
 			n.platform = def.Platform
 		}
-		s.requireInputLocked(n, def.Source)
+		if n.label == "" && def.Dir != "" {
+			n.label = def.Dir
+		}
+		s.requireInputLocked(n, def.Source, "")
 
 	case wire.KindPluginResolve:
 		// The F tree is self-contained — no deps.
@@ -256,9 +268,11 @@ func (s *Sched) unfoldLocked(n *node) {
 			s.failNodeLocked(n, "read build-plugin-resolved: "+err.Error())
 			return
 		}
-		n.pinInputs = sortedInputs(pr.Plugins, pr.Deps)
-		for _, in := range n.pinInputs {
-			s.requireInputLocked(n, in)
+		named := sortedNamedInputs(pr.Plugins, pr.Deps)
+		n.pinInputs = n.pinInputs[:0]
+		for _, ni := range named {
+			n.pinInputs = append(n.pinInputs, ni.In)
+			s.requireInputLocked(n, ni.In, ni.Name)
 		}
 
 	case wire.KindBuildRun:
@@ -275,7 +289,7 @@ func (s *Sched) unfoldLocked(n *node) {
 		for _, pi := range pinned.Inputs {
 			in := builddef.Input{Kind: pi.Kind, Definition: pi.Definition}
 			n.runInputs = append(n.runInputs, in)
-			s.requireInputLocked(n, in)
+			s.requireInputLocked(n, in, pi.Name)
 		}
 
 	case wire.KindBuildValue:
@@ -287,7 +301,7 @@ func (s *Sched) unfoldLocked(n *node) {
 // import/K_in, build → buildvalue/K_in (the value node — the consumer gets
 // the whole K→F pipeline and its join), tree → no node (already-present
 // content, resolved by ref).
-func (s *Sched) requireInputLocked(parent *node, in builddef.Input) {
+func (s *Sched) requireInputLocked(parent *node, in builddef.Input, label string) {
 	switch in.Kind {
 	case builddef.KindImport:
 		k, err := in.Key()
@@ -295,7 +309,7 @@ func (s *Sched) requireInputLocked(parent *node, in builddef.Input) {
 			s.failNodeLocked(parent, "input key: "+err.Error())
 			return
 		}
-		s.require(wire.KindImport, k, in.Definition, parent.platform, parent, nil)
+		s.require(wire.KindImport, k, in.Definition, parent.platform, parent, nil, label)
 	case builddef.KindBuild:
 		k, err := in.Key()
 		if err != nil {
@@ -315,7 +329,7 @@ func (s *Sched) requireInputLocked(parent *node, in builddef.Input) {
 		if d, err := builddef.DecodeDefinition(in.Definition); err == nil && d.Platform != "" {
 			platform = d.Platform
 		}
-		s.require(wire.KindBuildValue, k, in.Definition, platform, parent, nil)
+		s.require(wire.KindBuildValue, k, in.Definition, platform, parent, nil, label)
 	case builddef.KindTree:
 		// Fixed, already-present content — no work node.
 	default:
@@ -333,7 +347,7 @@ func (s *Sched) advanceBuildValueLocked(bv *node) {
 		return
 	}
 	k := bv.id.key
-	bf := s.require(wire.KindBuildFrom, k, bv.def, bv.platform, bv, nil)
+	bf := s.require(wire.KindBuildFrom, k, bv.def, bv.platform, bv, nil, bv.label)
 	if bf.phase != wire.PhaseDone {
 		return
 	}
@@ -349,11 +363,11 @@ func (s *Sched) advanceBuildValueLocked(bv *node) {
 		}
 		bv.f, bv.fResolved = f, true
 	}
-	pr := s.require(wire.KindPluginResolve, bv.f, nil, bv.platform, bv, nil)
+	pr := s.require(wire.KindPluginResolve, bv.f, nil, bv.platform, bv, nil, bv.label)
 	if pr.phase != wire.PhaseDone {
 		return
 	}
-	pin := s.require(wire.KindPin, bv.f, nil, bv.platform, bv, nil)
+	pin := s.require(wire.KindPin, bv.f, nil, bv.platform, bv, nil, bv.label)
 	if pin.phase != wire.PhaseDone {
 		return
 	}
@@ -371,7 +385,7 @@ func (s *Sched) advanceBuildValueLocked(bv *node) {
 		}
 		bv.kp, bv.kpResolved = kp, true
 	}
-	run := s.require(wire.KindBuildRun, bv.kp, nil, bv.platform, bv, nil)
+	run := s.require(wire.KindBuildRun, bv.kp, nil, bv.platform, bv, nil, bv.label)
 	if run.phase != wire.PhaseDone {
 		return
 	}
@@ -663,11 +677,18 @@ func (s *Sched) dropInterestLocked(reqID string, target *node) {
 	s.bumpLocked()
 }
 
-// sortedInputs flattens the plugin and resolution-dep maps in a stable
-// (name-sorted, plugins first) order so unfold and PullRefs are
-// deterministic.
-func sortedInputs(plugins, deps map[string]builddef.Input) []builddef.Input {
-	out := make([]builddef.Input, 0, len(plugins)+len(deps))
+// namedInput pairs a recipe-declared name with its input, for unfold-time
+// node labeling.
+type namedInput struct {
+	Name string
+	In   builddef.Input
+}
+
+// sortedNamedInputs flattens the plugin and resolution-dep maps in a
+// stable (name-sorted, plugins first) order so unfold and PullRefs are
+// deterministic, keeping the names as display labels.
+func sortedNamedInputs(plugins, deps map[string]builddef.Input) []namedInput {
+	out := make([]namedInput, 0, len(plugins)+len(deps))
 	for _, m := range []map[string]builddef.Input{plugins, deps} {
 		names := make([]string, 0, len(m))
 		for name := range m {
@@ -675,7 +696,7 @@ func sortedInputs(plugins, deps map[string]builddef.Input) []builddef.Input {
 		}
 		sort.Strings(names)
 		for _, name := range names {
-			out = append(out, m[name])
+			out = append(out, namedInput{Name: name, In: m[name]})
 		}
 	}
 	return out

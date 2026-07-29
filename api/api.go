@@ -126,6 +126,9 @@ type SubmitRequest struct {
 	Def        []byte        `cbor:"def"` // canonical builddef.Definition bytes
 	Resources  *ResourceSpec `cbor:"resources,omitempty"`
 	ScratchRef string        `cbor:"scratchRef,omitempty"` // client push ref to clean up after commit
+	// Label is a display-only name for the target (the resolved context
+	// dir); it never enters identity. Optional — absent renders as today.
+	Label string `cbor:"label,omitempty"`
 }
 
 // ResourceSpec optionally raises the target build's requirement.
@@ -158,6 +161,9 @@ type Snapshot struct {
 // (clock-skew safety, like jobs).
 type NodeSnap struct {
 	Node       string `cbor:"node"`
+	// Label is the node's display name (recipe dep name, dir, fetcher);
+	// optional and display-only.
+	Label      string `cbor:"label,omitempty"`
 	Phase      string `cbor:"phase"`
 	Gen        uint64 `cbor:"gen"`
 	Runner     string `cbor:"runner,omitempty"`
@@ -270,6 +276,8 @@ type DiagnoseReply struct {
 // NodeDiagnosis is one failing node's trail, attempts newest first.
 type NodeDiagnosis struct {
 	Node     string          `cbor:"node"`
+	Label    string          `cbor:"label,omitempty"` // display name, when known
+
 	Kind     string          `cbor:"kind"`
 	Platform string          `cbor:"platform,omitempty"`
 	Phase    string          `cbor:"phase,omitempty"` // current phase, when the node is live in memory
