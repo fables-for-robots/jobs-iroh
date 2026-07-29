@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.22.0 — 2026-07-29
+
+- **Build progress shows names, not CAS keys.** Every surface that printed
+  `buildrun_2241…` now prints the thing's name first: recipe dep names
+  (`apk_acl_libs`), build dirs (`apps/web`), fetcher specs
+  (`fetch alpine …`), and the submitted target (the resolved context dir),
+  as `name (kind:key8)` with the key kept for grepping. Applies to
+  `remote-build`/`watch` live progress and change lines, the `--logs` line
+  prefixes, `diagnose` reports (labels are stored in failure records, so
+  they survive retries and restarts), and the local `build`/`develop`
+  step lines.
+- Labels are display-only: nothing enters canonical definitions or any
+  identity, all wire additions are optional CBOR fields, old/new peers
+  interoperate rendering today's keys. Sources: `PinnedInput.Name`,
+  plugin/resolution-dep map keys, `Definition.Dir`, fetcher names, and a
+  new optional `SubmitRequest.Label` from the client.
+
 ## v0.21.0 — 2026-07-29
 
 - **Want rounds are dealt by observed per-channel throughput.** Round-robin
