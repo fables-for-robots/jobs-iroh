@@ -92,7 +92,7 @@ func renderDiagnosis(w io.Writer, reply api.DiagnoseReply) {
 		return
 	}
 	for _, nd := range reply.Nodes {
-		fmt.Fprintf(w, "\n=== node %s ===\n", nd.Node)
+		fmt.Fprintf(w, "\n=== node %s ===\n", labelNode(nd.Node, nd.Label))
 		fmt.Fprintf(w, "kind %s · platform %s", nd.Kind, orUnknown(nd.Platform))
 		if nd.Phase != "" {
 			fmt.Fprintf(w, " · current phase %s (gen %d)", nd.Phase, nd.Gen)

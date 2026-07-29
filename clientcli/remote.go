@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"os/signal"
 	"sync"
 	"syscall"
@@ -75,6 +76,16 @@ type remoteConfig struct {
 	cpu        string
 	memory     string
 	conns      int
+}
+
+// targetLabel is the display name sent with the submit: the resolved
+// context dir when the target is a subdir build, else the source root's
+// base name. Display-only — identity is unaffected.
+func (cfg *remoteConfig) targetLabel() string {
+	if cfg.dir != "" {
+		return cfg.dir
+	}
+	return filepath.Base(cfg.source)
 }
 
 func remoteBuildCmd() *cli.Command {
@@ -183,6 +194,7 @@ func (cfg *remoteConfig) run(c *cli.Context) error {
 		Def:        canon,
 		Resources:  res,
 		ScratchRef: scratch,
+		Label:      cfg.targetLabel(),
 	}, api.TSubmitted, &sub)
 	if err != nil {
 		return err
@@ -362,6 +374,16 @@ func streamWatch(ctx context.Context, bc *apiConn, requestID string, lv *liveVie
 			return snap, nil
 		}
 	}
+}
+
+// labelNode renders a node with its display label when one is known —
+// "apk_acl_libs (buildrun:22413ab6)" — and falls back to the bare
+// kind:keyprefix form otherwise.
+func labelNode(name, label string) string {
+	if label == "" {
+		return shortNode(name)
+	}
+	return label + " (" + shortNode(name) + ")"
 }
 
 // shortNode renders a node name as kind:keyprefix for one-line status output.

@@ -53,7 +53,7 @@ func snapshotBlock(snap api.Snapshot, elapsed time.Duration) []string {
 		if running > maxRunningRows {
 			continue
 		}
-		l := "  ▶ " + shortNode(n.Node)
+		l := "  ▶ " + labelNode(n.Node, n.Label)
 		if n.Phase != wire.PhaseRunning {
 			l += " · " + n.Phase
 		}
@@ -78,7 +78,7 @@ func snapshotBlock(snap api.Snapshot, elapsed time.Duration) []string {
 		if failed > maxFailedRows {
 			continue
 		}
-		l := "  ✗ " + shortNode(n.Node)
+		l := "  ✗ " + labelNode(n.Node, n.Label)
 		if n.ErrSummary != "" {
 			l += " · " + n.ErrSummary
 		}
@@ -102,7 +102,7 @@ func snapshotChangeLine(snap api.Snapshot) string {
 	var names []string
 	for _, n := range snap.Nodes {
 		if isActivePhase(n.Phase) {
-			names = append(names, shortNode(n.Node))
+			names = append(names, labelNode(n.Node, n.Label))
 		}
 	}
 	sort.Strings(names)
@@ -133,7 +133,7 @@ func watchSummary(lv *liveView, phase string, elapsed time.Duration) string {
 func failureSummary(snap api.Snapshot) string {
 	for _, n := range snap.Nodes {
 		if n.Phase == wire.PhaseFailed && n.ErrSummary != "" {
-			return shortNode(n.Node) + ": " + n.ErrSummary
+			return labelNode(n.Node, n.Label) + ": " + n.ErrSummary
 		}
 	}
 	return ""

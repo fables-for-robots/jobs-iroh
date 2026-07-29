@@ -128,7 +128,8 @@ type logTracker struct {
 
 	mu       sync.Mutex
 	active   map[string]context.CancelFunc
-	followed map[string]bool // every node ever followed, for the failure recap
+	labels   map[string]string // node → display label, from snapshots
+	followed map[string]bool   // every node ever followed, for the failure recap
 	closed   bool
 	capNoted bool
 	wg       sync.WaitGroup
@@ -138,6 +139,7 @@ func newLogTracker(ctx context.Context, open logOpener, lv *liveView) *logTracke
 	return &logTracker{
 		ctx: ctx, open: open, lv: lv,
 		active:   map[string]context.CancelFunc{},
+		labels:   map[string]string{},
 		followed: map[string]bool{},
 	}
 }
@@ -163,6 +165,9 @@ func (t *logTracker) sync(snap api.Snapshot) {
 	}
 	active := map[string]bool{}
 	for _, n := range snap.Nodes {
+		if n.Label != "" {
+			t.labels[n.Node] = n.Label
+		}
 		if isActivePhase(n.Phase) {
 			active[n.Node] = true
 		}
@@ -211,7 +216,10 @@ func (t *logTracker) followLocked(node string) {
 // ends (grace stop, watch teardown, server close). A chunk for a newer gen
 // means the attempt was retried: flush, mark, continue with the new attempt.
 func (t *logTracker) runFollower(ctx context.Context, node string) {
-	prefix := shortNode(node) + " │ "
+	t.mu.Lock()
+	label := t.labels[node]
+	t.mu.Unlock()
+	prefix := labelNode(node, label) + " │ "
 	view, next, done, err := t.open.openLogs(ctx, node, true)
 	if err != nil {
 		if ctx.Err() == nil {
