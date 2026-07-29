@@ -293,7 +293,11 @@ candidates, sharding onto the main socket. Shard connections are pooled per
 client: acquired per transfer (a fresh stream + `TAttach` each), released
 open, grown under concurrent transfers (`Conns`→`PoolMax` totals, default
 4→12) and shrunk back after ~90s idle — so the punch ramp is paid once per
-connection, not per transfer. Every pooled connection's path is logged
+connection, not per transfer. Nodes carry display-only labels — recipe dep
+names, dirs, fetcher names, the client-sent target label — assigned at
+unfold from `PinnedInput.Name`/plugin-dep map keys and surfaced through
+`NodeSnap.Label`, failure records, and the local driver's progress steps;
+labels never enter identity. Every pooled connection's path is logged
 (dial and changes), and an idle entry still relayed ~30s after its dial —
 a failed punch — is evicted and redialed at the next acquire rather than
 reused, so a relay never gets locked in. Push is
