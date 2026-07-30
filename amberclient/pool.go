@@ -1,14 +1,24 @@
 package amberclient
 
 // Shard-connection pooling (2026-07-28-pooled-shard-connections.md): the
-// punch ramp — relay connect, TAttach, ~5s riding the relay until QNT
-// lands the direct path — is paid per connection, so connections must
-// outlive transfers. TAttach binds a STREAM to a transfer token, not a
-// connection: a pooled connection serves transfer after transfer by
-// opening a fresh stream each time. The pool grows with concurrent
-// transfers, clamps at a max, and an idle sweep shrinks it back to
-// baseline; QUIC keepalive (on by default in go-iroh) keeps idle entries
-// alive, and any entry found dead at acquire is evicted and redialed.
+// punch ramp — relay connect, TAttach, riding the relay until QNT lands the
+// direct path — is paid per connection, so connections must outlive
+// transfers. TAttach binds a STREAM to a transfer token, not a connection:
+// a pooled connection serves transfer after transfer by opening a fresh
+// stream each time. The pool grows with concurrent transfers, clamps at a
+// max, and an idle sweep shrinks it back to baseline; QUIC keepalive (on by
+// default in go-iroh) keeps idle entries alive, and any entry found dead at
+// acquire is evicted and redialed.
+//
+// Relayed entries are PARKED, not evicted (2026-07-30, after field evidence
+// from the NAT'd-server fleet): punches there land in minutes, not the ~5s
+// the old relayGrace assumed, so evicting a still-relayed connection killed
+// every punch mid-ramp and locked shard traffic onto the relay forever. A
+// parked entry stays pooled and invisible to direct-only acquires until its
+// punch lands; only after punchAbandon does the pool give up and replace it
+// (in the background) for a fresh punch attempt. Growth dials likewise moved
+// off the acquire critical path: a transfer that can be served from live
+// entries never waits on a dial — only a cold pool waits, bounded by ctx.
 
 import (
 	"context"
@@ -43,11 +53,18 @@ type poolDialer func(ctx context.Context, i int, ports []uint16, eps []amberiroh
 // redial costs ~1s once per 90 transfers instead of a starved 8s attach.
 const poolEntryMaxUses = 90
 
-// relayGrace is how long a pooled entry may stay on a relay path before
-// acquire evicts and replaces it: hole punching normally lands ~5s after
-// the dial, so a connection still relayed after this long has failed its
-// punch — redialing gets a fresh attempt instead of locking the relay in.
-const relayGrace = 30 * time.Second
+// punchAbandon is how long a pooled entry may sit relayed before the pool
+// closes it and grows a replacement in the background. Parked entries are
+// invisible to direct-only acquires, so this is not about protecting
+// transfers — it is about giving up on a punch that stalled for good and
+// getting a fresh QNT attempt on a new connection. Field punches through
+// hostile NATs land in minutes, so patience is generous.
+const punchAbandon = 5 * time.Minute
+
+// poolDialTimeout bounds one background pool dial. Growth dials run outside
+// any transfer's context — the transfer that triggered them may finish
+// first — so they carry their own budget, sized like a punching attach.
+const poolDialTimeout = 8 * time.Second
 
 type poolEntry struct {
 	conn     shardConn
@@ -61,6 +78,18 @@ type poolEntry struct {
 	// conn cannot report one (test stubs). Wired from the conn itself at
 	// entry creation.
 	path func() (Path, bool)
+}
+
+// relayed reports whether the entry's connection currently rides a relay.
+// Unknown paths count as direct: the pool cannot prove they are stuck, and
+// treating them as usable matches the pre-parking behavior for test stubs
+// and snapshots taken before the transport reports a path.
+func (e *poolEntry) relayed() bool {
+	if e.path == nil {
+		return false
+	}
+	p, ok := e.path()
+	return ok && p.Relayed
 }
 
 // pathReporter is the slice of *iroh.Conn that exposes path snapshots.
@@ -81,7 +110,9 @@ type shardPool struct {
 
 	mu      sync.Mutex
 	entries []*poolEntry
-	active  int // acquire/release balance = concurrent transfers
+	dialing int           // background dials in flight
+	wake    chan struct{} // closed+replaced whenever entries/dialing change
+	active  int           // acquire/release balance = concurrent transfers
 	sweep   *time.Timer
 	closed  bool
 }
@@ -96,17 +127,51 @@ func newShardPool(dial poolDialer, log *slog.Logger, baseline, max int, idleTTL 
 	return &shardPool{dial: dial, log: log, baseline: baseline, max: max, idleTTL: idleTTL}
 }
 
+// wakeLocked signals every acquire waiting for pool state to change.
+func (p *shardPool) wakeLocked() {
+	if p.wake != nil {
+		close(p.wake)
+		p.wake = nil
+	}
+}
+
+// waitChLocked returns the channel the next state change will close.
+func (p *shardPool) waitChLocked() chan struct{} {
+	if p.wake == nil {
+		p.wake = make(chan struct{})
+	}
+	return p.wake
+}
+
+// pickableLocked counts entries a transfer in the given mode may use.
+func (p *shardPool) pickableLocked(directOnly bool) int {
+	n := 0
+	for _, e := range p.entries {
+		if directOnly && e.relayed() {
+			continue
+		}
+		n++
+	}
+	return n
+}
+
 // acquire returns up to k live entries for one transfer, a per-entry
-// freshness map (true = dialed by THIS acquire, false = reused from the
-// pool — the distinction decides whether an attach failure is a topology
-// verdict or just a stale entry), and a release that MUST be called when
-// the transfer ends. Dials happen under ctx (the caller's attach budget);
-// failures reduce parallelism, exactly like a failed attach always has.
-func (p *shardPool) acquire(ctx context.Context, k int, ports []uint16, eps []amberiroh.DataEndpointRec) ([]*poolEntry, map[*poolEntry]bool, func()) {
+// first-use map (true = this is the entry's first transfer — the
+// distinction decides whether an attach failure is a topology verdict or
+// just a stale entry), the count of live entries withheld because they are
+// parked on a relay, and a release that MUST be called when the transfer
+// ends. directOnly selects the reserve mode: only direct-path entries are
+// handed out (parked ones wait for their punch). With directOnly false —
+// the optimistic first transfer, whose DataConns promise is already on the
+// wire — relayed entries are served too, exactly as before parking existed.
+//
+// Growth dials run in the background and never block an acquire that can
+// be served from live entries; only a cold pool waits, bounded by ctx.
+func (p *shardPool) acquire(ctx context.Context, k int, directOnly bool, ports []uint16, eps []amberiroh.DataEndpointRec) ([]*poolEntry, map[*poolEntry]bool, int, func()) {
 	p.mu.Lock()
 	if p.closed {
 		p.mu.Unlock()
-		return nil, nil, func() {}
+		return nil, nil, 0, func() {}
 	}
 	p.active++
 	if p.sweep != nil {
@@ -115,9 +180,10 @@ func (p *shardPool) acquire(ctx context.Context, k int, ports []uint16, eps []am
 
 	// Evict dead connections; entries whose identity the server no longer
 	// advertises (an identity rotation means a server restart, so those
-	// connections are dead or dying); and idle entries stuck on a relay
-	// past the punch grace — reusing those would lock the relay in for
-	// every future transfer, while a redial gets a fresh punch attempt.
+	// connections are dead or dying); stream-budget rotations; and idle
+	// entries whose punch has not landed within the abandon patience —
+	// their replacement dials happen in the background, so closing here
+	// costs the transfer nothing.
 	live := p.entries[:0]
 	for _, e := range p.entries {
 		stale := e.conn.Context().Err() != nil
@@ -133,12 +199,10 @@ func (p *shardPool) acquire(ctx context.Context, k int, ports []uint16, eps []am
 		if !stale && e.streams == 0 && e.uses >= poolEntryMaxUses {
 			stale = true
 		}
-		if !stale && e.streams == 0 && e.path != nil && time.Since(e.dialed) > relayGrace {
-			if pth, ok := e.path(); ok && pth.Relayed {
-				p.log.Warn("amberclient: pooled shard connection still relayed after grace; redialing",
-					append([]any{"endpoint", e.id.Short(), "age", time.Since(e.dialed).Round(time.Second).String()}, pth.LogAttrs()...)...)
-				stale = true
-			}
+		if !stale && e.streams == 0 && time.Since(e.dialed) > punchAbandon && e.relayed() {
+			p.log.Info("amberclient: abandoning shard connection whose punch never landed; replacing",
+				"endpoint", e.id.Short(), "age", time.Since(e.dialed).Round(time.Second).String())
+			stale = true
 		}
 		if stale {
 			e.close()
@@ -151,9 +215,10 @@ func (p *shardPool) acquire(ctx context.Context, k int, ports []uint16, eps []am
 	// Grow toward the concurrency target: identities with the fewest
 	// pooled connections first, so the spread across server sockets holds.
 	target := min(p.baseline*p.active, p.max)
-	// Grow toward the target, but never dial more than this transfer can
-	// use — the next acquire keeps growing if concurrency holds.
-	need := min(target-len(p.entries), k)
+	// Never start more than this transfer could use — the next acquire
+	// keeps growing if concurrency holds — and count dials already in
+	// flight so concurrent acquires do not storm the server.
+	need := min(target-len(p.entries)-p.dialing, k)
 	perID := map[irohkey.EndpointID]int{}
 	for _, e := range p.entries {
 		perID[e.id]++
@@ -182,46 +247,40 @@ func (p *shardPool) acquire(ctx context.Context, k int, ports []uint16, eps []am
 			slots = append(slots, i)
 		}
 	}
+	p.dialing += len(slots)
+	cold := p.pickableLocked(directOnly) == 0 && p.dialing > 0
 	p.mu.Unlock()
 
-	// Dials run in parallel — each shard's ramp (relay connect, punch) is
-	// independent, and the caller's attach budget bounds them all via ctx.
-	dialed := make([]*poolEntry, len(slots))
-	var wg sync.WaitGroup
-	for si, i := range slots {
-		wg.Add(1)
-		go func(si, i int) {
-			defer wg.Done()
-			conn, closeFn, id, err := p.dial(ctx, i, ports, eps)
-			if err != nil {
-				p.log.Debug("amberclient: pool dial failed", "slot", i, "error", err)
-				return
-			}
-			e := &poolEntry{conn: conn, close: closeFn, id: id, dialed: time.Now(), lastUsed: time.Now()}
-			if pr, ok := conn.(pathReporter); ok {
-				e.path = func() (Path, bool) { return pathOf(pr.Paths()) }
-			}
-			dialed[si] = e
-		}(si, i)
+	// Dials run detached: each shard's ramp (relay connect, punch) is
+	// independent of any one transfer, and a completed connection joins
+	// the pool whether or not the acquire that wanted it is still around.
+	for _, i := range slots {
+		go p.dialSlot(i, ports, eps)
 	}
-	wg.Wait()
-	fresh := map[*poolEntry]bool{}
-	var lateClose []*poolEntry
-	p.mu.Lock()
-	for _, e := range dialed {
-		if e == nil {
-			continue
+
+	// A cold pool is the one case worth waiting for: nothing is pickable
+	// yet and dials are in flight. Wait for enough entries (or the last
+	// dial to settle, or the caller's budget) — a warm pool returns
+	// immediately with whatever is live.
+	if cold {
+		for {
+			p.mu.Lock()
+			pickable := p.pickableLocked(directOnly)
+			dialing := p.dialing
+			if pickable >= k || dialing == 0 {
+				p.mu.Unlock()
+				break
+			}
+			w := p.waitChLocked()
+			p.mu.Unlock()
+			select {
+			case <-w:
+			case <-ctx.Done():
+			}
+			if ctx.Err() != nil {
+				break
+			}
 		}
-		if p.closed {
-			lateClose = append(lateClose, e)
-			continue
-		}
-		fresh[e] = true
-		p.entries = append(p.entries, e)
-	}
-	p.mu.Unlock()
-	for _, e := range lateClose {
-		e.close()
 	}
 
 	p.mu.Lock()
@@ -232,13 +291,20 @@ func (p *shardPool) acquire(ctx context.Context, k int, ports []uint16, eps []am
 		return p.entries[a].lastUsed.After(p.entries[b].lastUsed)
 	})
 	picked := make([]*poolEntry, 0, k)
+	parked := 0
+	fresh := map[*poolEntry]bool{}
 	for _, e := range p.entries {
+		if directOnly && e.relayed() {
+			parked++
+			continue
+		}
 		if len(picked) == k {
-			break
+			continue
 		}
 		e.streams++
 		e.uses++
 		e.lastUsed = time.Now()
+		fresh[e] = e.uses == 1
 		picked = append(picked, e)
 	}
 	p.mu.Unlock()
@@ -261,7 +327,35 @@ func (p *shardPool) acquire(ctx context.Context, k int, ports []uint16, eps []am
 			}
 		})
 	}
-	return picked, fresh, release
+	return picked, fresh, parked, release
+}
+
+// dialSlot runs one background pool dial and folds the result in.
+func (p *shardPool) dialSlot(i int, ports []uint16, eps []amberiroh.DataEndpointRec) {
+	ctx, cancel := context.WithTimeout(context.Background(), poolDialTimeout)
+	defer cancel()
+	conn, closeFn, id, err := p.dial(ctx, i, ports, eps)
+	p.mu.Lock()
+	p.dialing--
+	if err != nil {
+		p.wakeLocked()
+		p.mu.Unlock()
+		p.log.Debug("amberclient: pool dial failed", "slot", i, "error", err)
+		return
+	}
+	if p.closed {
+		p.wakeLocked()
+		p.mu.Unlock()
+		closeFn()
+		return
+	}
+	e := &poolEntry{conn: conn, close: closeFn, id: id, dialed: time.Now(), lastUsed: time.Now()}
+	if pr, ok := conn.(pathReporter); ok {
+		e.path = func() (Path, bool) { return pathOf(pr.Paths()) }
+	}
+	p.entries = append(p.entries, e)
+	p.wakeLocked()
+	p.mu.Unlock()
 }
 
 // discard removes entries from the pool and closes them — for connections
@@ -294,7 +388,8 @@ func (p *shardPool) discard(entries ...*poolEntry) {
 }
 
 // scaleDown closes idle entries back to baseline, keeping the most
-// recently used and preferring distinct identities.
+// recently used, preferring direct paths over parked ones and distinct
+// identities over doubled-up sockets.
 func (p *shardPool) scaleDown() {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -302,6 +397,9 @@ func (p *shardPool) scaleDown() {
 		return
 	}
 	sort.SliceStable(p.entries, func(a, b int) bool {
+		if ra, rb := p.entries[a].relayed(), p.entries[b].relayed(); ra != rb {
+			return rb
+		}
 		return p.entries[a].lastUsed.After(p.entries[b].lastUsed)
 	})
 	seen := map[irohkey.EndpointID]bool{}
