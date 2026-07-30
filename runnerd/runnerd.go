@@ -43,6 +43,7 @@ import (
 	"github.com/jobs-build/jobs-iroh/amberclient"
 	"github.com/jobs-build/jobs-iroh/events"
 	"github.com/jobs-build/jobs-iroh/natsiroh"
+	"github.com/jobs-build/jobs-iroh/resources"
 	"github.com/jobs-build/jobs-iroh/runner"
 	"github.com/jobs-build/jobs-iroh/sandbox"
 	"github.com/jobs-build/jobs-iroh/sched"
@@ -65,8 +66,9 @@ type Options struct {
 	// DataDir holds everything the runner owns: store/ (private cache
 	// store), cache/ (fetcher cache), runner-id. Required.
 	DataDir string
-	// Size is a ladder rung (wire.Classes); empty auto-detects capacity and
-	// floors it to the largest rung that fits.
+	// Size optionally caps the runner's capacity to a ladder rung
+	// (wire.Classes); empty auto-detects the machine's capacity
+	// (cgroup-aware, reserve-adjusted) and uses all of it.
 	Size string
 	// Name is the display name announced in hello; empty uses the hostname.
 	Name string
@@ -142,7 +144,7 @@ func Run(ctx context.Context, o Options) error {
 	if platform == "" {
 		platform = runner.Platform()
 	}
-	size, err := resolveSize(o.Size, log)
+	capacity, err := resolveCapacity(o.Size, log)
 	if err != nil {
 		return err
 	}
@@ -226,7 +228,7 @@ func Run(ctx context.Context, o Options) error {
 		ID:       id,
 		Name:     name,
 		Platform: platform,
-		Size:     size,
+		Capacity: capacity,
 		Slots:    o.Slots,
 		CacheDir: cacheDir,
 	})
@@ -240,8 +242,8 @@ func Run(ctx context.Context, o Options) error {
 	sync.Warm(ctx)
 
 	log.Info("jobs-runner starting",
-		"name", name, "platform", platform, "size", size,
-		"classes", d.classes, "server", o.ServerID)
+		"name", name, "platform", platform, "capacity", capacity.String(),
+		"size", d.size, "classes", d.classes, "server", o.ServerID)
 
 	return d.run(ctx)
 }
@@ -320,7 +322,7 @@ type daemonConfig struct {
 	ID       string
 	Name     string
 	Platform string
-	Size     wire.Class
+	Capacity resources.Resources
 	Slots    int
 	CacheDir string
 }
@@ -334,7 +336,8 @@ type daemon struct {
 	id       string
 	name     string
 	platform string
-	size     wire.Class
+	capacity resources.Resources
+	size     wire.Class // display label: the biggest job class accepted
 	classes  []wire.Class
 	adm      *admission
 	cacheDir string
@@ -352,8 +355,10 @@ type daemon struct {
 }
 
 func newDaemon(cfg daemonConfig) (*daemon, error) {
-	if !cfg.Size.Valid() {
-		return nil, fmt.Errorf("invalid size class %q", cfg.Size)
+	classes := wire.ClassesWithin(cfg.Capacity)
+	if len(classes) == 0 {
+		return nil, fmt.Errorf("capacity %s fits no ladder class (smallest is %s)",
+			cfg.Capacity, wire.Classes[0])
 	}
 	js, err := jetstream.New(cfg.NC)
 	if err != nil {
@@ -372,9 +377,10 @@ func newDaemon(cfg daemonConfig) (*daemon, error) {
 		id:             cfg.ID,
 		name:           cfg.Name,
 		platform:       cfg.Platform,
-		size:           cfg.Size,
-		classes:        wire.ClassesWithin(cfg.Size.Resources()),
-		adm:            newAdmission(cfg.Size.Resources(), cfg.Slots),
+		capacity:       cfg.Capacity,
+		size:           classes[len(classes)-1],
+		classes:        classes,
+		adm:            newAdmission(cfg.Capacity, cfg.Slots),
 		cacheDir:       cfg.CacheDir,
 		helloCh:        make(chan struct{}, 1),
 		msgHBInterval:  msgHeartbeatEvery,
@@ -418,14 +424,13 @@ func (d *daemon) heartbeatLoop(ctx context.Context) error {
 }
 
 func (d *daemon) publishHello() {
-	res := d.size.Resources()
 	b := wire.MustEncode(wire.Hello{
 		ID:       d.id,
 		Name:     d.name,
 		Platform: d.platform,
 		Size:     string(d.size),
-		CPUMilli: res.CPUMilli,
-		MemBytes: res.MemBytes,
+		CPUMilli: d.capacity.CPUMilli,
+		MemBytes: d.capacity.MemBytes,
 	})
 	if err := d.nc.Publish(wire.SubjectRunnerHello, b); err != nil {
 		d.log.Warn("publish hello failed", "error", err)
@@ -604,22 +609,22 @@ func (d *daemon) publishResult(ctx context.Context, res wire.Result) error {
 	}
 }
 
-// resolveSize resolves the runner's size class: an explicit --size must be a
-// ladder rung; otherwise capacity is auto-detected (runner.DetectCapacity —
-// cgroup-aware, reserve-adjusted) and floored to the LARGEST rung that fits
-// both dimensions (ladder order breaks ties between incomparable rungs).
-func resolveSize(size string, log *slog.Logger) (wire.Class, error) {
+// resolveCapacity resolves the runner's admission capacity: an explicit
+// --size must be a ladder rung and caps the runner to exactly that rung's
+// resources; otherwise capacity is auto-detected (runner.DetectCapacity —
+// cgroup-aware, reserve-adjusted) and used in FULL. The ladder classifies
+// jobs, not runners — flooring a 32-core box to the top rung would waste
+// everything above it. DetectCapacity floors its result to one default
+// build slot, so an auto-detected capacity always fits at least c1-m1.
+func resolveCapacity(size string, log *slog.Logger) (resources.Resources, error) {
 	if size != "" {
-		return wire.ParseClass(size)
+		c, err := wire.ParseClass(size)
+		if err != nil {
+			return resources.Resources{}, err
+		}
+		return c.Resources(), nil
 	}
-	cap := runner.DetectCapacity("", "", log)
-	within := wire.ClassesWithin(cap)
-	if len(within) == 0 {
-		log.Warn("detected capacity below the smallest ladder rung; using it anyway",
-			"cpuMilli", cap.CPUMilli, "memBytes", cap.MemBytes, "class", wire.Classes[0])
-		return wire.Classes[0], nil
-	}
-	return within[len(within)-1], nil
+	return runner.DetectCapacity("", "", log), nil
 }
 
 // ensureRunnerID loads (or mints and persists) the runner's stable identity:

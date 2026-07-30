@@ -150,7 +150,7 @@ func startHarness(t *testing.T, execute func(ctx context.Context, job wire.Job, 
 		ID:       "test-runner",
 		Name:     "test",
 		Platform: testPlatform,
-		Size:     "c1-m2",
+		Capacity: wire.Class("c1-m2").Resources(),
 		CacheDir: t.TempDir(),
 	})
 	if err != nil {

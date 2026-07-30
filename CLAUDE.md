@@ -131,11 +131,13 @@ the in-tree record, the GitHub release notes are the outward one.
   over the internet, nearest relay as fallback (relay connect is best-effort —
   an offline host still starts).
 - `jobs-runner --server <endpoint-id> [--addr host:port]… [--size c1-m2]
-  [--name …] [--data-dir …] [--skip-self-test] [--sync-conns N]` — runs a
-  boot self-test build
+  [--slots N] [--name …] [--data-dir …] [--skip-self-test] [--sync-conns N]`
+  — runs a boot self-test build
   (embedded shell, real sandbox) and refuses to start if it fails, then dials
   the server twice (NATS tunnel + amber sync), pulls work-queue jobs for
-  every fitting class.
+  every fitting class. Admission capacity is the full detected machine
+  (cgroup-aware, minus 10% reserve) — the ladder classifies jobs, not
+  runners; `--size` caps capacity to a rung, `--slots` caps concurrent jobs.
 - `jobs-registry --server <endpoint-id> [--addr host:port]… [--listen :5000]
   [--data-dir …] [--cache-ttl 24h] [--default-platform os/arch]
   [--no-shell] [--sync-conns N]` — read-only OCI registry: `docker pull

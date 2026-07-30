@@ -1,7 +1,6 @@
 package runnerd
 
 import (
-	"log/slog"
 	"slices"
 	"testing"
 
@@ -95,16 +94,6 @@ func TestClassFanOut(t *testing.T) {
 	got = wire.ClassesWithin(wire.Class("c0.2-m1").Resources())
 	if !slices.Equal(got, []wire.Class{"c0.2-m1"}) {
 		t.Fatalf("classes = %v, want [c0.2-m1]", got)
-	}
-}
-
-func TestResolveSizeExplicit(t *testing.T) {
-	c, err := resolveSize("c1-m2", slog.Default())
-	if err != nil || c != "c1-m2" {
-		t.Fatalf("resolveSize = %v, %v", c, err)
-	}
-	if _, err := resolveSize("c9-m99", slog.Default()); err == nil {
-		t.Fatal("unknown rung must be rejected")
 	}
 }
 

@@ -46,8 +46,13 @@ func main() {
 			},
 			&cli.StringFlag{
 				Name:    "size",
-				Usage:   "size-class ladder rung (e.g. c1-m2); empty auto-detects and floors to the largest fitting rung",
+				Usage:   "cap capacity to a size-class ladder rung (e.g. c1-m2); empty uses the full detected machine capacity",
 				EnvVars: []string{"JOBS_RUNNER_SIZE"},
+			},
+			&cli.IntFlag{
+				Name:    "slots",
+				Usage:   "cap on concurrently running jobs (0 = resource accounting only)",
+				EnvVars: []string{"JOBS_RUNNER_SLOTS"},
 			},
 			&cli.StringFlag{
 				Name:    "name",
@@ -89,6 +94,7 @@ func main() {
 				Addrs:        c.StringSlice("addr"),
 				DataDir:      c.String("data-dir"),
 				Size:         c.String("size"),
+				Slots:        c.Int("slots"),
 				Name:         c.String("name"),
 				SkipSelfTest: c.Bool("skip-self-test"),
 				SyncConns:    max(1, c.Int("sync-conns")),
