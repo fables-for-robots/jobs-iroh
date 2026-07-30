@@ -133,6 +133,15 @@ func (d *daemon) attempt(ctx context.Context, job wire.Job, ev *events.Job) (run
 	// 3. Run the stage driver with the collecting ref writer.
 	rw := newCollectRefWriter(d.st)
 	out := d.execute(ctx, job, rw, ev)
+	if ctx.Err() != nil && (out.Failed || out.Decline) {
+		// The shutdown that cancelled ctx reaches the sandboxed children too
+		// (same process group as the runner): the driver then sees its child
+		// die and reports an ordinary failure. Under a dying context that
+		// verdict is untrustworthy — report cancelled so the message naks
+		// back to the queue (running twice is wasteful, never wrong; a hard
+		// failure here would fail the whole request on a mere restart).
+		return runner.Outcome{Cancelled: true}, nil, ""
+	}
 	if out.Cancelled || out.Decline || out.Failed {
 		return out, nil, ""
 	}

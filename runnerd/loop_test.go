@@ -419,6 +419,57 @@ func TestLoopShutdownPublishesCancelledAndNaks(t *testing.T) {
 	}
 }
 
+func TestLoopShutdownFailureReportsCancelledNotHard(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+
+	started := make(chan struct{})
+	h := startHarness(t, func(ctx context.Context, job wire.Job, rw runner.RefWriter, ev *events.Job) runner.Outcome {
+		close(started)
+		<-ctx.Done()
+		// A shutdown signal (terminal ^C) reaches the sandboxed child too —
+		// the driver sees its process die and reports an ordinary hard
+		// failure, not Cancelled. The daemon must not trust that verdict.
+		return runner.Outcome{Failed: true, Class: "hard", ExitCode: -1, Stderr: "signal: interrupt"}
+	})
+
+	k, err := amber.FileKey([]byte("shutdown-killed job def"))
+	if err != nil {
+		t.Fatalf("file key: %v", err)
+	}
+	node := wire.NodeName(wire.KindImport, k)
+	h.publishJob(ctx, wire.Job{
+		Node: node, Kind: wire.KindImport, Key: k[:], Gen: 6,
+		Platform: testPlatform, Class: "c1-m1",
+		CPUMilli: 1000, MemBytes: 1 << 30,
+	})
+
+	select {
+	case <-started:
+	case <-time.After(30 * time.Second):
+		t.Fatal("job never started")
+	}
+	h.cancel() // shutdown mid-job
+
+	res := h.awaitResult(ctx, node, 6)
+	if res.Class != wire.ClassCancelled {
+		t.Fatalf("result class = %q, want cancelled (a failure under a dying context is not a verdict)", res.Class)
+	}
+
+	// Cancelled results nak: the job goes back to the queue for another runner.
+	s, err := h.js.Stream(ctx, wire.StreamJobs)
+	if err != nil {
+		t.Fatalf("stream: %v", err)
+	}
+	info, err := s.Info(ctx)
+	if err != nil {
+		t.Fatalf("stream info: %v", err)
+	}
+	if info.State.Msgs != 1 {
+		t.Fatalf("JOBS stream has %d msgs after nak, want 1 (redeliverable)", info.State.Msgs)
+	}
+}
+
 func waitFor(t *testing.T, cond func() bool, msg string) {
 	t.Helper()
 	deadline := time.Now().Add(15 * time.Second)
