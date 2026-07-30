@@ -1,5 +1,30 @@
 # Changelog
 
+## v0.23.0 — 2026-07-30
+
+- **Small-job transfer throughput: relayed shards are parked, not used or
+  evicted.** Field evidence (runner at Hetzner, server behind residential
+  NAT) showed shard punches landing in minutes while the 30s relay-grace
+  eviction killed each punch mid-ramp — every small pull/push paid a
+  redial and dealt its want rounds across relay channels. The pool now
+  parks relayed connections (held for the punch, invisible to transfers,
+  replaced in the background only after ~5 min), and transfers are
+  **reserve-first**: once the server's data endpoints are known, DataConns
+  promises exactly the direct-path shards that were reserved up front, so
+  the server never waits out its 10s gather window for shards that cannot
+  come. All shards parked ⇒ single-channel on the direct control stream —
+  strictly faster for small closures — with sharding resuming the moment a
+  punch lands. Parked shards never demote the connection.
+- **Pool growth dials moved off the transfer critical path.** A transfer
+  that can be served from live pooled connections returns immediately;
+  growth toward the concurrency target lands in the background for the
+  next transfer. Only a cold pool waits, bounded by the attach budget.
+- Measured (evw-prod3 → NAT'd server, 1 MiB closure, one long-lived
+  client): sequential pulls p50 350ms → 200ms (2.8 → 4.6 pulls/s per
+  lane); 6-way concurrent bursts p50 450ms → 310ms with the
+  round-to-round drift gone. 512 MiB cold pulls unchanged (same
+  optimistic first-transfer path, verified 3 shards attached both ways).
+
 ## v0.22.1 — 2026-07-29
 
 - **The recipe's `name =` now overrides the default labels.** A build
