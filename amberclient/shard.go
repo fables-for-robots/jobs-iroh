@@ -179,6 +179,13 @@ func (c *Client) remoteIP() (netip.Addr, bool) {
 // demotes itself: this connection's topology evidently cannot shard
 // (relay-only path, filtered ports), and paying the attach stall on every
 // subsequent transfer would be pure waste.
+//
+// This is the OPTIMISTIC path — the first transfer on a connection, whose
+// DataConns promise went out before the pool was consulted. Relayed pool
+// entries are used too (directOnly=false): the server is waiting for
+// exactly n shards, and a relayed shard beats a gather-window stall. Every
+// later transfer reserves first (planTransfer) and attaches via
+// attachReserved.
 func (c *Client) attachExtras(ctx context.Context, token []byte, ports []uint16, eps []amberiroh.DataEndpointRec, n int) ([]net.Conn, func()) {
 	if n <= 0 {
 		return nil, func() {}
@@ -190,7 +197,45 @@ func (c *Client) attachExtras(ctx context.Context, token []byte, ports []uint16,
 	actx, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 
-	entries, fresh, release := c.pool.acquire(actx, n, ports, eps)
+	entries, fresh, _, release := c.pool.acquire(actx, n, false, ports, eps)
+	streams, closers := c.attachTo(ctx, actx, token, entries, fresh)
+	return streams, func() {
+		for _, cl := range closers {
+			cl()
+		}
+		release()
+	}
+}
+
+// attachReserved attaches one fresh stream per already-reserved entry to
+// the transfer token. The reservation was made before the request promised
+// DataConns, so entries here are live, direct-path connections; a failure
+// still only reduces parallelism. The reservation's release stays with the
+// caller (pullOnce/pushOnce defer it) — the closer closes streams only.
+func (c *Client) attachReserved(ctx context.Context, token []byte, rsv *reservation) ([]net.Conn, func()) {
+	budget := attachBudget
+	if c.punchDials {
+		budget = punchAttachBudget
+	}
+	actx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+
+	streams, closers := c.attachTo(ctx, actx, token, rsv.entries, rsv.fresh)
+	return streams, func() {
+		for _, cl := range closers {
+			cl()
+		}
+	}
+}
+
+// attachTo opens one stream per entry and binds it to token under actx's
+// budget, arming every surviving stream with ctx cancellation. Entries
+// whose attach failed are discarded from the pool — a hung or failed
+// stream open on a pooled conn means it went bad between transfers — and
+// a zero-attach on a live context renders the sharding verdict: discard
+// only when reused entries were involved (stale pool), sticky demote when
+// even fresh dials could not attach (topology).
+func (c *Client) attachTo(ctx, actx context.Context, token []byte, entries []*poolEntry, fresh map[*poolEntry]bool) ([]net.Conn, []func()) {
 	slots := make([]net.Conn, len(entries))
 	attachErrs := make([]error, len(entries))
 	var wg sync.WaitGroup
@@ -221,10 +266,6 @@ func (c *Client) attachExtras(ctx context.Context, token []byte, ports []uint16,
 	}
 	wg.Wait()
 
-	// A failed attach on a pooled connection means it went bad between
-	// transfers (the liveness check cannot see a blackholed path until
-	// QUIC's idle timeout declares it): discard it so the next acquire
-	// redials instead of tripping over the same zombie.
 	var failed []*poolEntry
 	anyReused := false
 	var streams []net.Conn
@@ -263,19 +304,14 @@ func (c *Client) attachExtras(ctx context.Context, token []byte, ports []uint16,
 	// zero-attach involving REUSED entries is a stale-pool verdict, not a
 	// topology one: the entries are discarded above and the next transfer
 	// redials, so the sticky demote stays reserved for fresh dials failing.
-	if len(streams) == 0 && ctx.Err() == nil {
+	if len(entries) > 0 && len(streams) == 0 && ctx.Err() == nil {
 		if anyReused {
 			c.log.Warn("amberclient: pooled shard connections failed to attach; discarded for redial")
 		} else {
 			c.demote("no shard attached within budget")
 		}
 	}
-	return streams, func() {
-		for _, cl := range closers {
-			cl()
-		}
-		release()
-	}
+	return streams, closers
 }
 
 // shardReadIdle bounds how long one Read on a pull's shard channel may sit
@@ -311,7 +347,7 @@ func (w *watchdogConn) Read(p []byte) (int, error) {
 // Send loop per channel; a TWants means a server that ignored the request's
 // DataConns — replay the consumed frame in front of the stream and fall back
 // to a single channel; a TErr surfaces as the usual remote error.
-func (c *Client) runSenders(ctx context.Context, ctrl io.ReadWriter, st *amber.Store, prog amberiroh.Progress, conns int) error {
+func (c *Client) runSenders(ctx context.Context, ctrl io.ReadWriter, st *amber.Store, prog amberiroh.Progress, conns int, rsv *reservation) error {
 	if conns <= 1 {
 		return amberiroh.Send(ctrl, st.Objects(), prog)
 	}
@@ -327,6 +363,9 @@ func (c *Client) runSenders(ctx context.Context, ctrl io.ReadWriter, st *amber.S
 		if err := amberiroh.WriteMsg(&replay, first); err != nil {
 			return err
 		}
+		if rsv != nil {
+			rsv.release() // server ignored DataConns; the reservation is unused
+		}
 		fallback := struct {
 			io.Reader
 			io.Writer
@@ -336,8 +375,15 @@ func (c *Client) runSenders(ctx context.Context, ctrl io.ReadWriter, st *amber.S
 	default:
 		return fmt.Errorf("%w: type %d, want TAccept or TWants", amberiroh.ErrProtocol, first.Type)
 	}
+	c.cacheDataEndpoints(first.DataPorts, first.DataEndpoints)
 
-	extras, closeExtras := c.attachExtras(ctx, first.Token, first.DataPorts, first.DataEndpoints, conns-1)
+	var extras []net.Conn
+	var closeExtras func()
+	if rsv != nil {
+		extras, closeExtras = c.attachReserved(ctx, first.Token, rsv)
+	} else {
+		extras, closeExtras = c.attachExtras(ctx, first.Token, first.DataPorts, first.DataEndpoints, conns-1)
+	}
 	defer closeExtras()
 	// No read watchdog here, unlike pull: a push channel legitimately sits
 	// in a read for as long as the server takes to verify and store a whole

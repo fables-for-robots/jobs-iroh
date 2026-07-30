@@ -179,9 +179,78 @@ type Client struct {
 	// A redial probes afresh.
 	demoted atomic.Bool
 
+	// dataEps caches the server's data-endpoint advertisement from the
+	// last sharded reply. Once known, transfers reserve their shard
+	// connections BEFORE promising DataConns, so the request is truthful
+	// and the server never sits out its gather window waiting for shards
+	// that are parked on a relay. nil until the first sharded reply.
+	dataEps atomic.Pointer[dataEndpoints]
+
 	// pool owns the shard connections: punched once, reused across
 	// transfers, grown under concurrency, shrunk after idle.
 	pool *shardPool
+}
+
+// dataEndpoints is one server data-endpoint advertisement (TAccept/TRef).
+type dataEndpoints struct {
+	ports []uint16
+	eps   []amberiroh.DataEndpointRec
+}
+
+// cacheDataEndpoints remembers the server's advertisement for reserve-first
+// transfers. Ports-only advertisements (pre-DataEndpoints servers) count
+// too — the legacy dial path uses them the same way.
+func (c *Client) cacheDataEndpoints(ports []uint16, eps []amberiroh.DataEndpointRec) {
+	if len(ports) == 0 && len(eps) == 0 {
+		return
+	}
+	c.dataEps.Store(&dataEndpoints{ports: ports, eps: eps})
+}
+
+// reservation holds shard-pool entries picked for one transfer before its
+// request went out. release is once-guarded; every exit path may call it.
+type reservation struct {
+	entries []*poolEntry
+	fresh   map[*poolEntry]bool
+	release func()
+}
+
+// planTransfer decides the next transfer's channel count and, once the
+// server's data endpoints are known, reserves the shard connections up
+// front — only direct-path entries are reserved, so DataConns promises
+// exactly the shards that will attach. Zero direct entries with parked
+// ones pending means single-channel on the (direct) control stream: the
+// punch is still in flight and sharding across relays moves no extra
+// bytes. A nil reservation with conns > 1 is the optimistic first
+// transfer, which attaches from the pool mid-transfer as before.
+func (c *Client) planTransfer(ctx context.Context) (int, *reservation) {
+	conns := c.transferConns()
+	if conns <= 1 {
+		return 1, nil
+	}
+	de := c.dataEps.Load()
+	if de == nil {
+		return conns, nil
+	}
+	budget := attachBudget
+	if len(de.eps) > 0 && c.punchDials {
+		budget = punchAttachBudget
+	}
+	actx, cancel := context.WithTimeout(ctx, budget)
+	defer cancel()
+	entries, fresh, parked, release := c.pool.acquire(actx, conns-1, true, de.ports, de.eps)
+	if len(entries) == 0 {
+		release()
+		if parked > 0 {
+			c.log.Debug("amberclient: all shard connections relayed; running single-channel until a punch lands")
+			return 1, nil
+		}
+		if ctx.Err() == nil {
+			c.demote("no shard connections available")
+		}
+		return 1, nil
+	}
+	return len(entries) + 1, &reservation{entries: entries, fresh: fresh, release: release}
 }
 
 // transferConns is the connection count for the next transfer: the
@@ -332,17 +401,20 @@ func (c *Client) PushWithProgress(ctx context.Context, st *amber.Store, name str
 	// One meter across both attempts: the want loop resumes where a failed
 	// sharded attempt stopped, so counters stay monotonic for the callback
 	// and the stats cover the whole operation.
-	conns := c.transferConns()
+	conns, rsv := c.planTransfer(ctx)
 	mtr := &meter{cb: prog}
-	err = c.pushOnce(ctx, st, name, root, mtr, conns)
+	err = c.pushOnce(ctx, st, name, root, mtr, conns, rsv)
 	if err != nil && conns > 1 && c.retrySingle(ctx, "push", name, err) {
-		err = c.pushOnce(ctx, st, name, root, mtr, 1)
+		err = c.pushOnce(ctx, st, name, root, mtr, 1, nil)
 	}
 	return mtr.stats(), err
 }
 
 // pushOnce runs one push attempt with the given connection count.
-func (c *Client) pushOnce(ctx context.Context, st *amber.Store, name string, root key.Key, mtr *meter, conns int) error {
+func (c *Client) pushOnce(ctx context.Context, st *amber.Store, name string, root key.Key, mtr *meter, conns int, rsv *reservation) error {
+	if rsv != nil {
+		defer rsv.release()
+	}
 	stream, stop, err := c.openStream(ctx)
 	if err != nil {
 		return fmt.Errorf("amberclient: push %q: %w", name, err)
@@ -361,7 +433,7 @@ func (c *Client) pushOnce(ctx context.Context, st *amber.Store, name string, roo
 	if err := amberiroh.WriteMsg(stream, req); err != nil {
 		return fmt.Errorf("amberclient: push %q: %w", name, err)
 	}
-	if err := c.runSenders(ctx, stream, st, mtr, conns); err != nil {
+	if err := c.runSenders(ctx, stream, st, mtr, conns, rsv); err != nil {
 		return fmt.Errorf("amberclient: push %q: %w", name, err)
 	}
 	m, err := amberiroh.ReadMsg(stream)
@@ -403,17 +475,20 @@ func (c *Client) PullWithProgress(ctx context.Context, st *amber.Store, name str
 	// One meter across both attempts: the want loop resumes where a failed
 	// sharded attempt stopped, so counters stay monotonic for the callback
 	// and the stats cover the whole operation.
-	conns := c.transferConns()
+	conns, rsv := c.planTransfer(ctx)
 	mtr := &meter{cb: prog}
-	root, err := c.pullOnce(ctx, st, name, mtr, conns)
+	root, err := c.pullOnce(ctx, st, name, mtr, conns, rsv)
 	if err != nil && conns > 1 && c.retrySingle(ctx, "pull", name, err) {
-		root, err = c.pullOnce(ctx, st, name, mtr, 1)
+		root, err = c.pullOnce(ctx, st, name, mtr, 1, nil)
 	}
 	return root, mtr.stats(), err
 }
 
 // pullOnce runs one pull attempt with the given connection count.
-func (c *Client) pullOnce(ctx context.Context, st *amber.Store, name string, mtr *meter, conns int) (key.Key, error) {
+func (c *Client) pullOnce(ctx context.Context, st *amber.Store, name string, mtr *meter, conns int, rsv *reservation) (key.Key, error) {
+	if rsv != nil {
+		defer rsv.release()
+	}
 	stream, stop, err := c.openStream(ctx)
 	if err != nil {
 		return key.Key{}, fmt.Errorf("amberclient: pull %q: %w", name, err)
@@ -455,13 +530,26 @@ func (c *Client) pullOnce(ctx context.Context, st *amber.Store, name string, mtr
 	// server without support omits it and the transfer stays
 	// single-channel. Shard channels read under a watchdog — a shard the
 	// server never gathered would otherwise park the want loop forever.
+	if len(m.Token) > 0 {
+		c.cacheDataEndpoints(m.DataPorts, m.DataEndpoints)
+	}
 	channels := []io.ReadWriter{stream}
 	if len(m.Token) > 0 && conns > 1 {
-		extras, closeExtras := c.attachExtras(ctx, m.Token, m.DataPorts, m.DataEndpoints, conns-1)
+		var extras []net.Conn
+		var closeExtras func()
+		if rsv != nil {
+			extras, closeExtras = c.attachReserved(ctx, m.Token, rsv)
+		} else {
+			extras, closeExtras = c.attachExtras(ctx, m.Token, m.DataPorts, m.DataEndpoints, conns-1)
+		}
 		defer closeExtras()
 		for _, ex := range extras {
 			channels = append(channels, &watchdogConn{Conn: ex, ctx: ctx})
 		}
+	} else if rsv != nil {
+		// The server did not shard this transfer; the reservation is
+		// unused — return the entries to the pool now.
+		rsv.release()
 	}
 
 	// Receive verifies every object against its key (WriteParallel with
