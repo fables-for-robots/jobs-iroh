@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.24.0 — 2026-07-30
+
+- **Runners use their full machine capacity.** Auto-detected runners
+  previously floored their admission capacity to the largest size-class
+  ladder rung — capped at `c4-m16`, so a 32-core/125 GiB box scheduled as
+  4 cores/16 GiB and ran exactly one `m16`-class job at a time. The
+  reserve-adjusted detected capacity (cgroup-aware, minus 10%) now feeds
+  the admission ledger and lane selection directly: the ladder classifies
+  jobs, not runners. An explicit `--size` still caps capacity to exactly
+  that rung; the new `--slots` flag (`JOBS_RUNNER_SLOTS`) optionally caps
+  concurrent jobs on top of the resource accounting. The hello/heartbeat
+  advertises the real numbers, with the size label now meaning "the
+  biggest job class this runner accepts". Measured on the test fleet: a
+  24-leaf build ran all 24 jobs simultaneously (12 per 32-core box,
+  ledger arithmetic exact) and finished in one wave.
+- **A runner restart no longer hard-fails in-flight builds.** A terminal
+  `^C` reaches the sandboxed build children (same process group) before
+  the daemon's drain path can label the attempt cancelled, so the stage
+  driver saw its child die and reported class `hard` — failing the whole
+  request on a mere redeploy. A `Failed`/`Decline` outcome under a
+  cancelled job context is no longer trusted as a verdict: it maps to
+  `cancelled`, naks, and redelivers elsewhere.
+
 ## v0.23.0 — 2026-07-30
 
 - **Small-job transfer throughput: relayed shards are parked, not used or
