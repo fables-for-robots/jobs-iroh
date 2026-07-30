@@ -293,14 +293,27 @@ candidates, sharding onto the main socket. Shard connections are pooled per
 client: acquired per transfer (a fresh stream + `TAttach` each), released
 open, grown under concurrent transfers (`Conns`→`PoolMax` totals, default
 4→12) and shrunk back after ~90s idle — so the punch ramp is paid once per
-connection, not per transfer. Nodes carry display-only labels — recipe dep
+connection, not per transfer. Growth dials run in the **background**: a
+transfer that can be served from live entries never waits on a dial (only
+a cold pool does, bounded by the attach budget). Once a server's
+data-endpoint advertisement is cached (its first sharded reply), transfers
+are **reserve-first**: the shard entries are picked before the request goes
+out and `DataConns` promises exactly the shards that will attach, so the
+server never sits out its gather window for shards that cannot come. Only
+**direct-path** entries are reserved — an entry whose connection still
+rides a relay is *parked*: held in the pool for its punch to land (punches
+through hostile NATs take minutes; evicting them, as pre-v0.23 relayGrace
+did, kills every punch mid-ramp and locks shard traffic onto the relay),
+never handed to a transfer (sharding a want round across relay channels
+just gates the round on the relay's RTT), and abandoned for a background
+replacement only after ~5 min. With every shard parked the transfer runs
+single-channel on the (direct) control stream and sharding resumes when a
+punch lands. Nodes carry display-only labels — recipe dep
 names, dirs, fetcher names, the client-sent target label — assigned at
 unfold from `PinnedInput.Name`/plugin-dep map keys and surfaced through
 `NodeSnap.Label`, failure records, and the local driver's progress steps;
 labels never enter identity. Every pooled connection's path is logged
-(dial and changes), and an idle entry still relayed ~30s after its dial —
-a failed punch — is evicted and redialed at the next acquire rather than
-reused, so a relay never gets locked in. Push is
+(dial and changes). Push is
 force-mode (last-write-wins); Pull verifies every object against its key
 (the peer is untrusted) and writes the local ref only after the full
 closure is present — objects-before-ref holds across the wire too.
