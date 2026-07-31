@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.24.1 — 2026-07-31
+
+- **Build work trees live under `<data-dir>/work`, swept at boot.**
+  Stage-driver scratch (sandbox work trees, source extracts, output
+  staging) previously landed in the OS temp dir — on NixOS a RAM-backed
+  tmpfs capped at 50% of RAM. One GitLab-sized attempt materializes
+  ~8.4 GB of store plus a ~19 GB build tree there, and attempts killed
+  mid-run leak their trees (the sandbox child dies before cleanup runs),
+  so a 63 GB `/tmp` filled to 96% and builds died with ENOSPC while the
+  disk had room. The daemon now points `TMPDIR` at `<data-dir>/work`
+  right after the store open (whose lock guarantees one daemon per data
+  dir) and sweeps the directory on every boot, reclaiming leaked trees
+  and keeping scratch on the filesystem that holds the store. Size your
+  runner disks for peak concurrent scratch, or bound it with `--slots`.
+
 ## v0.24.0 — 2026-07-30
 
 - **Runners use their full machine capacity.** Auto-detected runners
