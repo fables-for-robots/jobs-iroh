@@ -138,6 +138,9 @@ the in-tree record, the GitHub release notes are the outward one.
   every fitting class. Admission capacity is the full detected machine
   (cgroup-aware, minus 10% reserve) — the ladder classifies jobs, not
   runners; `--size` caps capacity to a rung, `--slots` caps concurrent jobs.
+  Build work trees live under `<data-dir>/work` (TMPDIR is pointed there;
+  swept every boot) — never the OS temp dir, which is a RAM-backed tmpfs
+  on NixOS and fills at 50% of RAM.
 - `jobs-registry --server <endpoint-id> [--addr host:port]… [--listen :5000]
   [--data-dir …] [--cache-ttl 24h] [--default-platform os/arch]
   [--no-shell] [--sync-conns N]` — read-only OCI registry: `docker pull

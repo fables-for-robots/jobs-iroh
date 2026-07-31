@@ -169,6 +169,18 @@ func Run(ctx context.Context, o Options) error {
 	}
 	defer st.Close()
 
+	// Work trees go under the data dir, not the OS temp dir — /tmp is a
+	// RAM-backed tmpfs on many hosts (NixOS sizes it at 50% of RAM), where
+	// one multi-GB build tree starves the builds' own memory and ENOSPCs
+	// long before the disk fills. Placed after amber.Open: the store lock
+	// guarantees one daemon per data dir, so the boot sweep can never
+	// remove a live daemon's trees.
+	work, err := initWorkDir(o.DataDir)
+	if err != nil {
+		return err
+	}
+	log.Info("work trees under data dir", "dir", work)
+
 	// Prove the host can execute a sandboxed build before dialing anything —
 	// a runner that would fail every job must never announce capacity.
 	if o.SkipSelfTest {
@@ -625,6 +637,25 @@ func resolveCapacity(size string, log *slog.Logger) (resources.Resources, error)
 		return c.Resources(), nil
 	}
 	return runner.DetectCapacity("", "", log), nil
+}
+
+// initWorkDir sweeps and recreates <dataDir>/work and points TMPDIR at it,
+// so every anonymous MkdirTemp in the stage drivers (sandbox work trees,
+// source extracts, output staging, plugin/pin scratch) lands on the data
+// dir's filesystem. The sweep reclaims trees leaked by killed attempts —
+// a sandbox child that dies with the runner never runs its cleanup.
+func initWorkDir(dataDir string) (string, error) {
+	work := filepath.Join(dataDir, "work")
+	if err := os.RemoveAll(work); err != nil {
+		return "", fmt.Errorf("sweep work dir: %w", err)
+	}
+	if err := os.MkdirAll(work, 0o700); err != nil {
+		return "", fmt.Errorf("create work dir: %w", err)
+	}
+	if err := os.Setenv("TMPDIR", work); err != nil {
+		return "", fmt.Errorf("set TMPDIR: %w", err)
+	}
+	return work, nil
 }
 
 // ensureRunnerID loads (or mints and persists) the runner's stable identity:
