@@ -1,6 +1,17 @@
 # Changelog
 
-## v0.24.1 — 2026-07-31
+## v0.24.2 — 2026-08-10
+
+- **Back on upstream go-iroh.** Upstream merged everything the
+  `draganm/go-iroh` fork existed for: the QAD public-address-discovery
+  and relay-to-direct hole-punching fixes (tmc/go-iroh#4) and the
+  dual-close fix on the `net.Conn` stream wrappers (tmc/go-iroh#3, the
+  exactly-100 stream starvation). `go.mod` drops the fork replace and
+  pins upstream HEAD (`c57a8ef`), which also brings upstream's
+  punch-ready-connection follow-up. No behavior change intended; the
+  full suite and the darwin/arm64 cross-vet pass against the upstream
+  module. Older tags (v0.17.0–v0.24.1) keep resolving their fork
+  pseudo-versions through the Go module proxy cache.
 
 - **Build work trees live under `<data-dir>/work`, swept at boot.**
   Stage-driver scratch (sandbox work trees, source extracts, output
