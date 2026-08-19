@@ -7,17 +7,28 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
+	"github.com/jobs-build/amber-store-core/key"
+	"github.com/jobs-build/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/bootstrap"
 	"github.com/jobs-build/jobs-iroh/runner"
 	"github.com/jobs-build/jobs-iroh/sandbox"
 	. "github.com/onsi/ginkgo/v2"
 	. "github.com/onsi/gomega"
 )
 
-var _ = Describe("CgroupExecutor", func() {
+// The hermetic import executor: a fetcher runs in a pivot_root'ed sandbox
+// built from the embedded shell (plus the fetcher's runtime closure), with
+// the host network kept. These specs need user namespaces and the embedded
+// shell seed for this platform.
+var _ = Describe("CgroupExecutor (hermetic import root)", func() {
 	var (
 		ctx        context.Context
+		st         *amber.Store
+		shellKey   key.Key
+		cacheDir   string
 		fetcherDir string
 		outputDir  string
 	)
@@ -27,96 +38,178 @@ var _ = Describe("CgroupExecutor", func() {
 			Skip("user namespaces unavailable")
 		}
 		ctx = context.Background()
+		var err error
+		st, err = amber.Open(GinkgoTB().TempDir())
+		Expect(err).NotTo(HaveOccurred())
+		shellKey, err = bootstrap.SeedShellAs(ctx, st, runner.Platform(), "shell:test")
+		if err != nil {
+			Skip("embedded shell seed unavailable for " + runner.Platform() + ": " + err.Error())
+		}
+		cacheDir = GinkgoTB().TempDir()
 		fetcherDir = GinkgoTB().TempDir()
 		outputDir = GinkgoTB().TempDir()
 	})
 
-	// writeFetch writes a shell script as ./fetch (0755) in fetcherDir. bash,
-	// not sh: the network spec uses bash's /dev/tcp, and /bin/sh is dash on
-	// many hosts (the executor keeps the host env, so env finds PATH's bash).
-	writeFetch := func(script string) {
+	AfterEach(func() {
+		if st != nil {
+			_ = st.Close()
+		}
+	})
+
+	// writeFetch writes ./fetch (0755) in fetcherDir with the given shebang
+	// and body. Inside the sandbox only the shell artifact exists, so the
+	// shebang must resolve against it (/bin/sh, /usr/bin/env bash).
+	writeFetch := func(shebang, script string) {
 		GinkgoHelper()
 		p := filepath.Join(fetcherDir, "fetch")
-		Expect(os.WriteFile(p, []byte("#!/usr/bin/env bash\n"+script+"\n"), 0o755)).To(Succeed())
+		Expect(os.WriteFile(p, []byte(shebang+"\n"+script+"\n"), 0o755)).To(Succeed())
 	}
 
-	runExec := func(ex runner.Executor, spec runner.ExecSpec) runner.ExecResult {
+	spec := func() runner.ExecSpec {
+		return runner.ExecSpec{
+			FetcherDir: fetcherDir,
+			OutputDir:  outputDir,
+			Env:        map[string]string{"JOBS_OUTPUT_DIR": outputDir, "JOBS_FETCH_PARAMS": `{"a":1}`},
+			Store:      st,
+			ShellKey:   shellKey,
+			CacheDir:   cacheDir,
+		}
+	}
+
+	runExec := func(sp runner.ExecSpec) runner.ExecResult {
 		GinkgoHelper()
-		bctx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		bctx, cancel := context.WithTimeout(ctx, 60*time.Second)
 		defer cancel()
-		res, err := ex.Run(bctx, spec)
+		res, err := runner.CgroupExecutor{}.Run(bctx, sp)
 		Expect(err).NotTo(HaveOccurred(), "CgroupExecutor.Run must not return an infra error")
 		return res
 	}
 
-	// (a) fetcher runs on host fs: a fetch script writes to $JOBS_OUTPUT_DIR;
-	// the output is visible on the host side (proves NewRoot="" is working).
-	It("(a) runs fetcher on host fs: output is visible on the host", func() {
-		writeFetch(`echo ok > "$JOBS_OUTPUT_DIR/result"`)
-
-		ex := runner.CgroupExecutor{}
-		spec := runner.ExecSpec{
-			FetcherDir: fetcherDir,
-			OutputDir:  outputDir,
-			Env: map[string]string{
-				"JOBS_OUTPUT_DIR": outputDir,
-			},
-		}
-		res := runExec(ex, spec)
+	It("runs the fetcher under the embedded shell and hands its output back to the host", func() {
+		writeFetch("#!/usr/bin/env bash", `set -eu
+echo "$JOBS_OUTPUT_DIR" > "$JOBS_OUTPUT_DIR/outdir"
+echo "$JOBS_FETCH_PARAMS" | jq -r .a > "$JOBS_OUTPUT_DIR/param"
+pwd > "$JOBS_OUTPUT_DIR/cwd"
+command -v bash > "$JOBS_OUTPUT_DIR/bash"`)
+		res := runExec(spec())
 		Expect(res.ExitCode).To(Equal(0), "fetch should exit 0; stderr: "+res.StderrTail)
 
-		got, err := os.ReadFile(filepath.Join(outputDir, "result"))
-		Expect(err).NotTo(HaveOccurred(), "output file must be visible on the host (NewRoot='' means host fs)")
-		Expect(string(got)).To(Equal("ok\n"))
+		read := func(name string) string {
+			b, err := os.ReadFile(filepath.Join(outputDir, name))
+			Expect(err).NotTo(HaveOccurred(), name+" must be visible on the host (bound at /jobs/out)")
+			return strings.TrimSpace(string(b))
+		}
+		Expect(read("outdir")).To(Equal("/jobs/out"), "JOBS_OUTPUT_DIR is the in-sandbox path")
+		Expect(read("param")).To(Equal("1"), "jq from the shell artifact works")
+		Expect(read("cwd")).To(Equal("/jobs/fetcher"), "cwd is the fetcher artifact")
+		Expect(read("bash")).To(HavePrefix("/jobs/store/"+shellKey.String()+"/bin/"), "PATH leads with the shell's bin")
 	})
 
-	// (b) network kept: a fetch that dials 8.8.8.8:53; exits 0 if connects.
-	// Skip if the test-process itself has no outbound network.
-	It("(b) keeps host network: TCP dial to 8.8.8.8:53 succeeds", func() {
-		// Pre-check: if the test host itself has no outbound network, skip.
+	It("resolves /bin/sh shebangs and hides the host filesystem", func() {
+		// A host-only path that must NOT be visible inside: this test's temp
+		// dir itself (it sits on the host under TMPDIR).
+		marker := filepath.Join(GinkgoTB().TempDir(), "host-only")
+		Expect(os.WriteFile(marker, []byte("x"), 0o644)).To(Succeed())
+		writeFetch("#!/bin/sh", `set -eu
+[ ! -e "`+marker+`" ] || { echo "host path leaked" >&2; exit 3; }
+[ ! -e /proc/self/exe ] && { echo "no /proc" >&2; exit 4; }
+[ -e /usr/bin/env ] || { echo "no /usr/bin/env" >&2; exit 5; }
+[ -w /tmp ] || { echo "/tmp not writable" >&2; exit 6; }
+[ -e /etc/hosts ] || { echo "no /etc/hosts" >&2; exit 7; }
+[ -n "${HOME:-}" ] && [ "$HOME" = /tmp ] || { echo "HOME=$HOME" >&2; exit 8; }
+# the whole busybox applet set is on PATH, not just the shell's few symlinks
+t="$(mktemp -d)" && [ -d "$t" ] || { echo "no mktemp" >&2; exit 9; }
+sleep 0 && echo abc | tr a-c A-C | grep -q ABC || { echo "no sleep/tr" >&2; exit 10; }
+echo ok > "$JOBS_OUTPUT_DIR/ok"`)
+		res := runExec(spec())
+		Expect(res.ExitCode).To(Equal(0), "stderr: "+res.StderrTail)
+		_, err := os.Stat(filepath.Join(outputDir, "ok"))
+		Expect(err).NotTo(HaveOccurred())
+	})
+
+	It("does not leak the runner's environment, only the network pass-through", func() {
+		GinkgoTB().Setenv("JOBS_TEST_SECRET_ENV", "leak")
+		GinkgoTB().Setenv("HTTPS_PROXY", "http://proxy.test:3128")
+		writeFetch("#!/bin/sh", `set -eu
+[ -z "${JOBS_TEST_SECRET_ENV:-}" ] || { echo "env leaked" >&2; exit 3; }
+[ "${HTTPS_PROXY:-}" = "http://proxy.test:3128" ] || { echo "proxy not passed" >&2; exit 4; }
+echo ok > "$JOBS_OUTPUT_DIR/ok"`)
+		res := runExec(spec())
+		Expect(res.ExitCode).To(Equal(0), "stderr: "+res.StderrTail)
+	})
+
+	It("keeps the host network: TCP dial to 8.8.8.8:53 succeeds", func() {
 		conn, err := net.DialTimeout("tcp", "8.8.8.8:53", 3*time.Second)
 		if err != nil {
 			Skip("host has no outbound network: " + err.Error())
 		}
 		conn.Close()
-
-		writeFetch(`exec 3<>/dev/tcp/8.8.8.8/53 && exit 0 || exit 1`)
-
-		ex := runner.CgroupExecutor{}
-		spec := runner.ExecSpec{
-			FetcherDir: fetcherDir,
-			OutputDir:  outputDir,
-			Env: map[string]string{
-				"JOBS_OUTPUT_DIR": outputDir,
-			},
-		}
-		res := runExec(ex, spec)
+		writeFetch("#!/usr/bin/env bash", `exec 3<>/dev/tcp/8.8.8.8/53 && exit 0 || exit 1`)
+		res := runExec(spec())
 		Expect(res.ExitCode).To(Equal(0),
-			"network should be reachable inside CgroupExecutor (Net=false means NO CLONE_NEWNET); stderr: "+res.StderrTail)
+			"network should be reachable inside the import sandbox (no CLONE_NEWNET); stderr: "+res.StderrTail)
 	})
 
-	// (c) pids cap enforcement: needs a delegated, non-threaded cgroup scope
-	// where child processes can actually be placed in the job cgroup. Most
-	// dev hosts' user@ scopes reject both clone3(CLONE_INTO_CGROUP) and the
-	// cgroup.procs fallback for children, so the limit is written but never
-	// applied — detect and skip rather than flake (see jobs' original note).
-	It("(c) pids cap: fork-bomb is blocked when cgroup placement is enforced", func() {
-		_, controllers, ok := sandbox.DetectCgroupDelegation()
-		if !ok {
-			Skip("no delegated cgroup subtree in this environment")
+	It("mounts the fetcher's runtime closure at /jobs/store/<key>", func() {
+		// A fake runtime dep: a tree with bin/hello, wrapped in a store tree
+		// (the build-output-deps shape: entries named by key).
+		depDir := GinkgoTB().TempDir()
+		Expect(os.MkdirAll(filepath.Join(depDir, "bin"), 0o755)).To(Succeed())
+		Expect(os.WriteFile(filepath.Join(depDir, "bin", "hello"), []byte("#!/bin/sh\necho hello-from-closure\n"), 0o755)).To(Succeed())
+		depKey, err := st.IngestSourceDir(ctx, depDir)
+		Expect(err).NotTo(HaveOccurred())
+		closure, err := st.BuildStoreTree(ctx, []key.Key{depKey})
+		Expect(err).NotTo(HaveOccurred())
+
+		writeFetch("#!/bin/sh", `set -eu
+/jobs/store/`+depKey.String()+`/bin/hello > "$JOBS_OUTPUT_DIR/hello"
+# the shell sits next to it under its own key
+[ -x /jobs/store/`+shellKey.String()+`/bin/bash ] || { echo "no shell in store" >&2; exit 3; }`)
+		sp := spec()
+		sp.ClosureKey = closure
+		res := runExec(sp)
+		Expect(res.ExitCode).To(Equal(0), "stderr: "+res.StderrTail)
+		b, err := os.ReadFile(filepath.Join(outputDir, "hello"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(strings.TrimSpace(string(b))).To(Equal("hello-from-closure"))
+
+		// The materialized trees are cached under CacheDir and reused.
+		for _, k := range []key.Key{shellKey, closure} {
+			_, err := os.Stat(filepath.Join(cacheDir, "trees", k.String()))
+			Expect(err).NotTo(HaveOccurred(), "tree "+k.String()+" cached")
 		}
-		hasPids := false
-		for _, c := range controllers {
-			if c == "pids" {
-				hasPids = true
-				break
-			}
-		}
-		if !hasPids {
-			Skip("pids controller not delegated in this environment")
-		}
-		Skip("cgroup process placement not enforced in typical delegated scopes: " +
-			"a 'threaded/domain' user@ scope rejects both clone3(CLONE_INTO_CGROUP) and " +
-			"the cgroup.procs fallback for child processes, so pids.max is written but never applied")
+	})
+
+	It("binds the secrets file read-only at its in-sandbox path", func() {
+		secrets := filepath.Join(GinkgoTB().TempDir(), "secrets.json")
+		Expect(os.WriteFile(secrets, []byte(`{"t":{"scope":"s","secret":"v"}}`), 0o600)).To(Succeed())
+		writeFetch("#!/usr/bin/env bash", `set -eu
+[ "$JOBS_SECRETS_FILE" = /jobs/secrets.json ] || { echo "JOBS_SECRETS_FILE=$JOBS_SECRETS_FILE" >&2; exit 3; }
+jq -r .t.secret < "$JOBS_SECRETS_FILE" > "$JOBS_OUTPUT_DIR/secret"
+! ( echo x >> "$JOBS_SECRETS_FILE" ) 2>/dev/null || { echo "secrets writable" >&2; exit 4; }`)
+		sp := spec()
+		sp.SecretsFile = secrets
+		sp.Env["JOBS_SECRETS_FILE"] = secrets
+		res := runExec(sp)
+		Expect(res.ExitCode).To(Equal(0), "stderr: "+res.StderrTail)
+		b, err := os.ReadFile(filepath.Join(outputDir, "secret"))
+		Expect(err).NotTo(HaveOccurred())
+		Expect(strings.TrimSpace(string(b))).To(Equal("v"))
+	})
+
+	It("reports a non-zero fetch exit as the result, not an error", func() {
+		writeFetch("#!/bin/sh", `echo boom >&2; exit 75`)
+		res := runExec(spec())
+		Expect(res.ExitCode).To(Equal(75))
+		Expect(res.StderrTail).To(ContainSubstring("boom"))
+	})
+
+	It("fails without a shell artifact to build the root from", func() {
+		writeFetch("#!/bin/sh", `exit 0`)
+		sp := spec()
+		sp.ShellKey = key.Key{}
+		_, err := runner.CgroupExecutor{}.Run(ctx, sp)
+		Expect(err).To(HaveOccurred())
+		Expect(err.Error()).To(ContainSubstring("shell"))
 	})
 })

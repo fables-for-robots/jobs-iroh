@@ -188,7 +188,7 @@ is a server-internal orchestrator that walks its build's stages sequentially
 
 | Stage | Key | Does | Publishes |
 |---|---|---|---|
-| `import` | K | runs the fetcher in a **network-enabled** sandbox (`JOBS_FETCH_PARAMS`, `JOBS_OUTPUT_DIR`), ingests the result | `import-output:K` |
+| `import` | K | runs the fetcher in a **hermetic, network-enabled** sandbox (the shell userland + the fetcher's runtime closure at `/jobs/store/<key>`, `JOBS_FETCH_PARAMS`, `JOBS_OUTPUT_DIR`), ingests the result | `import-output:K` |
 | `buildfrom` | K | resolves the source input's content tree, splices `dir` as `env/`, computes F; pure store computation, no sandbox | `build-from:K` + `build-from-tree:F` (one batch) |
 | `pluginresolve` | F | evaluates `plugins()` (no plugins callable there), ingests plugin/dep definitions | `build-plugin-resolved:F` |
 | `pin` | F | materializes resolution deps, evaluates `build()` with **sandboxed** plugin callers, validates | `build-pinned:F` |
@@ -427,7 +427,7 @@ environment; **every `main()` (and every sandbox-driving `TestMain`) must
 call `sandbox.Init()` first** — it detects the re-exec'd child, performs
 setup inside the new namespaces, and execs the target command. Namespaces:
 user + mount + PID + net + UTS + IPC — the net namespace means **no network**
-(imports get a network-capable variant). The child makes the mount tree
+(imports get the same sandbox without the net namespace, see below). The child makes the mount tree
 private, applies the mount plan (read-only binds need a remount pass),
 mounts a fresh `/proc`, `pivot_root`s, and execs. Cgroups v2 limits
 (`memory.max`, `pids.max`) apply best-effort via `clone3` with a cgroup fd.
@@ -439,6 +439,24 @@ bound writable at their paths; `/tmp` is a tmpfs; `/dev` is a hermetic
 minimal set; the input name → path map is carried at
 `/build/.jobs-deps.json` and the script at `/build/.jobs-script.sh`. The
 shell is the embedded static userland — nothing from the host leaks in.
+
+Inside an import: the same pivot_root'ed root, but the host **network is
+kept** (no net namespace). `/jobs/store/<key>` holds the shell artifact and,
+for a recipe-declared fetcher, the fetcher build's runtime closure
+(`build-output-deps:F`) at the paths its build saw — a fetcher that needs a
+toolchain declares it as `runtime_deps` and bakes the path, like an image
+entrypoint; `/bin` and `/usr/bin` are the shell's bash/jq plus every busybox
+applet (shebangs resolve, `mktemp`/`sleep`/`wget`/… exist); the fetcher
+artifact is read-only at `/jobs/fetcher` (cwd, `./fetch`), the output tree
+writable at `/jobs/out` (`JOBS_OUTPUT_DIR`), the secrets file at
+`/jobs/secrets.json`, `/tmp` is writable scratch on the work filesystem;
+`/etc` carries the hermetic baseline plus the host's resolver files and CA
+bundle (`SSL_CERT_FILE` pinned to it). The environment is PATH, HOME, TMPDIR,
+the `JOBS_*` variables and the proxy/`SSL_CERT_*` pass-through — never the
+runner's `os.Environ()`. Nothing else from the host is visible: a fetcher
+may rely on the static shell userland and its declared runtime deps, and on
+nothing else. Hosts without user namespaces (and the local `develop`
+path) run fetchers as a plain host subprocess instead.
 
 ### 8.2 The runner daemon
 

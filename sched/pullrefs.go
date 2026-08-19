@@ -38,8 +38,11 @@ func (s *Sched) healCarrierLocked(name string, k key.Key) error {
 // against the server store at enqueue time (every dep is done, so its
 // output refs exist):
 //
-//	import        FetcherDef → build-from:K_f + build-output:F_f (artifact
-//	              two-hop); named seed fetcher → fetcher:<name>:<platform>
+//	import        shell:<platform> (the hermetic import root's userland);
+//	              FetcherDef → build-from:K_f + build-output:F_f (artifact
+//	              two-hop) + build-output-deps:F_f (the fetcher's runtime
+//	              closure, mounted into the import root); named seed
+//	              fetcher → fetcher:<name>:<platform>
 //	buildfrom     source import → import-output:K_src; source build →
 //	              build-from:K_src + build-output:F_src (+deps); source tree →
 //	              build-from-tree:<T>
@@ -114,6 +117,15 @@ func (s *Sched) computePullRefsLocked(n *node) ([]string, error) {
 		if err != nil {
 			return nil, fmt.Errorf("decode import def: %w", err)
 		}
+		platform := def.Platform
+		if platform == "" {
+			platform = n.platform
+		}
+		// The import root is built from the shell (hermetic-imports design):
+		// present-only, like the build stages — absent means pre-bootstrap.
+		if err := addIfPresent("shell:" + platform); err != nil {
+			return nil, err
+		}
 		if len(def.FetcherDef) > 0 {
 			fk, err := (builddef.Input{Kind: builddef.KindBuild, Definition: def.FetcherDef}).Key()
 			if err != nil {
@@ -127,11 +139,13 @@ func (s *Sched) computePullRefsLocked(n *node) ([]string, error) {
 				return nil, fmt.Errorf("build-from:%s missing for done fetcher build", fk)
 			}
 			add("build-from:"+fk.String(), "build-output:"+ff.String())
-		} else {
-			platform := def.Platform
-			if platform == "" {
-				platform = n.platform
+			// The fetcher's runtime closure: what its BUILD.jobs declared as
+			// runtime_deps (a toolchain, typically). Present-only — a fetcher
+			// built before build-output-deps existed simply has none.
+			if err := addIfPresent("build-output-deps:" + ff.String()); err != nil {
+				return nil, err
 			}
+		} else {
 			if err := addIfPresent("fetcher:" + def.Fetcher + ":" + platform); err != nil {
 				return nil, err
 			}
