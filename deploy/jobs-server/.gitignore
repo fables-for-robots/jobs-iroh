@@ -1,0 +1,4 @@
+# the binaries copied in by the Dockerfile build step
+jobs-server
+jobs-server-amd64
+jobs-server-arm64

@@ -1,10 +1,11 @@
 # Containerize jobs-registry. The module tree is private
 # (GOPRIVATE=github.com/jobs-build/*), so the binary is built OUTSIDE
-# the image where credentials exist, and copied in:
+# the image where credentials exist, and copied in — scripts/release-images.sh
+# does that for all three images at release time; by hand:
 #
 #   CGO_ENABLED=0 GOOS=linux nix develop -c \
-#     go build -trimpath -o deploy/jobs-registry/jobs-registry ./cmd/jobs-registry
-#   docker build -t jobs-registry deploy/jobs-registry
+#     go build -trimpath -o deploy/jobs-registry/jobs-registry-amd64 ./cmd/jobs-registry
+#   docker build --build-arg TARGETARCH=amd64 -t jobs-registry deploy/jobs-registry
 #
 # distroless/static ships CA certs (needed for pkarr/DNS discovery when no
 # --addr is given) and nothing else.

@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+- **Server and runner images are part of the release.**
+  `scripts/release-images.sh` builds `dmilhdef/jobs-iroh-server`,
+  `dmilhdef/jobs-iroh-runner` and `dmilhdef/jobs-registry` (linux/amd64 +
+  arm64, `v<version>` and `latest`) from a clean tag checkout; Dockerfiles
+  for the server and runner join the registry's under `deploy/`. Until now
+  only the registry image was published, and every Kubernetes rollout of a
+  new tag needed the other two built by hand.
+
 ## v0.28.0 — 2026-08-19
 
 - **Full-screen build TUI for `remote-build` and `watch`**

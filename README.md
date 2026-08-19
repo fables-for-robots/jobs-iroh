@@ -130,6 +130,22 @@ terminate TLS at an ingress or mark it insecure in the container runtime.
 A sample k8s Deployment lives in
 [`deploy/jobs-registry/`](deploy/jobs-registry/).
 
+## Images
+
+Every release publishes three multi-arch (amd64 + arm64) images to Docker
+Hub, tagged `v<version>` and `latest`:
+
+| Image | Binary | Runs as |
+|---|---|---|
+| `dmilhdef/jobs-iroh-server` | `jobs-server` | distroless nonroot (65532), `/data` = `--data-dir` |
+| `dmilhdef/jobs-iroh-runner` | `jobs-runner` | root — its sandboxes need user/mount/pid namespaces and cgroups (privileged in k8s) |
+| `dmilhdef/jobs-registry` | `jobs-registry` | distroless nonroot (65532), `/data` = `--data-dir` |
+
+They hold the static binary and CA certificates, nothing else — builds and
+imports run in hermetic roots assembled from the store, so the runner image
+needs no userland. Dockerfiles under [`deploy/`](deploy/), built by
+[`scripts/release-images.sh`](scripts/release-images.sh).
+
 ## Dev setup
 
 Go toolchain comes from the Nix devShell:

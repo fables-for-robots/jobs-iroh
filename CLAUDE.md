@@ -62,10 +62,12 @@ documented in the recipe header and bumped together.
 ## Release process
 
 Every release is: bump `version/version.go` (the ONLY change in the release
-commit), tag, push, GitHub release, **then push the `jobs-registry` Docker
-image**. The image is part of the release, not an optional extra — a tag
-without its image leaves `dmilhdef/jobs-registry:latest` pointing at older
-code than the tag suggests. Patch releases included.
+commit), tag, push, GitHub release, **then push the three Docker images**
+(`dmilhdef/jobs-iroh-server`, `dmilhdef/jobs-iroh-runner`,
+`dmilhdef/jobs-registry`). The images are part of the release, not an
+optional extra — a tag without them leaves the `:latest` tags pointing at
+older code than the tag suggests, and a Kubernetes rollout of the tag has
+nothing to pull. Patch releases included.
 
 ```sh
 V=0.14.1                                    # version/version.go already bumped
@@ -75,33 +77,27 @@ git push origin main && git push origin "v$V"
 nix develop -c gh release create "v$V" --verify-tag --repo jobs-build/jobs-iroh \
   --title "v$V — <headline>" --notes "…"
 
-# The image MUST be built from a clean tree — a dirty tree flips Go's
-# vcs.modified stamp into the binary.
+# The images MUST be built from a clean tree on the tag — a dirty tree flips
+# Go's vcs.modified stamp into the binaries. The script refuses otherwise.
 git status --porcelain                      # must be empty
-nix develop -c bash -c 'export GOPRIVATE="github.com/jobs-build/*"
-  CGO_ENABLED=0 GOARCH=arm64 go build -o deploy/jobs-registry/jobs-registry-arm64 ./cmd/jobs-registry
-  CGO_ENABLED=0 GOARCH=amd64 go build -o deploy/jobs-registry/jobs-registry-amd64 ./cmd/jobs-registry'
-REV=$(git rev-parse HEAD)
-docker --config "$HOME/.docker" buildx build --builder jobs-multi \
-  --platform linux/amd64,linux/arm64 --provenance=false --sbom=false \
-  --label org.opencontainers.image.version="$V" \
-  --label org.opencontainers.image.revision="$REV" \
-  --label org.opencontainers.image.source=https://github.com/jobs-build/jobs-iroh \
-  --annotation "index:org.opencontainers.image.version=$V" \
-  --annotation "index:org.opencontainers.image.revision=$REV" \
-  --annotation "index:org.opencontainers.image.source=https://github.com/jobs-build/jobs-iroh" \
-  -t "dmilhdef/jobs-registry:v$V" -t dmilhdef/jobs-registry:latest \
-  --push deploy/jobs-registry
-docker --config "$HOME/.docker" buildx imagetools inspect "dmilhdef/jobs-registry:v$V"
-rm -f deploy/jobs-registry/jobs-registry-{amd64,arm64}
+scripts/release-images.sh "$V"
 ```
 
-`imagetools inspect` must show exactly two platform entries and no
-`unknown/unknown` attestation rows. No `sudo`: the dev machine's user is in
-the `docker` group and reaches the same system daemon. If buildx reports no
+`scripts/release-images.sh` compiles all three binaries for linux/amd64 +
+linux/arm64 (CGO off, `-trimpath`) into `deploy/<binary>/`, builds each
+image from its COPY-only Dockerfile (`deploy/jobs-server/`,
+`deploy/jobs-runner/`, `deploy/jobs-registry/`) with `docker buildx` for both
+platforms, pushes `v$V` and `latest`, and prints `imagetools inspect` for
+each — which must show exactly two platform entries and no `unknown/unknown`
+attestation rows. The image names are `jobs-iroh-server` / `jobs-iroh-runner`
+(not `jobs-server` / `jobs-runner`: those are the pre-iroh JOBS images on
+Docker Hub and stay untouched) and `jobs-registry`. Server and registry run
+as distroless `nonroot` (65532; give them their `/data`), the runner as root
+(its sandboxes need it). No `sudo`: the dev machine's user is in the
+`docker` group and reaches the same system daemon. If buildx reports no
 `jobs-multi` builder (its metadata can vanish from `~/.docker/buildx/`),
 recreate it: `docker --config "$HOME/.docker" buildx create --name jobs-multi
---driver docker-container` — the Dockerfile is COPY-only, so no QEMU is
+--driver docker-container` — the Dockerfiles are COPY-only, so no QEMU is
 needed for the arm64 half. The push is public — confirm with the user before
 running it. Keep `CHANGELOG.md` in step: it is the in-tree record, the
 GitHub release notes are the outward one.
