@@ -1,5 +1,36 @@
 # Changelog
 
+## v0.27.0 — 2026-08-19
+
+- **Builds are rejected when no runner serves their arch; a runnerless
+  build fails after 5 minutes** (#8). The scheduler's fleet fold
+  (`runners.hello` + 5 s heartbeats) doubles as a scheduling gate: a
+  runner is live while its last hello/heartbeat is within 15 s (three
+  missed beats). A submit whose closure still needs runner work on a
+  platform with no live runner returns `unavailable` instead of
+  stalling forever — checked after the graph join, so a fully cached
+  closure still completes without any fleet. An accepted request whose
+  platform then loses its last live runner for a continuous 5 minutes
+  is failed by a watchdog: interest drops exactly like cancel (queued
+  messages purged, late results dropped), the request stays
+  inspectable until delete, and the reason rides the new additive
+  request-level `Snapshot.Error` / `RequestStatus.Error` field, which
+  `remote-build`/`watch` print when no node carries the failure. A
+  runner reappearing before the deadline resets the clock; runnerd
+  re-hellos on every NATS (re)connect, so a server restart re-learns
+  platforms from the fleet itself. No `jobs-runner-nats` ALPN bump —
+  old runners already hello with their platform and keep producing
+  correct results.
+- **Synced fetcher/plugin copies removed** (#7). `fetchers/` keeps only
+  what this repo is authoritative for: the embedded-seed sources
+  (`github`, `hostmusl`, `hostshell`, `tarballhttps`) and the shared
+  `tarextract` library. Everything else (alpineapk, bundler, cargo,
+  gomod, goplugin, node, npm, pybackend, pypi, rubygems, tarballxz, uv
+  and `plugins/goplugin`) lives in its own `jobs-build/fetcher-*` /
+  `plugin-*` repo, is pinned by recipes at its point of use, and the
+  in-repo copies could only drift silently.
+- **go-iroh bumped to latest master** (`8aca5f0`, #10).
+
 ## v0.26.0 — 2026-08-19
 
 - **`BUILD.jobs`: jobs-iroh builds itself.** A root recipe for the JOBS
