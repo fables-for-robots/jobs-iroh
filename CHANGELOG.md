@@ -1,5 +1,43 @@
 # Changelog
 
+## Unreleased
+
+- **Imports run in a hermetic root — with network.** The import executor
+  used to run a fetcher's `./fetch` with user/mount/pid namespaces but NO
+  pivot_root: the fetcher saw the runner host's filesystem, so
+  `#!/usr/bin/env bash`, `jq`, and the host `go`/`cargo`/`node` were
+  silently load-bearing. A runner built from a minimal image could not
+  run a single import, and a fetch's result depended on whatever the
+  host had installed. Imports now get the same kind of sandbox a build
+  gets — pivot_root into an assembled root, User+Mount+PID+UTS+IPC
+  namespaces, best-effort cgroup — minus `CLONE_NEWNET`: the host
+  network is kept, because imports are the one network-capable stage.
+  Inside: the embedded **shell artifact** at `/jobs/store/<key>` with
+  its bash/jq *and every busybox applet* bound at `/bin` and `/usr/bin`
+  (shebangs resolve; `mktemp`, `sleep`, `tr`, `find`, `wget`, … exist),
+  the fetcher artifact read-only at `/jobs/fetcher` (cwd), the output
+  writable at `/jobs/out` (`JOBS_OUTPUT_DIR`), the secrets file at
+  `/jobs/secrets.json`, a writable `/tmp` on the work filesystem,
+  hermetic `/dev` and `/proc`, and an `/etc` carrying the hermetic
+  baseline plus the HOST's `resolv.conf`/`hosts`/`nsswitch.conf` and CA
+  bundle (`SSL_CERT_FILE` is pinned to it) — DNS and TLS trust are part
+  of "network", not of the host. The environment is hermetic too: PATH,
+  HOME=/tmp, TMPDIR, the `JOBS_*` variables and only the proxy /
+  `SSL_CERT_*` pass-through — never `os.Environ()`.
+  **Fetcher contract change:** a fetcher can rely on the static shell
+  userland and nothing else from the host. A fetcher that needs a
+  toolchain (the `gomod` fetcher's `go`, cargo, node, uv, …) declares it
+  as `runtime_deps` in its own `BUILD.jobs`: a recipe-declared fetcher's
+  **runtime closure** (`build-output-deps:F`) is mounted into the import
+  root at the same `/jobs/store/<key>` paths the fetcher's build saw, so
+  the build can bake the path (an `env.sh` the fetch script sources —
+  exactly how an image entrypoint finds its closure). The scheduler's
+  PullRefs for import nodes gained `shell:<platform>` and the fetcher's
+  `build-output-deps:F`. Materialized trees (shell, closures, the /bin
+  farm) are cached per key under `<data-dir>/cache/trees` and shared by
+  every import on the runner. Hosts without user namespaces keep the
+  plain host subprocess fallback, as does the local `develop` path.
+
 ## v0.24.2 — 2026-08-10
 
 - **Back on upstream go-iroh.** Upstream merged everything the

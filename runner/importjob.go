@@ -163,6 +163,28 @@ func RunImport(ctx context.Context, st *amber.Store, rw RefWriter, ex Executor, 
 	}
 	defer cleanup()
 
+	// The hermetic executor's root: the shell artifact (the static userland
+	// every fetch script runs under) and, for a recipe-declared fetcher, its
+	// build's runtime closure — mounted at /jobs/store/<key> like a build's
+	// deps. Both are pulled ahead by the scheduler (PullRefs); the Subprocess
+	// executor ignores them. A missing shell is a sync race, not a fatal
+	// condition here: the executor reports it and the import retries.
+	shellKey, _, err := st.GetKey(ctx, "shell:"+platform)
+	if err != nil {
+		return retryable("resolving", err)
+	}
+	var closureKey key.Key
+	if len(def.FetcherDef) > 0 {
+		fk, _ := (builddef.Input{Kind: builddef.KindBuild, Definition: def.FetcherDef}).Key()
+		ck, ok, cerr := st.ResolveBuildOutputDeps(ctx, fk)
+		if cerr != nil {
+			return retryable("resolving", cerr)
+		}
+		if ok {
+			closureKey = ck
+		}
+	}
+
 	// 3. prepare a network-capable sandbox
 	ev.Phase("fetching")
 	work, err := os.MkdirTemp("", "jobs-import")
@@ -183,7 +205,8 @@ func RunImport(ctx context.Context, st *amber.Store, rw RefWriter, ex Executor, 
 		"JOBS_OUTPUT_DIR":   outDir,
 	}
 	spec := ExecSpec{FetcherDir: fdir, OutputDir: outDir, Env: env, Events: ev,
-		Node: "import|" + k.String()}
+		Node:  "import|" + k.String(),
+		Store: st, ShellKey: shellKey, ClosureKey: closureKey, CacheDir: cacheDir}
 	if len(def.RequiredTags) > 0 {
 		secFile := filepath.Join(work, "secrets.json")
 		if err := writeSecrets(secFile, def.RequiredTags, secrets); err != nil {

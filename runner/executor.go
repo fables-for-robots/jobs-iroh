@@ -16,6 +16,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jobs-build/amber-store-core/key"
+	"github.com/jobs-build/jobs-iroh/amber"
 	"github.com/jobs-build/jobs-iroh/events"
 	"github.com/jobs-build/jobs-iroh/tailbuf"
 )
@@ -26,6 +28,20 @@ type ExecSpec struct {
 	OutputDir   string            // writable; fetcher writes results here
 	Env         map[string]string // JOBS_FETCH_PARAMS / JOBS_OUTPUT_DIR / JOBS_SECRETS_FILE
 	SecretsFile string            // path, or "" when no requiredTags
+	// Hermetic-root inputs, used by the Linux CgroupExecutor only (Subprocess
+	// runs on the host filesystem and ignores them): the store holding the
+	// shell artifact (ShellKey — the embedded static userland, mounted at
+	// /jobs/store/<key> and bound over /bin and /usr/bin so shebangs resolve)
+	// and, for a recipe-declared fetcher, the fetcher build's runtime closure
+	// (ClosureKey — a build-output-deps store tree whose entries land at the
+	// same /jobs/store/<key> paths the fetcher's own build saw; zero when the
+	// fetcher has no runtime deps). CacheDir holds the materialized trees,
+	// reused across imports. A zero ShellKey makes the hermetic executor fail:
+	// a fetcher cannot run without a userland.
+	Store      *amber.Store
+	ShellKey   key.Key
+	ClosureKey key.Key
+	CacheDir   string
 	// StdoutSink/StderrSink, when non-nil, additionally receive the process's
 	// full stdout/stderr (build-events output capture). Stderr keeps the 4KB
 	// tail for the failure path regardless.
@@ -46,9 +62,9 @@ type ExecResult struct {
 }
 
 // Executor runs a fetcher. On Linux with user namespaces the default is
-// CgroupExecutor (light namespaces + best-effort cgroup); the cross-platform
-// Subprocess is the fallback and the explicit test/develop seam (see
-// defaultImportExecutor).
+// CgroupExecutor (hermetic root + best-effort cgroup, network kept); the
+// cross-platform Subprocess is the fallback and the explicit test/develop
+// seam (see defaultImportExecutor).
 type Executor interface {
 	Run(ctx context.Context, spec ExecSpec) (ExecResult, error)
 }

@@ -117,6 +117,14 @@ func TestPullRefsImportNamedFetcher(t *testing.T) {
 	// Seed ref present: pulled.
 	e.putRef("fetcher:github:"+testPlatform, e.ingest("github fetcher artifact"))
 	e.assertExact(e.pullRefs(n), []string{"fetcher:github:" + testPlatform})
+
+	// The shell (the hermetic import root's userland) rides along once it
+	// exists — present-only, like the build stages.
+	e.putRef("shell:"+testPlatform, e.ingest("shell artifact"))
+	e.assertExact(e.pullRefs(n), []string{
+		"shell:" + testPlatform,
+		"fetcher:github:" + testPlatform,
+	})
 }
 
 func TestPullRefsImportFetcherDef(t *testing.T) {
@@ -138,6 +146,18 @@ func TestPullRefsImportFetcherDef(t *testing.T) {
 	e.assertExact(e.pullRefs(n), []string{
 		"build-from:" + kf.String(),
 		"build-output:" + ff.String(),
+	})
+
+	// Shell + the fetcher's runtime closure (build-output-deps:F_f) join once
+	// they exist: the import root mounts both. Present-only, so a fetcher
+	// built before runtime closures were published still schedules.
+	e.putRef("shell:"+testPlatform, e.ingest("shell artifact"))
+	e.putRef("build-output-deps:"+ff.String(), e.ingest("fetcher runtime closure"))
+	e.assertExact(e.pullRefs(n), []string{
+		"shell:" + testPlatform,
+		"build-from:" + kf.String(),
+		"build-output:" + ff.String(),
+		"build-output-deps:" + ff.String(),
 	})
 }
 

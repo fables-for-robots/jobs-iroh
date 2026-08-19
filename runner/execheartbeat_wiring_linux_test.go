@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"github.com/jobs-build/amber-store-core/key"
+	"github.com/jobs-build/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/bootstrap"
 	"github.com/jobs-build/jobs-iroh/events"
 	"github.com/jobs-build/jobs-iroh/sandbox"
 )
@@ -113,6 +115,16 @@ func TestImportExecHeartbeatWiring(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(fdir, "fetch"), []byte("#!/bin/sh\nsleep 1\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// The hermetic import root needs the shell artifact in a store.
+	st, err := amber.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	shellKey, err := bootstrap.SeedShellAs(ctx, st, Platform(), "shell:test")
+	if err != nil {
+		t.Skip("embedded shell seed unavailable: " + err.Error())
+	}
 
 	sink := &capSink{}
 	shrinkHeartbeatInterval(t, 50*time.Millisecond)
@@ -121,6 +133,9 @@ func TestImportExecHeartbeatWiring(t *testing.T) {
 		FetcherDir: fdir,
 		OutputDir:  t.TempDir(),
 		Events:     events.NewJob(sink, "import|K", "r-test", nil),
+		Store:      st,
+		ShellKey:   shellKey,
+		CacheDir:   t.TempDir(),
 	}
 	res, err := CgroupExecutor{}.Run(ctx, spec)
 	if err != nil {
