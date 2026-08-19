@@ -12,6 +12,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"reflect"
+	"sort"
 	"strings"
 	"sync"
 	"testing"
@@ -466,6 +468,26 @@ func TestLinearChainDonePropagation(t *testing.T) {
 		t.Fatalf("build-output:F is not an alias of build-output:KP")
 	}
 
+	// The snapshot carries the graph edges: the buildvalue's deps are its
+	// whole stage chain, sorted; the chain nodes point at their own deps.
+	// None of these nodes were cached — everything ran.
+	bv := nodePhase(t, snap, wire.NodeName(wire.KindBuildValue, k))
+	wantDeps := []string{
+		wire.NodeName(wire.KindBuildFrom, k),
+		wire.NodeName(wire.KindPluginResolve, f),
+		wire.NodeName(wire.KindPin, f),
+		wire.NodeName(wire.KindBuildRun, kp),
+	}
+	sort.Strings(wantDeps)
+	if !reflect.DeepEqual(bv.Deps, wantDeps) {
+		t.Fatalf("buildvalue deps = %v, want %v", bv.Deps, wantDeps)
+	}
+	for _, n := range snap.Nodes {
+		if n.Cached {
+			t.Fatalf("node %s marked cached in a run-everything build", n.Node)
+		}
+	}
+
 	// PullRefs per stage, exact lists.
 	for kind, want := range map[string][]string{
 		wire.KindBuildFrom:     {"build-from-tree:" + treeKey.String()},
@@ -554,6 +576,10 @@ func TestDonenessFastPath(t *testing.T) {
 	}
 	if snap.Counts.Total != 1 || snap.Counts.Done != 1 {
 		t.Fatalf("counts = %+v, want the lone buildvalue done", snap.Counts)
+	}
+	// Fast-pathed done at creation ⇒ the snapshot marks the node cached.
+	if bv := nodePhase(t, snap, wire.NodeName(wire.KindBuildValue, k)); !bv.Cached {
+		t.Fatalf("fast-pathed buildvalue not marked cached: %+v", bv)
 	}
 	// Nothing was ever enqueued: the JOBS stream is empty.
 	stream, err := e.js.Stream(e.ctx, wire.StreamJobs)

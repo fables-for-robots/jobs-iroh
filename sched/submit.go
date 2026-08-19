@@ -389,6 +389,11 @@ func (s *Sched) assembleLocked(r *request) api.Snapshot {
 		default:
 			counts.Waiting++
 		}
+		var deps []string
+		for d := range n.deps {
+			deps = append(deps, d.name)
+		}
+		sort.Strings(deps)
 		nodes = append(nodes, api.NodeSnap{
 			Node:       n.name,
 			Label:      n.label,
@@ -397,6 +402,8 @@ func (s *Sched) assembleLocked(r *request) api.Snapshot {
 			Runner:     n.runner,
 			ElapsedMs:  elapsedMs(n, now),
 			ErrSummary: n.errSummary,
+			Deps:       deps,
+			Cached:     n.cached,
 		})
 	}
 	sort.Slice(nodes, func(i, j int) bool { return nodes[i].Node < nodes[j].Node })

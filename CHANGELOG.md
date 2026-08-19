@@ -1,5 +1,28 @@
 # Changelog
 
+## v0.28.0 — 2026-08-19
+
+- **Full-screen build TUI for `remote-build` and `watch`**
+  (docs/design/2026-08-19-remote-build-tui.md). On an interactive
+  terminal (stdin + stderr TTYs) both commands open a bubbletea view:
+  the build graph as a navigable tree — one logical row per
+  build/import, the buildvalue stage chain (eval → resolve → pin →
+  build) folded into the row's state with per-stage elapsed, done
+  durations and `(cached)` markers — plus an output pane following the
+  selected row's captured output live (stored head/gap/tail first,
+  then chunks; scroll pauses follow, `G` resumes). Shared dep subtrees
+  repeat under every parent (per-path expand/collapse; cached-done
+  subtrees start collapsed). `q` detaches (the build keeps running;
+  re-attach hint printed, exit 0), `ctrl-c`/`c` confirm-cancels (exit
+  130); a finished build auto-exits — success pulls the output home
+  exactly as before, failure keeps the view open for inspection and
+  exits 1 after `q`. `--no-tui` (or a non-TTY, or an old server
+  without graph snapshots, or an already-terminal request) falls back
+  to the classic block view unchanged. New wire: additive
+  `NodeSnap.Deps`/`.Cached` (+ the shared `api.ServerError` type);
+  no ALPN bump — old/new peers interoperate, old servers just get the
+  classic view.
+
 ## v0.27.0 — 2026-08-19
 
 - **Builds are rejected when no runner serves their arch; a runnerless

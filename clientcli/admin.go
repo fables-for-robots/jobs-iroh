@@ -8,6 +8,7 @@ import (
 	"github.com/urfave/cli/v2"
 
 	"github.com/jobs-build/jobs-iroh/api"
+	"github.com/jobs-build/jobs-iroh/tui"
 )
 
 // serverFlags are the connection flags shared by every remote observation
@@ -27,7 +28,8 @@ func watchCmd() *cli.Command {
 		Usage: "stream one build request's progress until it finishes",
 		Flags: append(serverFlags(),
 			&cli.StringFlag{Name: "request-id", Required: true, Usage: "request ID printed at submit time"},
-			&cli.BoolFlag{Name: "no-logs", Usage: "do not stream the output of running build steps"},
+			&cli.BoolFlag{Name: "no-logs", Usage: "do not stream the output of running build steps (classic view only)"},
+			&cli.BoolFlag{Name: "no-tui", Usage: "disable the full-screen build view; use the classic progress block"},
 		),
 		Action: func(c *cli.Context) error {
 			ctx, stop := signalCtx(c.Context)
@@ -39,6 +41,19 @@ func watchCmd() *cli.Command {
 			defer bc.Close()
 			lv := cliLiveView(c) // one shared view: tracker Printlns and the
 			// watch block must go through the same cursor arithmetic
+
+			// Full-screen build view on an interactive terminal; classic
+			// fallback for old servers and already-terminal requests.
+			if useBuildTUI(c) {
+				reqID := c.String("request-id")
+				handled, out, terr := runBuildTUI(ctx, c, bc, reqID, "", lv)
+				if handled {
+					if terr != nil {
+						return terr
+					}
+					return finishWatchTUI(c, out, reqID)
+				}
+			}
 			var tracker *logTracker
 			if !c.Bool("no-logs") {
 				tracker = newLogTracker(ctx, bc, lv)
@@ -63,6 +78,27 @@ func watchCmd() *cli.Command {
 			}
 			return nil
 		},
+	}
+}
+
+// finishWatchTUI maps a build-view outcome onto watch's exit contract
+// (like remote-build's finishTUI, minus the pull-home).
+func finishWatchTUI(c *cli.Context, out tui.BuildOutcome, requestID string) error {
+	ew := errWriter(c)
+	switch {
+	case out.Detached:
+		fmt.Fprintf(ew, "detached — re-attach: jobs-client watch --server %s --request-id %s\n", c.String("server"), requestID)
+		return nil
+	case out.HaveFinal && out.Final.Phase == "done":
+		return nil
+	case out.HaveFinal && out.Final.Phase == "failed":
+		fmt.Fprintf(ew, "full failure report (all attempts, durable): jobs-client diagnose --server %s --request %s\n", c.String("server"), requestID)
+		if s := failureSummary(out.Final); s != "" {
+			return cli.Exit("request failed: "+s, 1)
+		}
+		return cli.Exit("request failed", 1)
+	default:
+		return cli.Exit("request cancelled", 1)
 	}
 }
 

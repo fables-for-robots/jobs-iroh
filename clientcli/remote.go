@@ -8,8 +8,8 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 	"os/signal"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -21,6 +21,7 @@ import (
 	"github.com/jobs-build/jobs-iroh/api"
 	"github.com/jobs-build/jobs-iroh/builddef"
 	"github.com/jobs-build/jobs-iroh/runner"
+	"github.com/jobs-build/jobs-iroh/tui"
 	"github.com/jobs-build/jobs-iroh/wire"
 )
 
@@ -106,7 +107,8 @@ func remoteBuildCmd() *cli.Command {
 			&cli.StringSliceFlag{Name: "param", Usage: "key=value build param (repeatable)"},
 			&cli.StringFlag{Name: "cpu", Usage: "raise the target build's CPU requirement (e.g. 2000m)", Destination: &cfg.cpu},
 			&cli.StringFlag{Name: "memory", Usage: "raise the target build's memory requirement (e.g. 4Gi)", Destination: &cfg.memory},
-			&cli.BoolFlag{Name: "no-logs", Usage: "do not stream the output of running build steps"},
+			&cli.BoolFlag{Name: "no-logs", Usage: "do not stream the output of running build steps (classic view only)"},
+			&cli.BoolFlag{Name: "no-tui", Usage: "disable the full-screen build view; use the classic progress block"},
 			&cli.IntFlag{Name: "conns", Value: 4, Usage: "parallel connections for the push/pull transfers (1-16; 1 disables sharding)", Destination: &cfg.conns},
 		},
 		Action: cfg.run,
@@ -201,6 +203,19 @@ func (cfg *remoteConfig) run(c *cli.Context) error {
 	}
 	lv.Println(fmt.Sprintf("submitted request %s (build %s)", sub.RequestID, k))
 
+	// Full-screen build view on an interactive terminal (the view owns
+	// ctrl-c: confirm-cancel; q detaches). Falls through to the classic
+	// block path against an old server or an already-terminal build.
+	if useBuildTUI(c) {
+		handled, out, terr := runBuildTUI(ctx, c, bc, sub.RequestID, cfg.targetLabel(), lv)
+		if handled {
+			if terr != nil {
+				return terr
+			}
+			return cfg.finishTUI(ctx, c, out, ac, cs, k, sub.RequestID, lv)
+		}
+	}
+
 	// SIGINT/SIGTERM: send the cancel frame on its own stream, then let the
 	// watch loop unwind via ctx so every deferred teardown still runs. A
 	// second signal falls back to the default handler (kill).
@@ -246,6 +261,30 @@ func (cfg *remoteConfig) run(c *cli.Context) error {
 		}
 		return cli.Exit(fmt.Sprintf("build FAILED (request %s)", sub.RequestID), 1)
 	default: // cancelled
+		return cli.Exit("build cancelled", 130)
+	}
+}
+
+// finishTUI maps a build-view outcome onto remote-build's exit contract:
+// done → pull home (stdout keys as always); failed → hints + exit 1 (the
+// output was inspectable in the view, so no log recap); detach → re-attach
+// hint, exit 0; cancelled → exit 130.
+func (cfg *remoteConfig) finishTUI(ctx context.Context, c *cli.Context, out tui.BuildOutcome, ac *amberclient.Client, cs *clientStore, k key.Key, requestID string, lv *liveView) error {
+	ew := errWriter(c)
+	switch {
+	case out.Detached:
+		fmt.Fprintf(ew, "detached — the build continues; re-attach: jobs-client watch --server %s --request-id %s\n", cfg.server, requestID)
+		return nil
+	case out.HaveFinal && out.Final.Phase == "done":
+		return cfg.pullHome(ctx, c, ac, cs, k, lv)
+	case out.HaveFinal && out.Final.Phase == "failed":
+		fmt.Fprintf(ew, "re-attach: jobs-client watch --server %s --request-id %s\n", cfg.server, requestID)
+		fmt.Fprintf(ew, "full failure report (all attempts, durable): jobs-client diagnose --server %s --request %s\n", cfg.server, requestID)
+		if s := failureSummary(out.Final); s != "" {
+			return cli.Exit("build FAILED: "+s, 1)
+		}
+		return cli.Exit(fmt.Sprintf("build FAILED (request %s)", requestID), 1)
+	default: // cancelled (own confirm or external)
 		return cli.Exit("build cancelled", 130)
 	}
 }

@@ -51,8 +51,8 @@ type node struct {
 	pinInputs []builddef.Input       // pin: plugins ∪ resolution deps (stable order)
 	// label is the node's display-only name: the recipe dep name (or dir /
 	// fetcher) it was first required under. Never part of identity.
-	label string
-	runInputs []builddef.Input       // buildrun: Pinned.Inputs
+	label     string
+	runInputs []builddef.Input // buildrun: Pinned.Inputs
 
 	// Failure/retry accounting.
 	consecRetry   int
@@ -65,6 +65,10 @@ type node struct {
 	enqueuedAt time.Time
 	startedAt  time.Time
 	doneAt     time.Time
+	// cached: fast-pathed done at creation (output ref existed) — the node
+	// never ran for this incarnation. Explicit rather than inferred from
+	// zero timestamps: buildvalue never gets startedAt either way.
+	cached bool
 }
 
 func placeable(kind string) bool { return kind != wire.KindBuildValue }
@@ -146,6 +150,7 @@ func (s *Sched) require(kind string, k key.Key, def []byte, platform string, par
 			s.failNodeLocked(n, "doneness check: "+err.Error())
 		case done:
 			n.phase = wire.PhaseDone
+			n.cached = true
 			s.putNodeStatusLocked(n)
 		default:
 			s.unfoldLocked(n)

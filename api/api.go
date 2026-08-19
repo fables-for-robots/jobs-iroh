@@ -173,6 +173,13 @@ type NodeSnap struct {
 	Runner     string `cbor:"runner,omitempty"`
 	ElapsedMs  int64  `cbor:"elapsedMs,omitempty"`
 	ErrSummary string `cbor:"errSummary,omitempty"`
+	// Deps are the node's dep node names (edges within the snapshot's
+	// closure). Additive: absent from old servers — consumers needing the
+	// graph must fall back to the flat list.
+	Deps []string `cbor:"deps,omitempty"`
+	// Cached marks a node fast-pathed done at creation (its output ref
+	// already existed): it never ran for this request.
+	Cached bool `cbor:"cached,omitempty"`
 }
 
 // LogsRequest fetches one node's captured output (+ live follow).
@@ -200,6 +207,14 @@ type Error struct {
 	Code string `cbor:"code"`
 	Text string `cbor:"text"`
 }
+
+// ServerError is a decoded Error frame as a Go error: the server ANSWERED
+// (as opposed to a transport failure), so retrying the exchange is
+// pointless. Clients share this type so stream-retry loops can tell the
+// two apart with errors.As.
+type ServerError struct{ Code, Text string }
+
+func (e *ServerError) Error() string { return "server: " + e.Code + ": " + e.Text }
 
 // Error codes.
 const (

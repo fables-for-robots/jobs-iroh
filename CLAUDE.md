@@ -124,7 +124,7 @@ GitHub release notes are the outward one.
 | `runner/` | Ported stage drivers + sandbox executors; local build/run pipeline (`driveFStages`), develop PTY shell, OCI image export (single-layer docker-load tar + two-layer `AssembleOCIImage` for the registry). |
 | `registryd/` | jobs-registry daemon: read-only OCI Distribution API (images named `jobs:<K>` — one repo, tags are build keys), on-demand K→F resolve + amberclient sync into a private store, two-layer image assembly (shell baked by default like `run`/`image`), uncompressed layers streamed from the CAS per request (never cached; the record's layer recipes are the index), manifest/config blob cache with last-read TTL sweep, offline reassembly from records. |
 | `clientcli/` | jobs-client command surface: local + remote commands, store flock, liveView TTY progress (NO_COLOR-aware). `contextroot.go` owns source resolution — `repoRoot` (pure `.git` walk, the ONLY repo detection; no `git` subprocess), `defaultSource` (cwd walk-up for an omitted `--source`), `resolveContextRoot` (re-anchor to the context root). Local and remote MUST both go through `resolveSource` in that order or the local↔remote F join breaks. |
-| `tui/` | bubbletea admin TUI over `jobs-admin/1.0`: builds (watch/logs/cancel/delete), fleet, stats, refs. Never block in Update — network I/O only inside tea.Cmd goroutines. |
+| `tui/` | bubbletea admin TUI over `jobs-admin/1.0` (builds watch/logs/cancel/delete, fleet, stats, refs) + the standalone build view (`RunBuildWatch` over the `BuildStreams` seam; `buildtree.go` folds `NodeSnap.Deps` into logical rows) that remote-build/watch run on a TTY. Never block in Update — network I/O only inside tea.Cmd goroutines. |
 | `builddef/`, `recipe/` | Build definition identity (canonical CBOR) + Starlark recipe evaluation — ports, seam-swapped. |
 | `bootstrap/` | Embedded seed artifacts (shell + fetchers per platform), idempotent seeding. |
 | `fetchers/` | ONLY the embedded-seed sources: `github`, `hostmusl`, `hostshell`, `tarballhttps` (+ shared `tarextract`). Every other fetcher/plugin lives in its own `jobs-build/fetcher-*`/`plugin-*` repo, pinned by recipes — the in-repo copies were removed (issue #7); goplugin (incl. `go_closure`, source-closure design §8) is authoritative in `plugin-go`. |
@@ -182,11 +182,17 @@ GitHub release notes are the outward one.
     the mode: given one, image it as-is; given none, build `--source` (the two
     are mutually exclusive).
   - `remote-build --server <id> [--source <dir>] [--cpu …] [--memory …]
-    [--no-logs] [--conns N]` — push source, submit, watch to terminal, pull output
-    home; the running steps' output streams alongside the progress block
-    by default (`--no-logs` opts out).
-  - `watch --server <id> --request-id <id> [--no-logs]` — re-attach to a
-    build.
+    [--no-logs] [--no-tui] [--conns N]` — push source, submit, watch, pull
+    output home. On an interactive terminal (stdin+stderr TTYs) the watch
+    is a full-screen TUI (`tui.RunBuildWatch`): navigable build-graph tree
+    (logical rows fold the buildvalue stage chain; states, durations,
+    `(cached)`) + an output pane following the selected node; `q` detaches
+    (exit 0), `ctrl-c` confirm-cancels (130), success auto-exits into the
+    pull, failure stays for inspection (then exit 1). `--no-tui`, non-TTY,
+    old servers (no `NodeSnap.Deps`) and already-terminal requests fall
+    back to the classic block view, where `--no-logs` still applies.
+  - `watch --server <id> --request-id <id> [--no-logs] [--no-tui]` —
+    re-attach to a build; same TUI/fallback matrix minus the pull.
   - `logs --server <id> --node <name> [--follow]` — one node's captured
     output (stored head/gap/tail, raw bytes on stdout); `--follow` keeps
     streaming live chunks until interrupted.

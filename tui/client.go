@@ -142,28 +142,23 @@ func (c *client) call(ctx context.Context, t string, body any, wantType string, 
 	return decodeReply(rt, rb, wantType, reply)
 }
 
-// serverError is a decoded api.Error frame: the server answered, so the
-// transport stays up — these must never invalidate the connection.
-type serverError struct{ code, text string }
-
-func (e *serverError) Error() string { return "server: " + e.code + ": " + e.text }
-
 // isServerError reports whether err is an answered api.Error (as opposed to
-// a transport failure).
+// a transport failure): the server spoke, so retrying is pointless — these
+// must never invalidate the connection either.
 func isServerError(err error) bool {
-	var se *serverError
+	var se *api.ServerError
 	return errors.As(err, &se)
 }
 
 // decodeReply maps a reply frame onto the expected type, surfacing server
-// api.Error frames as *serverError.
+// api.Error frames as *api.ServerError.
 func decodeReply(rt string, body cbor.RawMessage, wantType string, reply any) error {
 	if rt == api.TError {
 		var e api.Error
 		if err := api.DecodeBody(body, &e); err != nil {
 			return fmt.Errorf("undecodable server error frame: %w", err)
 		}
-		return &serverError{code: e.Code, text: e.Text}
+		return &api.ServerError{Code: e.Code, Text: e.Text}
 	}
 	if rt != wantType {
 		return fmt.Errorf("unexpected reply frame %q (want %q)", rt, wantType)

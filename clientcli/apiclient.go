@@ -88,14 +88,15 @@ func (a *apiConn) call(ctx context.Context, t string, body any, wantType string,
 }
 
 // decodeReply maps a reply frame onto the expected type, surfacing server
-// api.Error frames as Go errors.
+// api.Error frames as *api.ServerError (the build view's retry loops tell
+// answered errors from transport failures with errors.As).
 func decodeReply(rt string, body cbor.RawMessage, wantType string, reply any) error {
 	if rt == api.TError {
 		var e api.Error
 		if err := api.DecodeBody(body, &e); err != nil {
 			return fmt.Errorf("undecodable server error frame: %w", err)
 		}
-		return fmt.Errorf("server: %s: %s", e.Code, e.Text)
+		return &api.ServerError{Code: e.Code, Text: e.Text}
 	}
 	if rt != wantType {
 		return fmt.Errorf("unexpected reply frame %q (want %q)", rt, wantType)
