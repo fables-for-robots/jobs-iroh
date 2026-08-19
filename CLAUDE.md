@@ -131,13 +131,16 @@ the in-tree record, the GitHub release notes are the outward one.
   over the internet, nearest relay as fallback (relay connect is best-effort —
   an offline host still starts).
 - `jobs-runner --server <endpoint-id> [--addr host:port]… [--size c1-m2]
-  [--slots N] [--name …] [--data-dir …] [--skip-self-test] [--sync-conns N]`
+  [--cpu N] [--memory NGi] [--slots N] [--name …] [--data-dir …]
+  [--skip-self-test] [--sync-conns N]`
   — runs a boot self-test build
   (embedded shell, real sandbox) and refuses to start if it fails, then dials
   the server twice (NATS tunnel + amber sync), pulls work-queue jobs for
   every fitting class. Admission capacity is the full detected machine
-  (cgroup-aware, minus 10% reserve) — the ladder classifies jobs, not
-  runners; `--size` caps capacity to a rung, `--slots` caps concurrent jobs.
+  (cgroup-aware: tightest limit from the process's own cgroup up to the
+  root, minus 10% reserve) — the ladder classifies jobs, not runners;
+  `--cpu`/`--memory` cap a dimension verbatim, `--size` caps capacity to a
+  rung, `--slots` caps concurrent jobs.
   Build work trees live under `<data-dir>/work` (TMPDIR is pointed there;
   swept every boot) — never the OS temp dir, which is a RAM-backed tmpfs
   on NixOS and fills at 50% of RAM.

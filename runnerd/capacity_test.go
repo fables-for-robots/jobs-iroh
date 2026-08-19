@@ -44,14 +44,14 @@ func startInProcNATS(t *testing.T, name string) *nats.Conn {
 }
 
 func TestResolveCapacityExplicitRung(t *testing.T) {
-	got, err := resolveCapacity("c1-m2", slog.Default())
+	got, err := resolveCapacity("c1-m2", "", "", slog.Default())
 	if err != nil {
 		t.Fatalf("resolveCapacity: %v", err)
 	}
 	if want := wire.Class("c1-m2").Resources(); got != want {
 		t.Fatalf("capacity = %v, want %v", got, want)
 	}
-	if _, err := resolveCapacity("c9-m99", slog.Default()); err == nil {
+	if _, err := resolveCapacity("c9-m99", "", "", slog.Default()); err == nil {
 		t.Fatal("unknown rung must be rejected")
 	}
 }
@@ -60,7 +60,7 @@ func TestResolveCapacityAutoDetectIsFull(t *testing.T) {
 	// Empty size must yield the detected (reserve-adjusted) capacity
 	// verbatim — NOT floored to a ladder rung.
 	want := runner.DetectCapacity("", "", slog.Default())
-	got, err := resolveCapacity("", slog.Default())
+	got, err := resolveCapacity("", "", "", slog.Default())
 	if err != nil {
 		t.Fatalf("resolveCapacity: %v", err)
 	}

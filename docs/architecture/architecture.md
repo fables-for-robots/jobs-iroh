@@ -466,9 +466,11 @@ path) run fetchers as a plain host subprocess instead.
   real sandbox, then deletes the refs. If the sandbox doesn't actually work
   here, the runner refuses to start (`--skip-self-test` overrides).
 - **Lanes.** A runner's capacity is its full detected machine capacity
-  (cgroup-aware, minus a 10% reserve; `--size` caps it to a ladder rung,
-  `--slots` caps concurrent jobs) — the ladder classifies jobs, not
-  runners. It consumes every ladder class that fits within that capacity,
+  (cgroup-aware — the tightest `memory.max`/`cpu.max` from its own cgroup
+  up to the root, so a Kubernetes pod limit applies whatever the cgroup
+  namespace mode — minus a 10% reserve; `--cpu`/`--memory` cap either
+  dimension verbatim, `--size` caps it to a ladder rung, `--slots` caps
+  concurrent jobs) — the ladder classifies jobs, not runners. It consumes every ladder class that fits within that capacity,
   binding the shared durable consumer per class. A single sweep loop
   walks classes largest-first; a job is fetched only after its class's
   rung is reserved in an admission ledger (Σ held cpu/mem ≤ capacity),

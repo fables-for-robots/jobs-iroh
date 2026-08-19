@@ -55,6 +55,16 @@ func main() {
 				EnvVars: []string{"JOBS_RUNNER_SLOTS"},
 			},
 			&cli.StringFlag{
+				Name:    "cpu",
+				Usage:   "cap the advertised CPU capacity (e.g. 8 or 8000m); default: auto-detected (cgroup-aware)",
+				EnvVars: []string{"JOBS_RUNNER_CPU"},
+			},
+			&cli.StringFlag{
+				Name:    "memory",
+				Usage:   "cap the advertised memory capacity (e.g. 28Gi); default: auto-detected (cgroup-aware)",
+				EnvVars: []string{"JOBS_RUNNER_MEM"},
+			},
+			&cli.StringFlag{
 				Name:    "name",
 				Usage:   "display name announced to the server (default: hostname)",
 				EnvVars: []string{"JOBS_RUNNER_NAME"},
@@ -95,6 +105,8 @@ func main() {
 				DataDir:      c.String("data-dir"),
 				Size:         c.String("size"),
 				Slots:        c.Int("slots"),
+				CPU:          c.String("cpu"),
+				Memory:       c.String("memory"),
 				Name:         c.String("name"),
 				SkipSelfTest: c.Bool("skip-self-test"),
 				SyncConns:    max(1, c.Int("sync-conns")),

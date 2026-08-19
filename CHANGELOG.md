@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+- **Runner capacity honours the pod's cgroup limit; `--cpu` / `--memory`
+  caps.** Auto-detection read `memory.max`/`cpu.max` at the cgroup mount
+  root only, which is the container in a private cgroup namespace but the
+  MACHINE in the host namespace (a privileged Kubernetes pod): a runner
+  with a 32 GiB pod limit advertised the node's 121 GiB and would have
+  admitted far more than the pod could hold. Detection now walks from the
+  process's own cgroup (`/proc/self/cgroup`) up to the root and takes the
+  tightest `memory.max` and `cpu.max` on the chain — which also sees
+  through the leaf-holder child the runner parks itself in. New
+  `--cpu` / `--memory` flags (`JOBS_RUNNER_CPU` / `JOBS_RUNNER_MEM`, the
+  override the code comments always promised) cap either dimension
+  verbatim; `--size` still wins when set.
+
 ## v0.25.0 — 2026-08-19
 
 - **Imports run in a hermetic root — with network.** The import executor

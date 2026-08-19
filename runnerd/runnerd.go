@@ -78,6 +78,11 @@ type Options struct {
 	// Slots optionally caps concurrent jobs regardless of resource fit
 	// (0 = resource accounting only).
 	Slots int
+	// CPU and Memory optionally cap the advertised capacity ("4", "2000m" /
+	// "28Gi", "16G"), applied verbatim over the auto-detected value (no
+	// reserve is subtracted). Either may be empty. Ignored when Size is set.
+	CPU    string
+	Memory string
 	// SkipSelfTest disables the boot self-test build that gates serving on a
 	// working local sandbox (bootSelfTest). Escape hatch only — a runner that
 	// cannot sandbox-exec hard-fails every job it is handed.
@@ -144,7 +149,7 @@ func Run(ctx context.Context, o Options) error {
 	if platform == "" {
 		platform = runner.Platform()
 	}
-	capacity, err := resolveCapacity(o.Size, log)
+	capacity, err := resolveCapacity(o.Size, o.CPU, o.Memory, log)
 	if err != nil {
 		return err
 	}
@@ -624,11 +629,13 @@ func (d *daemon) publishResult(ctx context.Context, res wire.Result) error {
 // resolveCapacity resolves the runner's admission capacity: an explicit
 // --size must be a ladder rung and caps the runner to exactly that rung's
 // resources; otherwise capacity is auto-detected (runner.DetectCapacity —
-// cgroup-aware, reserve-adjusted) and used in FULL. The ladder classifies
-// jobs, not runners — flooring a 32-core box to the top rung would waste
-// everything above it. DetectCapacity floors its result to one default
-// build slot, so an auto-detected capacity always fits at least c1-m1.
-func resolveCapacity(size string, log *slog.Logger) (resources.Resources, error) {
+// cgroup-aware, reserve-adjusted) and used in FULL, with --cpu / --memory
+// (JOBS_RUNNER_CPU / JOBS_RUNNER_MEM) overriding either dimension verbatim.
+// The ladder classifies jobs, not runners — flooring a 32-core box to the
+// top rung would waste everything above it. DetectCapacity floors its result
+// to one default build slot, so an auto-detected capacity always fits at
+// least c1-m1.
+func resolveCapacity(size, cpu, mem string, log *slog.Logger) (resources.Resources, error) {
 	if size != "" {
 		c, err := wire.ParseClass(size)
 		if err != nil {
@@ -636,7 +643,17 @@ func resolveCapacity(size string, log *slog.Logger) (resources.Resources, error)
 		}
 		return c.Resources(), nil
 	}
-	return runner.DetectCapacity("", "", log), nil
+	if cpu != "" {
+		if _, err := resources.ParseCPU(cpu); err != nil {
+			return resources.Resources{}, fmt.Errorf("--cpu %q: %w", cpu, err)
+		}
+	}
+	if mem != "" {
+		if _, err := resources.ParseMem(mem); err != nil {
+			return resources.Resources{}, fmt.Errorf("--memory %q: %w", mem, err)
+		}
+	}
+	return runner.DetectCapacity(cpu, mem, log), nil
 }
 
 // initWorkDir sweeps and recreates <dataDir>/work and points TMPDIR at it,
