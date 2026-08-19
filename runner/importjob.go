@@ -180,6 +180,16 @@ func RunImport(ctx context.Context, st *amber.Store, rw RefWriter, ex Executor, 
 		if cerr != nil {
 			return retryable("resolving", cerr)
 		}
+		if !ok {
+			// Local build: no build-from:K bridge — the same direct fallback
+			// ResolveBuildArtifact applies to build-output above. Without it a
+			// locally driven fetcher build's runtime closure (e.g. gomod's
+			// toolchain, baked into env.sh as /jobs/store paths) never mounts.
+			ck, ok, cerr = st.GetKey(ctx, "build-output-deps:"+fk.String())
+			if cerr != nil {
+				return retryable("resolving", cerr)
+			}
+		}
 		if ok {
 			closureKey = ck
 		}

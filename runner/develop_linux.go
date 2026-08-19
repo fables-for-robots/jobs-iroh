@@ -113,7 +113,13 @@ func (d *developDriver) ensureImport(k key.Key, idef importdef.Definition, p *Pr
 		}
 	}
 	done := p.Start(label)
-	out := RunImport(d.ctx, d.st, d.rw, Subprocess{}, d.brc.CacheDir, k, d.secrets, nil)
+	// The hermetic import root is part of the fetcher contract: a fetcher's
+	// runtime closure is mounted at the /jobs/store paths its build baked
+	// (e.g. gomod's env.sh toolchain), so the local pipeline must use the
+	// same executor as the runner — Subprocess would leave those paths
+	// dangling and leak the host userland. Falls back to Subprocess (with a
+	// one-time notice) only where user namespaces are unavailable.
+	out := RunImport(d.ctx, d.st, d.rw, defaultImportExecutor(0), d.brc.CacheDir, k, d.secrets, nil)
 	if err := outcomeErr("import "+k.String(), out); err != nil {
 		done(err)
 		return err
