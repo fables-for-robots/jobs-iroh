@@ -52,6 +52,13 @@ nix develop -c env CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go vet ./...
 `vet` rather than `build` — it type-checks `_test.go` files too. Windows is
 not a target (amber-store-core is unix-only).
 
+The repo-root `BUILD.jobs` is the JOBS self-build (all four binaries,
+offline `go build` via plugin-go + gomod imports). Verify it end-to-end with
+`nix develop -c go run ./cmd/jobs-client build`; a rerun must be `(cached)`.
+Its pins (plugin-go rev+sha256, Go toolchain version+sha256 — must satisfy
+go.mod's `go` directive, `GOTOOLCHAIN=local` never auto-downloads) are
+documented in the recipe header and bumped together.
+
 ## Release process
 
 Every release is: bump `version/version.go` (the ONLY change in the release
@@ -75,7 +82,7 @@ nix develop -c bash -c 'export GOPRIVATE="github.com/jobs-build/*"
   CGO_ENABLED=0 GOARCH=arm64 go build -o deploy/jobs-registry/jobs-registry-arm64 ./cmd/jobs-registry
   CGO_ENABLED=0 GOARCH=amd64 go build -o deploy/jobs-registry/jobs-registry-amd64 ./cmd/jobs-registry'
 REV=$(git rev-parse HEAD)
-sudo docker --config "$HOME/.docker" buildx build --builder jobs-multi \
+docker --config "$HOME/.docker" buildx build --builder jobs-multi \
   --platform linux/amd64,linux/arm64 --provenance=false --sbom=false \
   --label org.opencontainers.image.version="$V" \
   --label org.opencontainers.image.revision="$REV" \
@@ -85,14 +92,19 @@ sudo docker --config "$HOME/.docker" buildx build --builder jobs-multi \
   --annotation "index:org.opencontainers.image.source=https://github.com/jobs-build/jobs-iroh" \
   -t "dmilhdef/jobs-registry:v$V" -t dmilhdef/jobs-registry:latest \
   --push deploy/jobs-registry
-sudo docker --config "$HOME/.docker" buildx imagetools inspect "dmilhdef/jobs-registry:v$V"
+docker --config "$HOME/.docker" buildx imagetools inspect "dmilhdef/jobs-registry:v$V"
 rm -f deploy/jobs-registry/jobs-registry-{amd64,arm64}
 ```
 
 `imagetools inspect` must show exactly two platform entries and no
-`unknown/unknown` attestation rows. The push is public and needs `sudo` —
-confirm with the user before running it. Keep `CHANGELOG.md` in step: it is
-the in-tree record, the GitHub release notes are the outward one.
+`unknown/unknown` attestation rows. No `sudo`: the dev machine's user is in
+the `docker` group and reaches the same system daemon. If buildx reports no
+`jobs-multi` builder (its metadata can vanish from `~/.docker/buildx/`),
+recreate it: `docker --config "$HOME/.docker" buildx create --name jobs-multi
+--driver docker-container` — the Dockerfile is COPY-only, so no QEMU is
+needed for the arm64 half. The push is public — confirm with the user before
+running it. Keep `CHANGELOG.md` in step: it is the in-tree record, the
+GitHub release notes are the outward one.
 
 ## Package map
 
