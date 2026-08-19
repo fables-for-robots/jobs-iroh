@@ -1,7 +1,12 @@
 # Changelog
 
-## Unreleased
+## v0.29.0 — 2026-08-19
 
+- **`tui` exports the build-graph folding API**: `FoldSnapshot`,
+  `FlattenTree`, `BuildGraph`, `BuildRow`, `TreeRow` (rename-only —
+  behavior and wire identical to v0.28.0). External jobs-iroh frontends
+  (jobs-build/assimilate's two-level deploy TUI) fold snapshots with the
+  same rules instead of duplicating them.
 - **Server and runner images are part of the release.**
   `scripts/release-images.sh` builds `dmilhdef/jobs-iroh-server`,
   `dmilhdef/jobs-iroh-runner` and `dmilhdef/jobs-registry` (linux/amd64 +

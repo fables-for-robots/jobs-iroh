@@ -190,11 +190,11 @@ type buildView struct {
 	snap     api.Snapshot
 	snapAt   time.Time
 	haveSnap bool
-	graph    *buildGraph
+	graph    *BuildGraph
 
 	// tree
 	exp     map[string]bool
-	visible []treeRow
+	visible []TreeRow
 	cursor  int
 	top     int
 
@@ -389,8 +389,8 @@ func (m buildView) applySnapshot(snap api.Snapshot) (buildView, tea.Cmd) {
 		curPath = m.visible[m.cursor].Path
 	}
 	m.snap, m.snapAt, m.haveSnap = snap, time.Now(), true
-	m.graph = foldSnapshot(snap)
-	m.visible = flattenTree(m.graph, m.exp)
+	m.graph = FoldSnapshot(snap)
+	m.visible = FlattenTree(m.graph, m.exp)
 	m.cursor = clamp(indexOfPath(m.visible, curPath), len(m.visible))
 	m.top = window(len(m.visible), m.treeHeight(), m.cursor, m.top)
 
@@ -402,7 +402,7 @@ func (m buildView) applySnapshot(snap api.Snapshot) (buildView, tea.Cmd) {
 		}
 		// Failure: stay for inspection, cursor on the first failed row.
 		for i, tr := range m.visible {
-			if r := m.graph.rows[tr.Node]; r != nil && r.Phase == wire.PhaseFailed {
+			if r := m.graph.Rows[tr.Node]; r != nil && r.Phase == wire.PhaseFailed {
 				m.cursor = i
 				m.top = window(len(m.visible), m.treeHeight(), m.cursor, m.top)
 				break
@@ -413,7 +413,7 @@ func (m buildView) applySnapshot(snap api.Snapshot) (buildView, tea.Cmd) {
 }
 
 // indexOfPath finds a path's row index (0 when gone: the root).
-func indexOfPath(rows []treeRow, path string) int {
+func indexOfPath(rows []TreeRow, path string) int {
 	for i, r := range rows {
 		if r.Path == path {
 			return i
@@ -427,7 +427,7 @@ func (m buildView) selectedLogNode() string {
 	if m.graph == nil || m.cursor >= len(m.visible) {
 		return ""
 	}
-	if r := m.graph.rows[m.visible[m.cursor].Node]; r != nil {
+	if r := m.graph.Rows[m.visible[m.cursor].Node]; r != nil {
 		return r.LogNode
 	}
 	return ""
@@ -530,7 +530,7 @@ func (m buildView) setExpanded(v bool) buildView {
 	}
 	path := m.visible[m.cursor].Path
 	m.exp[path] = v
-	m.visible = flattenTree(m.graph, m.exp)
+	m.visible = FlattenTree(m.graph, m.exp)
 	m.cursor = clamp(indexOfPath(m.visible, path), len(m.visible))
 	m.top = window(len(m.visible), m.treeHeight(), m.cursor, m.top)
 	return m
@@ -653,7 +653,7 @@ func (m buildView) treeLines() []string {
 	lines := make([]string, 0, end-m.top)
 	for i := m.top; i < end; i++ {
 		tr := m.visible[i]
-		row := m.graph.rows[tr.Node]
+		row := m.graph.Rows[tr.Node]
 		line := padCell(buildRowLine(tr, row, extra), tw)
 		st := phaseStyle(row.Phase)
 		if row.Phase == wire.PhaseDone && row.Cached {
@@ -672,7 +672,7 @@ func (m buildView) outputLines() []string {
 	var title string
 	switch {
 	case m.graph != nil && m.cursor < len(m.visible):
-		row := m.graph.rows[m.visible[m.cursor].Node]
+		row := m.graph.Rows[m.visible[m.cursor].Node]
 		title = "output: " + rowName(row)
 		if m.logNode == "" {
 			title += styleFaint.Render(" (none)")
@@ -700,7 +700,7 @@ func (m buildView) outputLines() []string {
 
 // buildRowLine renders one tree row, unstyled (styling wraps the whole
 // padded line so truncation never cuts an ANSI sequence).
-func buildRowLine(tr treeRow, row *buildRow, extra time.Duration) string {
+func buildRowLine(tr TreeRow, row *BuildRow, extra time.Duration) string {
 	expander := " "
 	if tr.HasKids {
 		if tr.Expanded {
@@ -744,7 +744,7 @@ func buildRowLine(tr treeRow, row *buildRow, extra time.Duration) string {
 }
 
 // rowName is a row's display name: its label, else kind:key8.
-func rowName(row *buildRow) string {
+func rowName(row *BuildRow) string {
 	if row == nil {
 		return ""
 	}

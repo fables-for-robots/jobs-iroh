@@ -33,22 +33,22 @@ func chainSnap() api.Snapshot {
 	}
 }
 
-func row(t *testing.T, g *buildGraph, name string) *buildRow {
+func row(t *testing.T, g *BuildGraph, name string) *BuildRow {
 	t.Helper()
-	r, ok := g.rows[name]
+	r, ok := g.Rows[name]
 	if !ok {
-		t.Fatalf("row %s missing (rows: %v)", name, len(g.rows))
+		t.Fatalf("row %s missing (rows: %v)", name, len(g.Rows))
 	}
 	return r
 }
 
 func TestFoldChainRunning(t *testing.T) {
 	snap := chainSnap()
-	g := foldSnapshot(snap)
+	g := FoldSnapshot(snap)
 
 	bv := tn(wire.KindBuildValue, 1)
-	if !reflect.DeepEqual(g.roots, []string{bv}) {
-		t.Fatalf("roots = %v, want [%s]", g.roots, bv)
+	if !reflect.DeepEqual(g.Roots, []string{bv}) {
+		t.Fatalf("roots = %v, want [%s]", g.Roots, bv)
 	}
 	r := row(t, g, bv)
 	if r.Phase != wire.PhaseRunning || r.Stage != "build" {
@@ -78,7 +78,7 @@ func TestFoldChainFailed(t *testing.T) {
 	snap.Nodes[3].Phase, snap.Nodes[3].ErrSummary = wire.PhaseFailed, "pin exploded"
 	snap.Nodes[4].Phase = wire.PhaseWaiting
 	snap.Nodes[0].Phase = wire.PhaseUpstream
-	g := foldSnapshot(snap)
+	g := FoldSnapshot(snap)
 
 	r := row(t, g, tn(wire.KindBuildValue, 1))
 	if r.Phase != wire.PhaseFailed || r.Stage != "pin" || r.Err != "pin exploded" {
@@ -95,7 +95,7 @@ func TestFoldUpstreamVerdictWhenChainClean(t *testing.T) {
 	snap := chainSnap()
 	snap.Nodes[0].Phase = wire.PhaseUpstream
 	snap.Nodes[4].Phase = wire.PhaseWaiting // buildrun blocked, not failed
-	g := foldSnapshot(snap)
+	g := FoldSnapshot(snap)
 	r := row(t, g, tn(wire.KindBuildValue, 1))
 	if r.Phase != wire.PhaseUpstream {
 		t.Fatalf("phase = %s, want %s", r.Phase, wire.PhaseUpstream)
@@ -109,7 +109,7 @@ func TestFoldDoneDurationFromBuildrun(t *testing.T) {
 	// a done buildvalue with a still-running chain doesn't happen; make the
 	// whole chain done for the real case.
 	snap.Nodes[4].Phase, snap.Nodes[4].ElapsedMs = wire.PhaseDone, 41000
-	g := foldSnapshot(snap)
+	g := FoldSnapshot(snap)
 	r := row(t, g, tn(wire.KindBuildValue, 1))
 	if r.Phase != wire.PhaseDone || r.ElapsedMs != 41000 || r.Cached {
 		t.Fatalf("row = %+v, want done/41000/uncached", r)
@@ -122,7 +122,7 @@ func TestFoldDoneDurationFromBuildrun(t *testing.T) {
 func TestFoldCached(t *testing.T) {
 	// Fast-pathed target: a lone cached buildvalue, no chain at all.
 	bv := tn(wire.KindBuildValue, 1)
-	g := foldSnapshot(api.Snapshot{Nodes: []api.NodeSnap{
+	g := FoldSnapshot(api.Snapshot{Nodes: []api.NodeSnap{
 		{Node: bv, Phase: wire.PhaseDone, Cached: true},
 	}})
 	r := row(t, g, bv)
@@ -134,7 +134,7 @@ func TestFoldCached(t *testing.T) {
 	snap := chainSnap()
 	snap.Nodes[0].Phase = wire.PhaseDone
 	snap.Nodes[4].Phase, snap.Nodes[4].Cached, snap.Nodes[4].ElapsedMs = wire.PhaseDone, true, 0
-	g = foldSnapshot(snap)
+	g = FoldSnapshot(snap)
 	if r := row(t, g, bv); !r.Cached {
 		t.Fatalf("KP-memo row not cached: %+v", r)
 	}
@@ -146,7 +146,7 @@ func TestFoldSharedDepUnderBothParents(t *testing.T) {
 	bv2, br2 := tn(wire.KindBuildValue, 2), tn(wire.KindBuildRun, 12)
 	child := tn(wire.KindBuildValue, 3)
 	root, rootRun := tn(wire.KindBuildValue, 9), tn(wire.KindBuildRun, 19)
-	g := foldSnapshot(api.Snapshot{Nodes: []api.NodeSnap{
+	g := FoldSnapshot(api.Snapshot{Nodes: []api.NodeSnap{
 		{Node: root, Label: "root", Phase: wire.PhaseWaiting, Deps: []string{rootRun}},
 		{Node: rootRun, Phase: wire.PhaseWaiting, Deps: []string{bv1, bv2}},
 		{Node: bv1, Label: "a", Phase: wire.PhaseWaiting, Deps: []string{br1}},
@@ -155,8 +155,8 @@ func TestFoldSharedDepUnderBothParents(t *testing.T) {
 		{Node: br2, Phase: wire.PhaseWaiting, Deps: []string{child}},
 		{Node: child, Label: "shared", Phase: wire.PhaseDone, Cached: true},
 	}})
-	if !reflect.DeepEqual(g.roots, []string{root}) {
-		t.Fatalf("roots = %v, want [%s]", g.roots, root)
+	if !reflect.DeepEqual(g.Roots, []string{root}) {
+		t.Fatalf("roots = %v, want [%s]", g.Roots, root)
 	}
 	if got := row(t, g, bv1).Children; !reflect.DeepEqual(got, []string{child}) {
 		t.Fatalf("bv1 children = %v", got)
@@ -170,7 +170,7 @@ func TestFoldSharedDepUnderBothParents(t *testing.T) {
 	}
 
 	// The shared subtree repeats under both parents when expanded.
-	rows := flattenTree(g, map[string]bool{})
+	rows := FlattenTree(g, map[string]bool{})
 	var childPaths []string
 	for _, tr := range rows {
 		if tr.Node == child {
@@ -185,7 +185,7 @@ func TestFoldSharedDepUnderBothParents(t *testing.T) {
 func TestFoldImportFetcherEdge(t *testing.T) {
 	imp, fbv := tn(wire.KindImport, 1), tn(wire.KindBuildValue, 2)
 	fbr := tn(wire.KindBuildRun, 3)
-	g := foldSnapshot(api.Snapshot{Nodes: []api.NodeSnap{
+	g := FoldSnapshot(api.Snapshot{Nodes: []api.NodeSnap{
 		{Node: imp, Label: "fetch github", Phase: wire.PhaseWaiting, Deps: []string{fbv}},
 		{Node: fbv, Label: "fetcher github", Phase: wire.PhaseRunning, Deps: []string{fbr}},
 		{Node: fbr, Phase: wire.PhaseRunning, ElapsedMs: 100},
@@ -193,8 +193,8 @@ func TestFoldImportFetcherEdge(t *testing.T) {
 	if got := row(t, g, imp).Children; !reflect.DeepEqual(got, []string{fbv}) {
 		t.Fatalf("import children = %v, want the fetcher buildvalue", got)
 	}
-	if !reflect.DeepEqual(g.roots, []string{imp}) {
-		t.Fatalf("roots = %v", g.roots)
+	if !reflect.DeepEqual(g.Roots, []string{imp}) {
+		t.Fatalf("roots = %v", g.Roots)
 	}
 }
 
@@ -223,10 +223,10 @@ func TestFlattenExpansion(t *testing.T) {
 	snap.Nodes[5].Cached = true
 	snap.Nodes[5].Deps = []string{fbv}
 	snap.Nodes = append(snap.Nodes, api.NodeSnap{Node: fbv, Phase: wire.PhaseDone, Cached: true})
-	g := foldSnapshot(snap)
+	g := FoldSnapshot(snap)
 
 	exp := map[string]bool{}
-	rows := flattenTree(g, exp)
+	rows := FlattenTree(g, exp)
 	// Default: root expanded (running), import visible but collapsed
 	// (cached-done) → 2 rows.
 	if len(rows) != 2 {
@@ -238,14 +238,14 @@ func TestFlattenExpansion(t *testing.T) {
 
 	// User expands the import path → the fetcher appears.
 	exp[rows[1].Path] = true
-	rows = flattenTree(g, exp)
+	rows = FlattenTree(g, exp)
 	if len(rows) != 3 || rows[2].Node != fbv || rows[2].Depth != 2 {
 		t.Fatalf("expanded flatten = %+v, want fetcher at depth 2", rows)
 	}
 
 	// User collapses the root → only the root remains.
 	exp[rows[0].Path] = false
-	rows = flattenTree(g, exp)
+	rows = FlattenTree(g, exp)
 	if len(rows) != 1 || rows[0].Node != tn(wire.KindBuildValue, 1) {
 		t.Fatalf("collapsed flatten = %+v, want just the root", rows)
 	}
@@ -255,13 +255,13 @@ func TestFlattenCycleGuard(t *testing.T) {
 	// A malformed snapshot with a logical cycle must not recurse forever.
 	a, ab := tn(wire.KindBuildValue, 1), tn(wire.KindBuildRun, 1)
 	b, bb := tn(wire.KindBuildValue, 2), tn(wire.KindBuildRun, 2)
-	g := foldSnapshot(api.Snapshot{Nodes: []api.NodeSnap{
+	g := FoldSnapshot(api.Snapshot{Nodes: []api.NodeSnap{
 		{Node: a, Phase: wire.PhaseWaiting, Deps: []string{ab}},
 		{Node: ab, Phase: wire.PhaseWaiting, Deps: []string{b}},
 		{Node: b, Phase: wire.PhaseWaiting, Deps: []string{bb}},
 		{Node: bb, Phase: wire.PhaseWaiting, Deps: []string{a}},
 	}})
-	rows := flattenTree(g, map[string]bool{})
+	rows := FlattenTree(g, map[string]bool{})
 	if len(rows) == 0 || len(rows) > 4 {
 		t.Fatalf("cycle flatten = %d rows", len(rows))
 	}

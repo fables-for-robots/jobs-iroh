@@ -5,6 +5,11 @@ package tui
 // rows — one per buildvalue/import — with the buildvalue's stage chain
 // (buildfrom/pluginresolve/pin/buildrun) collapsed into the row's state.
 // Pure functions over api.Snapshot, so every rule is table-testable.
+//
+// FoldSnapshot/FlattenTree and their row types are EXPORTED API: external
+// jobs-iroh frontends (jobs-build/assimilate's deploy TUI) fold snapshots
+// with the same rules instead of duplicating them — keep the folding
+// semantics backward-compatible or version the change loudly.
 
 import (
 	"sort"
@@ -27,9 +32,9 @@ var stageNames = map[string]string{
 // this order so a verdict is deterministic when several stages qualify.
 var chainOrder = []string{wire.KindBuildFrom, wire.KindPluginResolve, wire.KindPin, wire.KindBuildRun}
 
-// buildRow is one logical row: a buildvalue (with its chain folded in) or
+// BuildRow is one logical row: a buildvalue (with its chain folded in) or
 // an import.
-type buildRow struct {
+type BuildRow struct {
 	Node      string // the row's own node name
 	Kind      string // wire.KindBuildValue | wire.KindImport
 	Label     string
@@ -43,10 +48,10 @@ type buildRow struct {
 	Children  []string // child row node names, display order (label, name)
 }
 
-// buildGraph is the folded snapshot: logical rows plus the display roots.
-type buildGraph struct {
-	rows  map[string]*buildRow
-	roots []string
+// BuildGraph is the folded snapshot: logical rows plus the display roots.
+type BuildGraph struct {
+	Rows  map[string]*BuildRow // by logical node name
+	Roots []string             // in-degree-0 rows, display order
 }
 
 // SnapshotHasGraph reports whether the snapshot carries dependency edges. A
@@ -65,8 +70,8 @@ func SnapshotHasGraph(snap api.Snapshot) bool {
 	return false
 }
 
-// foldSnapshot folds the snapshot's raw nodes into the logical row graph.
-func foldSnapshot(snap api.Snapshot) *buildGraph {
+// FoldSnapshot folds the snapshot's raw nodes into the logical row graph.
+func FoldSnapshot(snap api.Snapshot) *BuildGraph {
 	byName := make(map[string]api.NodeSnap, len(snap.Nodes))
 	for _, n := range snap.Nodes {
 		byName[n.Node] = n
@@ -82,13 +87,13 @@ func foldSnapshot(snap api.Snapshot) *buildGraph {
 		return kind == wire.KindBuildValue || kind == wire.KindImport
 	}
 
-	g := &buildGraph{rows: map[string]*buildRow{}}
+	g := &BuildGraph{Rows: map[string]*BuildRow{}}
 	for _, n := range snap.Nodes {
 		kind := kindOf(n.Node)
 		if !logical(kind) {
 			continue
 		}
-		row := &buildRow{Node: n.Node, Kind: kind, Label: n.Label}
+		row := &BuildRow{Node: n.Node, Kind: kind, Label: n.Label}
 
 		// Split deps into the stage chain and direct logical children
 		// (imports dep straight on their fetcher buildvalue; buildvalues on
@@ -125,21 +130,21 @@ func foldSnapshot(snap api.Snapshot) *buildGraph {
 			row.ElapsedMs, row.Cached = n.ElapsedMs, n.Cached
 			row.Err, row.Runner = n.ErrSummary, n.Runner
 			row.LogNode = n.Node
-			g.rows[n.Node] = row
+			g.Rows[n.Node] = row
 			continue
 		}
 		foldChain(row, n, chain)
-		g.rows[n.Node] = row
+		g.Rows[n.Node] = row
 	}
 
-	g.roots = rootsOf(g)
+	g.Roots = rootsOf(g)
 	return g
 }
 
 // foldChain derives a buildvalue row's verdict from its stage chain
 // (design §2 precedence: chain failure → own verdict → running → queued →
 // done → waiting).
-func foldChain(row *buildRow, own api.NodeSnap, chain map[string]api.NodeSnap) {
+func foldChain(row *BuildRow, own api.NodeSnap, chain map[string]api.NodeSnap) {
 	br, hasBR := chain[wire.KindBuildRun]
 
 	// The output pane's target, best available: failed stage → active stage
@@ -191,28 +196,28 @@ func foldChain(row *buildRow, own api.NodeSnap, chain map[string]api.NodeSnap) {
 // on malformed snapshots), ordered like children. A cyclic malformed graph
 // with no in-degree-0 row falls back to the name-sorted first row so the
 // tree always renders something.
-func rootsOf(g *buildGraph) []string {
+func rootsOf(g *BuildGraph) []string {
 	child := map[string]bool{}
-	for _, r := range g.rows {
+	for _, r := range g.Rows {
 		for _, c := range r.Children {
 			child[c] = true
 		}
 	}
 	var roots []string
-	for name := range g.rows {
+	for name := range g.Rows {
 		if !child[name] {
 			roots = append(roots, name)
 		}
 	}
-	if len(roots) == 0 && len(g.rows) > 0 {
-		for name := range g.rows {
+	if len(roots) == 0 && len(g.Rows) > 0 {
+		for name := range g.Rows {
 			roots = append(roots, name)
 		}
 		sort.Strings(roots)
 		roots = roots[:1]
 	}
 	byName := map[string]api.NodeSnap{}
-	for name, r := range g.rows {
+	for name, r := range g.Rows {
 		byName[name] = api.NodeSnap{Node: name, Label: r.Label}
 	}
 	return orderChildren(roots, byName)
@@ -242,8 +247,8 @@ func dedup(names []string) []string {
 	return out
 }
 
-// treeRow is one visible line of the flattened tree.
-type treeRow struct {
+// TreeRow is one visible line of the flattened tree.
+type TreeRow struct {
 	Path     string // "/"-joined node names root→row (expansion identity)
 	Node     string
 	Depth    int
@@ -255,14 +260,14 @@ type treeRow struct {
 // top of the on-path check).
 const maxTreeDepth = 64
 
-// flattenTree renders the DAG as a tree: shared subtrees repeat under every
+// FlattenTree renders the DAG as a tree: shared subtrees repeat under every
 // parent; expansion is per path. exp overrides the default (expanded,
 // except cached-done rows); missing paths use the default.
-func flattenTree(g *buildGraph, exp map[string]bool) []treeRow {
-	var out []treeRow
+func FlattenTree(g *BuildGraph, exp map[string]bool) []TreeRow {
+	var out []TreeRow
 	var walk func(name, parentPath string, depth int)
 	walk = func(name, parentPath string, depth int) {
-		row, ok := g.rows[name]
+		row, ok := g.Rows[name]
 		if !ok || depth > maxTreeDepth {
 			return
 		}
@@ -280,14 +285,14 @@ func flattenTree(g *buildGraph, exp map[string]bool) []treeRow {
 				expanded = !(row.Phase == wire.PhaseDone && row.Cached)
 			}
 		}
-		out = append(out, treeRow{Path: path, Node: name, Depth: depth, HasKids: len(row.Children) > 0, Expanded: expanded})
+		out = append(out, TreeRow{Path: path, Node: name, Depth: depth, HasKids: len(row.Children) > 0, Expanded: expanded})
 		if expanded {
 			for _, c := range row.Children {
 				walk(c, path, depth+1)
 			}
 		}
 	}
-	for _, r := range g.roots {
+	for _, r := range g.Roots {
 		walk(r, "", 0)
 	}
 	return out

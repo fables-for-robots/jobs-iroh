@@ -200,21 +200,21 @@ func TestBuildViewStaleStreamMsgsDrop(t *testing.T) {
 }
 
 func TestBuildRowLineRendering(t *testing.T) {
-	running := &buildRow{Node: tn(wire.KindBuildValue, 1), Label: "app", Phase: wire.PhaseRunning, Stage: "build", ElapsedMs: 41000, Runner: "r-a"}
-	line := buildRowLine(treeRow{Depth: 1, HasKids: true, Expanded: true}, running, 0)
+	running := &BuildRow{Node: tn(wire.KindBuildValue, 1), Label: "app", Phase: wire.PhaseRunning, Stage: "build", ElapsedMs: 41000, Runner: "r-a"}
+	line := buildRowLine(TreeRow{Depth: 1, HasKids: true, Expanded: true}, running, 0)
 	for _, want := range []string{"▾", "▶", "app", "build", "41s", "on r-a"} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("running line %q missing %q", line, want)
 		}
 	}
 
-	cached := &buildRow{Node: tn(wire.KindBuildValue, 2), Label: "dep", Phase: wire.PhaseDone, Cached: true}
-	if line := buildRowLine(treeRow{}, cached, 0); !strings.Contains(line, "(cached)") {
+	cached := &BuildRow{Node: tn(wire.KindBuildValue, 2), Label: "dep", Phase: wire.PhaseDone, Cached: true}
+	if line := buildRowLine(TreeRow{}, cached, 0); !strings.Contains(line, "(cached)") {
 		t.Fatalf("cached line %q", line)
 	}
 
-	failed := &buildRow{Node: tn(wire.KindBuildValue, 3), Phase: wire.PhaseFailed, Stage: "pin", Err: "boom"}
-	line = buildRowLine(treeRow{}, failed, 0)
+	failed := &BuildRow{Node: tn(wire.KindBuildValue, 3), Phase: wire.PhaseFailed, Stage: "pin", Err: "boom"}
+	line = buildRowLine(TreeRow{}, failed, 0)
 	if !strings.Contains(line, "✗") || !strings.Contains(line, "pin: boom") {
 		t.Fatalf("failed line %q", line)
 	}
