@@ -127,7 +127,7 @@ GitHub release notes are the outward one.
 | `tui/` | bubbletea admin TUI over `jobs-admin/1.0`: builds (watch/logs/cancel/delete), fleet, stats, refs. Never block in Update — network I/O only inside tea.Cmd goroutines. |
 | `builddef/`, `recipe/` | Build definition identity (canonical CBOR) + Starlark recipe evaluation — ports, seam-swapped. |
 | `bootstrap/` | Embedded seed artifacts (shell + fetchers per platform), idempotent seeding. |
-| `fetchers/`, `plugins/` | Self-bootstrapping fetcher builds + goplugin — ports. goplugin's `go_closure` kwarg computes the //-rooted complete cover (source-closure design §8). |
+| `fetchers/` | ONLY the embedded-seed sources: `github`, `hostmusl`, `hostshell`, `tarballhttps` (+ shared `tarextract`). Every other fetcher/plugin lives in its own `jobs-build/fetcher-*`/`plugin-*` repo, pinned by recipes — the in-repo copies were removed (issue #7); goplugin (incl. `go_closure`, source-closure design §8) is authoritative in `plugin-go`. |
 | `sandbox/`, `tailbuf/`, `resources/`, `importdef/` | Verbatim ports from jobs — keep drift-free against upstream. |
 | `cmd/jobs-server`, `cmd/jobs-runner`, `cmd/jobs-client`, `cmd/jobs-registry` | The mains (each calls `sandbox.Init()` first). |
 
