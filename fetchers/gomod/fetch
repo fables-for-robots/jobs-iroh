@@ -6,11 +6,23 @@
 # Output tree: cache/download/<module>/@v/{info,mod,zip,ziphash,...}
 # Exit: 0 success · 75 retryable (network) · other hard.
 #
-# Uses the host `go` (network-capable, an import node) so module-path escaping,
-# hashing, and the .info/.mod/.ziphash files are produced exactly as the cache
-# expects. The consuming build merges this into $GOMODCACHE/cache/download and
-# builds with GOPROXY=off.
+# Uses `go mod download` (network-capable, an import node) so module-path
+# escaping, hashing, and the .info/.mod/.ziphash files are produced exactly as
+# the cache expects. The consuming build merges this into
+# $GOMODCACHE/cache/download and builds with GOPROXY=off.
+#
+# The `go` comes from this fetcher's own runtime closure, not from the host:
+# BUILD.jobs declares the toolchain as a runtime dep and bakes its store path
+# into env.sh next to this script (jobs-iroh hermetic imports). Without
+# env.sh (e.g. run by hand from the source tree) whatever `go` is on PATH is
+# used.
 set -euo pipefail
+here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+if [ -f "$here/env.sh" ]; then
+	# shellcheck source=/dev/null
+	. "$here/env.sh"
+fi
+command -v go >/dev/null 2>&1 || { echo "gomod: no go toolchain (env.sh missing and none on PATH)" >&2; exit 1; }
 out="${JOBS_OUTPUT_DIR:?JOBS_OUTPUT_DIR not set}"
 params="${JOBS_FETCH_PARAMS:?JOBS_FETCH_PARAMS not set}"
 
