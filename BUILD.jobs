@@ -1,0 +1,97 @@
+# BUILD.jobs — hermetic JOBS self-build of jobs-iroh (linux/amd64 + linux/arm64).
+#
+# plugins(): declares the "go" build plugin (plugin-go: go.sum → one gomod
+#            import per module; go_closure → the complete source cover).
+# build():   fetches the Go toolchain (tarball+https) and every module the
+#            plugin discovered, assembles an offline module cache, and runs
+#            `go build` (GOPROXY=off, CGO_ENABLED=0) producing all four
+#            binaries in $out/bin.
+#
+# The go_closure cover keeps identity tied to the Go sources actually reached
+# from the four mains (plus go.mod/go.sum and embed targets: bootstrap/seed,
+# fetchers.toml) — edits to docs/, deploy/ or nix files don't re-key the build.
+#
+# Pins to bump together:
+#   - GOPLUGIN url/sha256  → github.com/jobs-build/plugin-go (its artifact
+#     bundles the companion fetcher-gomod pin; this repo's fetchers/gomod is
+#     the synced copy of the same fetcher).
+#   - GO_VERSION/GO_SHA    → https://go.dev/dl/?mode=json (must satisfy the
+#     go.mod `go` directive — GOTOOLCHAIN=local never auto-downloads).
+
+GOPLUGIN = fetcher(
+    name   = "goplugin",
+    url    = "https://github.com/jobs-build/plugin-go/archive/1c640d5dde0fd14b027f6c390f76072621c52b53.tar.gz",
+    sha256 = "54ada21665ee346d811c09288899df96e0957b69ce51e26e0d3a20aeba441f43",
+)
+
+GO_VERSION = "1.26.6"
+GO_SHA = {
+    "amd64": "708effb774be8237570d0add163225abbdfaf4fca28b2611df167beba4feef89",
+    "arm64": "d0507e9e9d7fe012aae570108cbd76c15de879e17130ab8cb90d4d7445cb1f2e",
+}
+
+CMDS = ["jobs-server", "jobs-runner", "jobs-client", "jobs-registry"]
+
+def plugins():
+    return {"go": imp(fetcher = GOPLUGIN, params = {})}
+
+def build():
+    goarch = {"linux/amd64": "amd64", "linux/arm64": "arm64"}[platform]
+    toolchain = imp(fetcher = "tarball+https", params = {
+        "url": "https://go.dev/dl/go" + GO_VERSION + ".linux-" + goarch + ".tar.gz",
+        "sha256": GO_SHA[goarch],
+    })
+
+    # go.sum → one gomod import per module; go_mod + go_closure switch the
+    # response to {modules, sources, closure} — closure is the //-rooted
+    # complete cover of the four entry packages' transitive imports.
+    resp = plugins["go"](
+        go_sum = source.read("go.sum"),
+        go_mod = source.read("go.mod"),
+        go_closure = ["./cmd/" + c for c in CMDS],
+    )
+
+    inputs = {"toolchain": toolchain}
+    copies = []
+    for m in resp["modules"]:
+        name = "mod_" + m["path"].replace("/", "_").replace(".", "_").replace("-", "_")
+        inputs[name] = m["input"]
+        # Each module input's tree is rooted at cache/download/...; merge it in.
+        copies.append('cp -dr "$(jq -r .%s <<<"$JOBS_DEPS")/." "$GOMODCACHE/"' % name)
+
+    # Stage the toolchain + module cache from the read-only /jobs/store into
+    # the writable build tree, then build from local disk: the Go toolchain
+    # opens its stdlib sources with high concurrency, which the on-demand
+    # FUSE store does not serve well.
+    script = """
+set -e
+export GOROOT=/build/goroot
+mkdir -p "$GOROOT" "$out/bin"
+cp -dr "$(jq -r .toolchain <<<"$JOBS_DEPS")/go/." "$GOROOT/"
+export PATH="$GOROOT/bin:$PATH"
+export GOMODCACHE=/build/gomodcache GOCACHE=/go-build-cache GOPATH=/build/gopath
+export GOPROXY=off GOSUMDB=off GOFLAGS=-mod=mod GOTOOLCHAIN=local CGO_ENABLED=0
+mkdir -p "$GOMODCACHE/cache/download"
+""" + "\n".join(copies) + """
+chmod -R u+w "$GOROOT" "$GOMODCACHE" 2>/dev/null || true
+cd "$SRC"
+go build -trimpath -o "$out/bin/" """ + " ".join(["./cmd/" + c for c in CMDS]) + """
+cat > "$out/JOBS.entrypoint" <<'EOF'
+{"command": "bin/jobs-server", "args": [], "env": {}}
+EOF
+"""
+
+    return struct(
+        name = "jobs-iroh",
+        inputs = inputs,
+        env = {},
+        script = script,
+        runtime_deps = [],
+        closure = resp["closure"],
+        resources = struct(cpu = "2000m", memory = "4Gi"),
+        # Persistent Go build cache (GOCACHE above): rebuilds recompile only
+        # what changed. Keyed to the toolchain release; platform is appended
+        # by the runner. Pruned to what the build accessed, uploaded on
+        # success only.
+        caches = {"/go-build-cache": "jobs-iroh-go" + GO_VERSION},
+    )
