@@ -1,5 +1,32 @@
 # Changelog
 
+## v0.26.0 — 2026-08-19
+
+- **`BUILD.jobs`: jobs-iroh builds itself.** A root recipe for the JOBS
+  self-build: plugin-go (pinned at `1c640d5`, the first rev with
+  `go_closure`) turns `go.sum` into one `gomod` import per module, the
+  go1.26.6 toolchain arrives via `tarball+https`, and a sandboxed
+  offline `go build` (`GOPROXY=off`, `CGO_ENABLED=0`) produces all four
+  binaries in `$out/bin` with a `bin/jobs-server` entrypoint. The
+  `go_closure` complete cover keys identity to the Go sources actually
+  reached from the four mains (plus `go.mod`/`go.sum` and the embed
+  targets `bootstrap/seed` and `fetchers.toml`), so edits to `docs/`,
+  `deploy/` or nix files join the KP-keyed memo instead of rebuilding.
+  Declares c2-m4 resources and a per-toolchain persistent Go build
+  cache.
+- **Local pipeline runs imports in the hermetic root.** The v0.25.0
+  hermetic import root covered only the runner daemon: `jobs-client`'s
+  local pipeline still ran `./fetch` through the plain Subprocess
+  executor, so a fetcher's baked `/jobs/store` paths dangled and the
+  host userland leaked in — fetcher-gomod v0.1.0 (toolchain from
+  `env.sh`, not the host) could not run a single local module fetch.
+  The local driver now uses the same hermetic executor as the runner
+  (with the announced Subprocess fallback where user namespaces are
+  unavailable), and `RunImport`'s runtime-closure resolve gains the
+  direct `build-output-deps:K` fallback for local builds without the
+  `build-from:K` bridge — the same fallback `ResolveBuildArtifact`
+  already applied to `build-output`.
+
 ## v0.25.1 — 2026-08-19
 
 - **Runner capacity honours the pod's cgroup limit; `--cpu` / `--memory`
