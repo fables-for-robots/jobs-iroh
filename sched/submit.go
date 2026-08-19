@@ -32,6 +32,12 @@ type request struct {
 	createdNs int64
 	cancelled bool
 	target    *node // the buildvalue/K value node
+	// failReason marks a request-level failure that belongs to no single
+	// node (the no-runners watchdog, issue #8); non-empty ⇒ phase "failed".
+	failReason string
+	// noRunnersSince is the watchdog's bookkeeping: when the request's
+	// platform last lost its final live runner (zero while one is live).
+	noRunnersSince time.Time
 }
 
 // Submit validates and registers one build request: decode + canonicality-
@@ -137,6 +143,19 @@ func (s *Sched) Submit(ctx context.Context, req api.SubmitRequest) (api.Submitte
 	s.requests[id] = r
 	r.target = s.require(wire.KindBuildValue, k, req.Def, def.Platform, nil, map[string]struct{}{id: {}}, req.Label)
 	snap := s.assembleLocked(r)
+	// No-runners rejection (issue #8): a build that still needs runner work
+	// on a platform with no live runner would stall forever — reject it now.
+	// Checked AFTER the join so a fully cached closure (terminal right away
+	// via the doneness fast-path) still completes without any fleet. The
+	// client's scratch ref is deliberately left alone: the client may attach
+	// a runner and resubmit, and the successful submit cleans it up.
+	if !snap.Terminal && !s.livePlatformLocked(r.platform, time.Now()) {
+		s.dropInterestLocked(id, r.target)
+		delete(s.requests, id)
+		s.mu.Unlock()
+		return api.Submitted{}, &Error{Code: api.CodeUnavailable,
+			Text: fmt.Sprintf("no live runners for platform %s — build rejected (attach a runner and resubmit)", def.Platform)}
+	}
 	s.putRequestStatusLocked(r, snap)
 	s.bumpLocked()
 	s.mu.Unlock()
@@ -386,6 +405,9 @@ func (s *Sched) assembleLocked(r *request) api.Snapshot {
 	switch {
 	case r.cancelled:
 		phase = "cancelled"
+	case r.failReason != "":
+		// Request-level failure (no-runners watchdog): no node carries it.
+		phase = "failed"
 	case r.target != nil && r.target.phase == wire.PhaseDone:
 		phase = "done"
 	case anyFailed:
@@ -397,6 +419,7 @@ func (s *Sched) assembleLocked(r *request) api.Snapshot {
 		Counts:    counts,
 		Nodes:     nodes,
 		Terminal:  phase != "running",
+		Error:     r.failReason,
 	}
 }
 
@@ -427,6 +450,7 @@ func (s *Sched) runTicker() {
 	defer s.wg.Done()
 	tick := time.NewTicker(snapshotTick)
 	defer tick.Stop()
+	var lastNoRunnerCheck time.Time
 	for {
 		select {
 		case <-s.ctx.Done():
@@ -440,6 +464,13 @@ func (s *Sched) runTicker() {
 		var kvWrites []kvWrite
 
 		s.mu.Lock()
+		// No-runners watchdog (issue #8), at its own coarser cadence and
+		// BEFORE the snapshot fold so a failure it declares reaches watchers
+		// and the KV mirror in this same tick.
+		if now := time.Now(); now.Sub(lastNoRunnerCheck) >= s.noRunnerCheck {
+			lastNoRunnerCheck = now
+			s.checkNoRunnersLocked(now)
+		}
 		version := s.version
 		cache := map[string]api.Snapshot{}
 		snapFor := func(id string) (api.Snapshot, bool) {
@@ -514,6 +545,42 @@ func (s *Sched) runTicker() {
 	}
 }
 
+// checkNoRunnersLocked fails every non-terminal request whose platform has
+// had no live runner for a continuous noRunnerAfter (issue #8): interest is
+// dropped exactly like Cancel (queued job messages purged, in-flight results
+// dropped on arrival), the request stays inspectable until Delete, and the
+// reason rides Snapshot.Error/RequestStatus.Error. A runner reappearing
+// resets the clock.
+func (s *Sched) checkNoRunnersLocked(now time.Time) {
+	for _, r := range s.requests {
+		if r.cancelled || r.failReason != "" {
+			r.noRunnersSince = time.Time{}
+			continue
+		}
+		if snap := s.assembleLocked(r); snap.Terminal {
+			r.noRunnersSince = time.Time{}
+			continue
+		}
+		if s.livePlatformLocked(r.platform, now) {
+			r.noRunnersSince = time.Time{}
+			continue
+		}
+		if r.noRunnersSince.IsZero() {
+			r.noRunnersSince = now
+			continue
+		}
+		if now.Sub(r.noRunnersSince) < s.noRunnerAfter {
+			continue
+		}
+		r.failReason = fmt.Sprintf("no live runners for platform %s for %s — build failed (attach a runner and resubmit)",
+			r.platform, now.Sub(r.noRunnersSince).Round(time.Second))
+		s.dropInterestLocked(r.id, r.target)
+		s.bumpLocked()
+		s.log.Warn("request failed: no runners for platform",
+			"request", r.id, "platform", r.platform, "stalled", now.Sub(r.noRunnersSince))
+	}
+}
+
 func requestKVKey(id string) string { return "req." + id }
 
 func requestStatus(r *request, snap api.Snapshot) wire.RequestStatus {
@@ -523,6 +590,7 @@ func requestStatus(r *request, snap api.Snapshot) wire.RequestStatus {
 		Platform:  r.platform,
 		Counts:    snap.Counts,
 		CreatedNs: r.createdNs,
+		Error:     snap.Error,
 	}
 }
 

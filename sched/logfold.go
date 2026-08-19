@@ -228,6 +228,20 @@ func (s *Sched) onRunnerHeartbeat(msg *nats.Msg) {
 	s.mu.Unlock()
 }
 
+// livePlatformLocked reports whether any runner for platform was seen
+// within runnerLiveWindow (issue #8). Heartbeat-only entries (a fleet fold
+// that never saw the hello) carry no platform and never match — the runner
+// re-hellos on its next NATS (re)connect.
+func (s *Sched) livePlatformLocked(platform string, now time.Time) bool {
+	cutoff := now.Add(-runnerLiveWindow).UnixNano()
+	for _, info := range s.fleet {
+		if info.Platform == platform && info.SeenNs >= cutoff {
+			return true
+		}
+	}
+	return false
+}
+
 // Fleet returns the runner fleet snapshot (hello ∪ latest heartbeat),
 // sorted by runner ID. Staleness is the caller's judgment via SeenNs.
 func (s *Sched) Fleet() []wire.RunnerInfo {

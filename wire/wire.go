@@ -269,6 +269,9 @@ type RequestStatus struct {
 	Platform  string `cbor:"platform"`
 	Counts    Counts `cbor:"counts"`
 	CreatedNs int64  `cbor:"createdNs"`
+	// Error mirrors the request-level failure reason (api.Snapshot.Error);
+	// additive + omitempty, absent for node-attributed failures.
+	Error string `cbor:"error,omitempty"`
 }
 
 // Counts summarizes a request's closure.

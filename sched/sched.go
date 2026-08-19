@@ -58,6 +58,17 @@ const (
 	jobsMaxDeliver    = 25               // poison backstop; the node FSM owns retries
 	jobsMaxAckPending = 4096             // slots gate concurrency, not the consumer
 
+	// No-runners policy (issue #8). A runner is live while its last
+	// hello/heartbeat is within runnerLiveWindow (3 missed 5s heartbeats);
+	// runnerd re-hellos on every NATS (re)connect, so a server restart
+	// re-learns platforms. Submits for a platform with no live runner are
+	// rejected outright; an accepted request whose platform loses its last
+	// live runner fails after noRunnerFailAfter of continuous absence,
+	// checked every noRunnerCheckEvery.
+	runnerLiveWindow   = 15 * time.Second
+	noRunnerFailAfter  = 5 * time.Minute
+	noRunnerCheckEvery = 10 * time.Second
+
 	resultsDurable = "SCHED"
 	resultsAckWait = 60 * time.Second
 )
@@ -89,6 +100,10 @@ type Sched struct {
 
 	// retryBase scales the retryable backoff (test hook; production 1s).
 	retryBase time.Duration
+	// noRunnerAfter/noRunnerCheck scale the no-runners watchdog (test
+	// hooks; production noRunnerFailAfter / noRunnerCheckEvery).
+	noRunnerAfter time.Duration
+	noRunnerCheck time.Duration
 
 	mu            sync.Mutex
 	closed        bool
@@ -181,24 +196,26 @@ func New(ctx context.Context, o Options) (*Sched, error) {
 
 	sctx, cancel := context.WithCancel(ctx)
 	s := &Sched{
-		store:     o.Store,
-		nc:        o.NC,
-		js:        js,
-		jobs:      jobsStream,
-		kv:        kv,
-		log:       log,
-		ctx:       sctx,
-		cancel:    cancel,
-		retryBase: defaultRetryBase,
-		startedAt: time.Now(),
-		nodes:     map[nodeID]*node{},
-		requests:  map[string]*request{},
-		watchers:  map[*watcher]struct{}{},
-		lanes:     map[string]bool{},
-		logs:      map[string]*nodeLog{},
-		logSubs:   map[string]map[chan wire.LogChunk]struct{}{},
-		fleet:     map[string]wire.RunnerInfo{},
-		lastReqKV: map[string]string{},
+		store:         o.Store,
+		nc:            o.NC,
+		js:            js,
+		jobs:          jobsStream,
+		kv:            kv,
+		log:           log,
+		ctx:           sctx,
+		cancel:        cancel,
+		retryBase:     defaultRetryBase,
+		noRunnerAfter: noRunnerFailAfter,
+		noRunnerCheck: noRunnerCheckEvery,
+		startedAt:     time.Now(),
+		nodes:         map[nodeID]*node{},
+		requests:      map[string]*request{},
+		watchers:      map[*watcher]struct{}{},
+		lanes:         map[string]bool{},
+		logs:          map[string]*nodeLog{},
+		logSubs:       map[string]map[chan wire.LogChunk]struct{}{},
+		fleet:         map[string]wire.RunnerInfo{},
+		lastReqKV:     map[string]string{},
 	}
 
 	iter, err := cons.Messages(jetstream.PullMaxMessages(1))

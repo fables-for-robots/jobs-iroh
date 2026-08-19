@@ -129,12 +129,13 @@ func watchSummary(lv *liveView, phase string, elapsed time.Duration) string {
 }
 
 // failureSummary extracts the first hard failure's one-line summary
-// (jobs' schedFailureSummary).
+// (jobs' schedFailureSummary). A request-level failure (no-runners
+// watchdog) has no failed node — Snapshot.Error carries it instead.
 func failureSummary(snap api.Snapshot) string {
 	for _, n := range snap.Nodes {
 		if n.Phase == wire.PhaseFailed && n.ErrSummary != "" {
 			return labelNode(n.Node, n.Label) + ": " + n.ErrSummary
 		}
 	}
-	return ""
+	return snap.Error
 }

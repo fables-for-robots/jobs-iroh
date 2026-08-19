@@ -488,6 +488,17 @@ path) run fetchers as a plain host subprocess instead.
   and the job redelivers elsewhere. Presence heartbeats
   (`runners.<id>.hb`, every 5 s, capacity + in-flight) feed the fleet view;
   `runners.hello` announces on every (re)connect.
+- **No-runners policy.** The fleet fold doubles as a scheduling gate: a
+  runner is *live* while its last hello/heartbeat is within 15 s (three
+  missed beats). A submit whose closure still needs runner work on a
+  platform with no live runner is rejected outright (`unavailable`) — a
+  fully cached closure completes without any fleet. An accepted request
+  whose platform then loses its last live runner for a continuous 5 minutes
+  is failed by a watchdog (checked every 10 s): interest drops exactly like
+  cancel, and the reason rides the snapshot's request-level `error` field.
+  A runner reappearing before the deadline resets the clock; hello-on-
+  reconnect means a server restart re-learns platforms from the fleet
+  itself.
 
 ## 9. Observability
 

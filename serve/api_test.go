@@ -13,12 +13,44 @@ import (
 	"testing"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/tmc/go-iroh/iroh"
 
 	"github.com/jobs-build/jobs-iroh/api"
 	"github.com/jobs-build/jobs-iroh/builddef"
 	"github.com/jobs-build/jobs-iroh/importdef"
+	"github.com/jobs-build/jobs-iroh/wire"
 )
+
+// announceRunner publishes one fake runner hello into the server's embedded
+// NATS and waits for the scheduler's fleet fold to absorb it — the
+// no-runners submit gate (issue #8) consults the fleet.
+func announceRunner(t *testing.T, ctx context.Context, srv *Server, platform string) {
+	t.Helper()
+	nc, err := nats.Connect("", nats.InProcessServer(srv.NATS))
+	if err != nil {
+		t.Fatalf("nats connect: %v", err)
+	}
+	t.Cleanup(nc.Close)
+	id := "fake-" + platform
+	b := wire.MustEncode(wire.Hello{ID: id, Name: "fake", Platform: platform,
+		Size: "c4-m16", CPUMilli: 4000, MemBytes: 16 << 30})
+	if err := nc.Publish(wire.SubjectRunnerHello, b); err != nil {
+		t.Fatalf("publish hello: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		for _, info := range srv.Sched.Fleet() {
+			if info.ID == id {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("runner hello not folded into the fleet")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
 
 // request performs one framed request on a fresh stream and returns the
 // first reply frame, decoded into reply (which may be nil).
@@ -100,6 +132,11 @@ func TestBuildAndAdminAPI(t *testing.T) {
 	build := dial(ALPNBuild)
 	admin := dial(ALPNAdmin)
 
+	// Announce a fake runner so the submit passes the no-runners gate
+	// (issue #8); nothing consumes the lanes, matching the test's intent of
+	// observing a live (non-progressing) closure.
+	announceRunner(t, ctx, srv, "linux/amd64")
+
 	// Submit over the build ALPN.
 	var sub api.Submitted
 	request(t, ctx, build, api.TSubmit, api.SubmitRequest{Def: canon}, api.TSubmitted, &sub)
@@ -127,10 +164,10 @@ func TestBuildAndAdminAPI(t *testing.T) {
 		t.Fatalf("requests listing: %+v", rr.Requests)
 	}
 
-	// Admin: fleet decodes (no runners connected).
+	// Admin: fleet decodes and lists the announced fake runner.
 	var fl api.FleetReply
 	request(t, ctx, admin, api.TFleet, nil, api.TFleetReply, &fl)
-	if len(fl.Runners) != 0 {
+	if len(fl.Runners) != 1 || fl.Runners[0].Platform != "linux/amd64" {
 		t.Fatalf("unexpected runners: %+v", fl.Runners)
 	}
 

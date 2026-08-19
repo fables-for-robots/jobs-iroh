@@ -155,12 +155,16 @@ type Snapshot struct {
 	Counts    wire.Counts `cbor:"counts"`
 	Nodes     []NodeSnap  `cbor:"nodes,omitempty"`
 	Terminal  bool        `cbor:"terminal,omitempty"`
+	// Error is the request-level failure reason for failures that belong to
+	// no single node (e.g. the no-runners watchdog). Additive + omitempty:
+	// absent on the wire for node-attributed failures and old servers.
+	Error string `cbor:"error,omitempty"`
 }
 
 // NodeSnap is one node in a snapshot. ElapsedMs is server-computed
 // (clock-skew safety, like jobs).
 type NodeSnap struct {
-	Node       string `cbor:"node"`
+	Node string `cbor:"node"`
 	// Label is the node's display name (recipe dep name, dir, fetcher);
 	// optional and display-only.
 	Label      string `cbor:"label,omitempty"`
@@ -275,8 +279,8 @@ type DiagnoseReply struct {
 
 // NodeDiagnosis is one failing node's trail, attempts newest first.
 type NodeDiagnosis struct {
-	Node     string          `cbor:"node"`
-	Label    string          `cbor:"label,omitempty"` // display name, when known
+	Node  string `cbor:"node"`
+	Label string `cbor:"label,omitempty"` // display name, when known
 
 	Kind     string          `cbor:"kind"`
 	Platform string          `cbor:"platform,omitempty"`

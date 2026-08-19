@@ -184,10 +184,50 @@ func (e *env) startRunner(classes []wire.Class, handle func(wire.Job) *wire.Resu
 	return e.startRunnerOn(testPlatform, classes, handle)
 }
 
+// hello announces one fake runner for platform on runners.hello and waits
+// for the fleet fold to absorb it — the no-runners submit gate (issue #8)
+// consults the fleet, so every test runner must announce itself like the
+// real runnerd does.
+func (e *env) hello(platform string) {
+	e.t.Helper()
+	id := "fake-" + platform
+	b := wire.MustEncode(wire.Hello{ID: id, Name: "fake", Platform: platform,
+		Size: "c4-m16", CPUMilli: 4000, MemBytes: 16 << 30})
+	if err := e.nc.Publish(wire.SubjectRunnerHello, b); err != nil {
+		e.t.Fatalf("publish hello: %v", err)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		e.s.mu.Lock()
+		_, ok := e.s.fleet[id]
+		e.s.mu.Unlock()
+		if ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			e.t.Fatal("runner hello not folded into the fleet")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+}
+
+// staleFleet backdates every fleet entry past the liveness window, as if all
+// runners stopped heartbeating.
+func (e *env) staleFleet() {
+	e.t.Helper()
+	e.s.mu.Lock()
+	for id, info := range e.s.fleet {
+		info.SeenNs = time.Now().Add(-2 * runnerLiveWindow).UnixNano()
+		e.s.fleet[id] = info
+	}
+	e.s.mu.Unlock()
+}
+
 // startRunnerOn is startRunner bound to an explicit platform (multi-platform
 // tests need one fake runner per platform lane set).
 func (e *env) startRunnerOn(platform string, classes []wire.Class, handle func(wire.Job) *wire.Result) *fakeRunner {
 	e.t.Helper()
+	e.hello(platform)
 	fr := &fakeRunner{jobs: map[string][]wire.Job{}}
 	for _, class := range classes {
 		cons, err := e.js.CreateOrUpdateConsumer(e.ctx, wire.StreamJobs, LaneConsumerConfig(platform, class))
@@ -447,6 +487,16 @@ func TestJoinTwoRequestsOneK(t *testing.T) {
 	e := newEnv(t)
 	defBytes := e.treeDef("join")
 
+	// The no-runners gate rejects submits with an empty fleet; announce the
+	// runner before submitting, but hold its lane consumption behind a gate
+	// so both submits land before any job runs — the join stays exercised.
+	release := make(chan struct{})
+	handler := e.standardHandler(builddef.Pinned{})
+	fr := e.startRunner([]wire.Class{"c0.2-m1", "c1-m1"}, func(job wire.Job) *wire.Result {
+		<-release
+		return handler(job)
+	})
+
 	sub1, err := e.s.Submit(e.ctx, api.SubmitRequest{Def: defBytes})
 	if err != nil {
 		t.Fatal(err)
@@ -461,8 +511,7 @@ func TestJoinTwoRequestsOneK(t *testing.T) {
 	if sub1.RequestID == sub2.RequestID {
 		t.Fatal("distinct submits share a request id")
 	}
-
-	fr := e.startRunner([]wire.Class{"c0.2-m1", "c1-m1"}, e.standardHandler(builddef.Pinned{}))
+	close(release)
 	for _, id := range []string{sub1.RequestID, sub2.RequestID} {
 		if snap := e.watchTerminal(id); snap.Phase != "done" {
 			t.Fatalf("request %s phase = %s, want done", id, snap.Phase)
@@ -653,6 +702,7 @@ func TestGateRejectionFailsClosed(t *testing.T) {
 // queued job's late result is dropped at claim time, no refs get written.
 func TestCancel(t *testing.T) {
 	e := newEnv(t)
+	e.hello(testPlatform) // pass the no-runners submit gate; nothing consumes
 	defBytes := e.treeDef("cancel")
 	sub, err := e.s.Submit(e.ctx, api.SubmitRequest{Def: defBytes})
 	if err != nil {
@@ -736,6 +786,7 @@ func TestCancel(t *testing.T) {
 // needs — a job message backing a node shared with a live request stays.
 func TestCancelSharedInterestKeepsJob(t *testing.T) {
 	e := newEnv(t)
+	e.hello(testPlatform) // pass the no-runners submit gate; nothing consumes
 	defBytes := e.treeDef("shared-cancel")
 
 	subA, err := e.s.Submit(e.ctx, api.SubmitRequest{Def: defBytes})
@@ -908,6 +959,7 @@ func mustKeyString(t *testing.T, b []byte) string {
 // a submit naming a real ref (a hostile or buggy client) must leave it alone.
 func TestSubmitScratchRefGuard(t *testing.T) {
 	e := newEnv(t)
+	e.hello(testPlatform) // pass the no-runners submit gate; nothing consumes
 
 	protected := e.ingestFile([]byte("precious shell artifact"))
 	if err := e.st.PutRef(e.ctx, "shell:"+testPlatform, protected); err != nil {
