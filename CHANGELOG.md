@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.25.0 — 2026-08-19
 
 - **Imports run in a hermetic root — with network.** The import executor
   used to run a fetcher's `./fetch` with user/mount/pid namespaces but NO
