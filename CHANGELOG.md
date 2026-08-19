@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.25.1 — 2026-08-19
 
 - **Runner capacity honours the pod's cgroup limit; `--cpu` / `--memory`
   caps.** Auto-detection read `memory.max`/`cpu.max` at the cgroup mount
