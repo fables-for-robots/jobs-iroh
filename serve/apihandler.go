@@ -5,10 +5,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"io/fs"
 	"log/slog"
 	"net"
-	"path/filepath"
 	"strings"
 
 	"github.com/fxamacker/cbor/v2"
@@ -17,6 +15,7 @@ import (
 
 	"github.com/jobs-build/jobs-iroh/amber"
 	"github.com/jobs-build/jobs-iroh/api"
+	"github.com/jobs-build/jobs-iroh/gcsweep"
 	"github.com/jobs-build/jobs-iroh/sched"
 )
 
@@ -178,7 +177,7 @@ func (svc *apiService) dispatch(ctx context.Context, remote, t string, body cbor
 
 	case api.TStats:
 		st := svc.sd.Stats()
-		st.StoreBytes = dirSize(svc.storeDir)
+		st.StoreBytes = gcsweep.DirSize(svc.storeDir)
 		if svc.gc != nil {
 			gcs := svc.gc.StatsSnapshot()
 			st.GC = &gcs
@@ -307,21 +306,4 @@ func badFrame(t string, err error) error {
 
 func badRequest(format string, args ...any) error {
 	return &sched.Error{Code: api.CodeBadRequest, Text: fmt.Sprintf(format, args...)}
-}
-
-// dirSize sums the regular-file bytes under dir, best-effort: stats belong
-// to observation, so a racing compaction or permission hiccup yields a
-// smaller number, never an error.
-func dirSize(dir string) int64 {
-	var total int64
-	_ = filepath.WalkDir(dir, func(_ string, d fs.DirEntry, err error) error {
-		if err != nil || !d.Type().IsRegular() {
-			return nil
-		}
-		if info, err := d.Info(); err == nil {
-			total += info.Size()
-		}
-		return nil
-	})
-	return total
 }
