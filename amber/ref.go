@@ -43,6 +43,18 @@ func (s *Store) PutRef(ctx context.Context, name string, k key.Key) error {
 	if err != nil {
 		return fmt.Errorf("encode ref %q: %w", name, err)
 	}
+	if s.guard != nil {
+		commit, abort, gerr := s.guard.PrepareRef(k)
+		if gerr != nil {
+			return fmt.Errorf("gc guard for ref %q: %w", name, gerr)
+		}
+		if err := s.refs.Put(name, b); err != nil {
+			abort()
+			return err
+		}
+		commit()
+		return nil
+	}
 	return s.refs.Put(name, b)
 }
 
@@ -70,7 +82,11 @@ func (s *Store) GetRef(ctx context.Context, name string) (RefInfo, error) {
 	if err != nil {
 		return RefInfo{}, err
 	}
-	return decodeRef(name, b)
+	ri, err := decodeRef(name, b)
+	if err == nil && s.observe != nil {
+		s.observe(name)
+	}
+	return ri, err
 }
 
 // ListRefs returns every reference in lexicographic name order. A record that

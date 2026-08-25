@@ -46,6 +46,14 @@ import (
 type Store struct {
 	objects *packstore.Store
 	refs    *refstore.Store
+
+	// observe, when set, is called with the name of every reference read
+	// that found its record (GetRef/GetKey) — the GC access-tracking seam.
+	// Set once before the store serves traffic; not synchronized.
+	observe func(name string)
+	// guard, when set, brackets every PutRef with the collector's
+	// PrepareRef so a reference published mid-mark keeps its closure.
+	guard RefGuard
 }
 
 // Open opens (creating if necessary) the store rooted at dir: objects in
@@ -109,3 +117,18 @@ func (s *Store) getFunc(ctx context.Context) func(key.Key) ([]byte, error) {
 		return s.objects.Get(k)
 	}
 }
+
+// RefGuard is the GC write-barrier seam around reference publication.
+// *gc.Collector satisfies it directly. Exactly one of commit/abort must be
+// called after PrepareRef returns nil.
+type RefGuard interface {
+	PrepareRef(root key.Key) (commit, abort func(), err error)
+}
+
+// SetObserver installs the ref-read hook. Call before serving traffic.
+func (s *Store) SetObserver(f func(name string)) { s.observe = f }
+
+// SetRefGuard installs the reference write barrier. Call before serving
+// traffic; nil keeps the unguarded behavior (runner/registry private
+// stores, tests).
+func (s *Store) SetRefGuard(g RefGuard) { s.guard = g }

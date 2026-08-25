@@ -1,6 +1,7 @@
 package amber_test
 
 import (
+	"context"
 	"errors"
 	"path/filepath"
 	"testing"
@@ -215,5 +216,84 @@ func TestResolveBuildChain(t *testing.T) {
 	}
 	if _, ok, err := s.ResolveBuildArtifact(ctx, k4); ok || !errors.Is(err, amber.ErrNoArtifact) {
 		t.Errorf("no-c/ ResolveBuildArtifact = (ok=%v, err=%v), want (false, ErrNoArtifact)", ok, err)
+	}
+}
+
+type fakeGuard struct {
+	prepared []key.Key
+	commits  int
+	aborts   int
+	err      error
+}
+
+func (g *fakeGuard) PrepareRef(root key.Key) (func(), func(), error) {
+	g.prepared = append(g.prepared, root)
+	if g.err != nil {
+		return nil, nil, g.err
+	}
+	return func() { g.commits++ }, func() { g.aborts++ }, nil
+}
+
+func TestObserverFiresOnGetRef(t *testing.T) {
+	ctx := context.Background()
+	s, err := amber.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	k, err := s.IngestFile(ctx, []byte("observed"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutRef(ctx, "obs", k); err != nil {
+		t.Fatal(err)
+	}
+
+	var touched []string
+	s.SetObserver(func(name string) { touched = append(touched, name) })
+
+	if _, _, err := s.GetKey(ctx, "obs"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := s.GetKey(ctx, "absent"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.ListRefs(ctx); err != nil {
+		t.Fatal(err)
+	}
+	// Exactly one touch: the successful GetKey→GetRef. Absent names and
+	// listings are not accesses.
+	if len(touched) != 1 || touched[0] != "obs" {
+		t.Fatalf("touched = %v, want [obs]", touched)
+	}
+}
+
+func TestRefGuardCommitAndAbort(t *testing.T) {
+	ctx := context.Background()
+	s, err := amber.Open(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	k, err := s.IngestFile(ctx, []byte("guarded"))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	g := &fakeGuard{}
+	s.SetRefGuard(g)
+	if err := s.PutRef(ctx, "guarded", k); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.prepared) != 1 || g.prepared[0] != k || g.commits != 1 || g.aborts != 0 {
+		t.Fatalf("guard = %+v", g)
+	}
+
+	g.err = errors.New("closure incomplete")
+	if err := s.PutRef(ctx, "refused", k); err == nil {
+		t.Fatal("guard error must refuse the put")
+	}
+	if _, ok, _ := s.GetKey(ctx, "refused"); ok {
+		t.Fatal("refused ref must not exist")
 	}
 }
