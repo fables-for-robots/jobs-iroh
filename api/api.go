@@ -5,7 +5,7 @@
 //
 // The build ALPN accepts: submit, watch, logs, cancel.
 // The admin ALPN additionally accepts: requests, fleet, stats, refs, delete,
-// diagnose.
+// diagnose, gc, pin, unpin.
 package api
 
 import (
@@ -34,6 +34,9 @@ const (
 	TRefs     = "refs"
 	TDelete   = "delete"
 	TDiagnose = "diagnose"
+	TGC       = "gc"
+	TPin      = "pin"
+	TUnpin    = "unpin"
 )
 
 // Frame types, server → client.
@@ -49,6 +52,8 @@ const (
 	TStatsReply    = "stats-reply"
 	TRefsReply     = "refs-reply"
 	TDiagnoseReply = "diagnose-reply"
+	TGCReply       = "gc-reply"
+	TPinReply      = "pin-reply"
 )
 
 // frame is the single wire envelope.
@@ -273,6 +278,18 @@ type GCStats struct {
 	LastCycleFreed  int64  `cbor:"lastCycleFreed,omitempty"`
 	LastCycleWallNs int64  `cbor:"lastCycleWallNs,omitempty"`
 	LastError       string `cbor:"lastError,omitempty"`
+}
+
+// GCRequest triggers one immediate GC sweep+cycle (admin).
+type GCRequest struct {
+	// Garbage forces the pack selection line (0..1); nil uses policy
+	// (0.5, or 0.1 under free-space pressure).
+	Garbage *float64 `cbor:"garbage,omitempty"`
+}
+
+// PinRequest pins or unpins one ref (admin).
+type PinRequest struct {
+	Name string `cbor:"name"`
 }
 
 // RefsRequest browses refs by prefix (admin).
