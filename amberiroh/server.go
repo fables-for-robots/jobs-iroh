@@ -41,8 +41,24 @@ type Server struct {
 	// QAD candidates appear asynchronously after bind.
 	dataEndpoints func() []DataEndpointRec
 
+	// onAccess, when set, is called with every ref name a pull resolved or
+	// a push committed — the GC access-tracking seam. onPin is called for
+	// every existing name in a TPin assert. guard, when set, brackets the
+	// push path's reference write with the collector's PrepareRef. All
+	// three are set before Serve, like SetDataPorts.
+	onAccess func(name string)
+	onPin    func(name string)
+	guard    RefGuard
+
 	mu       sync.Mutex
 	refLocks map[string]*sync.Mutex
+}
+
+// RefGuard is the GC write barrier around reference publication, identical
+// in shape to amber.RefGuard (declared here so amberiroh keeps importing
+// only amber-store-core). *gc.Collector satisfies it directly.
+type RefGuard interface {
+	PrepareRef(root key.Key) (commit, abort func(), err error)
 }
 
 // maxDataConns caps the extra data connections one transfer may request.
@@ -159,6 +175,15 @@ func (s *Server) SetDataPorts(ports []uint16) { s.dataPorts = ports }
 // sharding clients; call before Serve, like SetDataPorts.
 func (s *Server) SetDataEndpoints(f func() []DataEndpointRec) { s.dataEndpoints = f }
 
+// SetOnAccess installs the ref-access hook. Call before Serve.
+func (s *Server) SetOnAccess(f func(name string)) { s.onAccess = f }
+
+// SetOnPin installs the pin-assert hook. Call before Serve.
+func (s *Server) SetOnPin(f func(name string)) { s.onPin = f }
+
+// SetRefGuard installs the reference write barrier. Call before Serve.
+func (s *Server) SetRefGuard(g RefGuard) { s.guard = g }
+
 // lockRef serializes ref commits per name so compare-and-swap is
 // race-free under concurrent pushes. Entries are never removed; the map
 // is bounded by the number of distinct ref names ever pushed.
@@ -205,6 +230,8 @@ func (s *Server) HandleStream(remote string, rw io.ReadWriteCloser) {
 		err = s.handlePush(remote, rw, m)
 	case TPull:
 		err = s.handlePull(rw, m)
+	case TPin:
+		err = s.handlePin(rw, m)
 	default:
 		err = s.fail(rw, CodeBadRequest, fmt.Errorf("unknown operation %d", m.Type))
 	}
@@ -246,6 +273,20 @@ func (s *Server) handleRefList(rw io.ReadWriter) error {
 	return WriteMsg(rw, Msg{Type: TRefs, Refs: infos})
 }
 
+// handlePin marks the named refs kept-forever. Nonexistent names are
+// ignored, not an error — a registry may assert ahead of a re-resolve.
+func (s *Server) handlePin(rw io.ReadWriter, m Msg) error {
+	for _, name := range m.Names {
+		if _, err := s.refs.Get(name); err != nil {
+			continue
+		}
+		if s.onPin != nil {
+			s.onPin(name)
+		}
+	}
+	return WriteMsg(rw, Msg{Type: TOK})
+}
+
 func (s *Server) handlePush(remote string, rw io.ReadWriter, m Msg) error {
 	start := time.Now()
 	if err := reference.ValidateName(m.Name); err != nil {
@@ -283,8 +324,21 @@ func (s *Server) handlePush(remote string, rw io.ReadWriter, m Msg) error {
 	if err != nil {
 		return s.fail(rw, CodeInternal, err)
 	}
-	if err := s.refs.Put(m.Name, raw); err != nil {
+	if s.guard != nil {
+		commit, abort, gerr := s.guard.PrepareRef(root)
+		if gerr != nil {
+			return s.fail(rw, CodeInternal, fmt.Errorf("gc guard: %w", gerr))
+		}
+		if err := s.refs.Put(m.Name, raw); err != nil {
+			abort()
+			return s.fail(rw, CodeInternal, err)
+		}
+		commit()
+	} else if err := s.refs.Put(m.Name, raw); err != nil {
 		return s.fail(rw, CodeInternal, err)
+	}
+	if s.onAccess != nil {
+		s.onAccess(m.Name)
 	}
 	if err := WriteMsg(rw, Msg{Type: TOK, Key: root[:]}); err != nil {
 		return err
@@ -395,6 +449,9 @@ func (s *Server) handlePull(rw io.ReadWriter, m Msg) error {
 	}
 	if err != nil {
 		return s.fail(rw, CodeInternal, err)
+	}
+	if s.onAccess != nil {
+		s.onAccess(m.Name)
 	}
 	ref := Msg{Type: TRef, Record: raw}
 	var token []byte
