@@ -49,7 +49,7 @@ func Wants(st *packstore.Store, frontier []key.Key, jobs int) ([]key.Key, error)
 			wants = append(wants, k)
 			continue
 		}
-		err = fstree.CheckComplete(k, st.Get, st.Has, jobs)
+		_, err = fstree.CheckComplete(k, st.Get, st.Has, jobs)
 		switch {
 		case err == nil: // complete subtree: prune
 		case isMissing(err):

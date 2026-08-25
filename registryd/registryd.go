@@ -106,6 +106,7 @@ type registry struct {
 	sync            *reconnSync
 	blobs           *blobCache
 	layers          *layerIndex
+	pins            *pinAsserter
 	reposDir        string
 	ttl             time.Duration
 	defaultPlatform string
@@ -171,6 +172,7 @@ func Run(ctx context.Context, o Options) error {
 		sync:            sc,
 		blobs:           &blobCache{dir: filepath.Join(dataDir, "blobs"), log: log},
 		layers:          newLayerIndex(),
+		pins:            newPinAsserter(),
 		reposDir:        filepath.Join(dataDir, "repos"),
 		ttl:             o.CacheTTL,
 		defaultPlatform: o.DefaultPlatform,

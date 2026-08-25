@@ -52,6 +52,7 @@ const (
 	TErr     = 10 // either direction: terminal failure (Code, Text, Current)
 	TAttach  = 11 // client→server: attach this stream to a transfer (Token)
 	TAccept  = 12 // server→client: sharded transfer accepted (Token)
+	TPin     = 13 // client→server: keep these refs forever (Names) — GC pin-assert
 )
 
 // Error codes carried in TErr frames.
@@ -109,6 +110,9 @@ type Msg struct {
 	// TAccept/TRef. Its presence doubles as the capability signal that the
 	// server gathers attaches for the longer punch-friendly window.
 	DataEndpoints []DataEndpointRec `cbor:"16,keyasint,omitempty"`
+	// Names are the ref names of a TPin assert. Additive: old peers
+	// ignore the field, old servers answer TPin itself with TErr.
+	Names []string `cbor:"17,keyasint,omitempty"`
 }
 
 var (

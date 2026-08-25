@@ -52,7 +52,7 @@ func TestLoopSyncsIntoEmptyStore(t *testing.T) {
 	if sendErr != nil || recvErr != nil {
 		t.Fatalf("send=%v recv=%v", sendErr, recvErr)
 	}
-	if err := fstree.CheckComplete(root, dest.Get, dest.Has, 0); err != nil {
+	if _, err := fstree.CheckComplete(root, dest.Get, dest.Has, 0); err != nil {
 		t.Fatalf("dest incomplete after sync: %v", err)
 	}
 }
@@ -66,7 +66,7 @@ func TestLoopIsIdempotent(t *testing.T) {
 	if _, se, re := runLoop(t, src, dest, root); se != nil || re != nil {
 		t.Fatalf("second sync: send=%v recv=%v", se, re)
 	}
-	if err := fstree.CheckComplete(root, dest.Get, dest.Has, 0); err != nil {
+	if _, err := fstree.CheckComplete(root, dest.Get, dest.Has, 0); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -87,7 +87,7 @@ func TestLoopResumesPartialTransfer(t *testing.T) {
 	if _, se, re := runLoop(t, src, dest, root); se != nil || re != nil {
 		t.Fatalf("send=%v recv=%v", se, re)
 	}
-	if err := fstree.CheckComplete(root, dest.Get, dest.Has, 0); err != nil {
+	if _, err := fstree.CheckComplete(root, dest.Get, dest.Has, 0); err != nil {
 		t.Fatalf("dest incomplete after resume: %v", err)
 	}
 }
@@ -313,7 +313,7 @@ func TestLoopShardedAcrossChannels(t *testing.T) {
 	if recvErr != nil {
 		t.Fatalf("receive: %v", recvErr)
 	}
-	if err := fstree.CheckComplete(root, dest.Get, dest.Has, 0); err != nil {
+	if _, err := fstree.CheckComplete(root, dest.Get, dest.Has, 0); err != nil {
 		t.Fatalf("dest incomplete after sharded sync: %v", err)
 	}
 	if stats.Received != len(total) {

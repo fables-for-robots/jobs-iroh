@@ -66,6 +66,16 @@ func (r *reconnSync) Pull(ctx context.Context, name string) (key.Key, error) {
 	return root, err
 }
 
+// Pin asserts that names must survive GC on the server (amberiroh.TPin).
+// An old server answers with a bad-request RemoteError, which do's
+// isRemoteVerdict treats as a server-answered verdict — no redial — so the
+// caller sees the RemoteError straight through and can disable asserting.
+func (r *reconnSync) Pin(ctx context.Context, names []string) error {
+	return r.do(ctx, func(c *amberclient.Client) error {
+		return c.Pin(ctx, names)
+	})
+}
+
 func (r *reconnSync) Refs(ctx context.Context) ([]amberclient.RefInfo, error) {
 	var refs []amberclient.RefInfo
 	err := r.do(ctx, func(c *amberclient.Client) error {

@@ -3,6 +3,7 @@ package serve
 import (
 	"context"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -22,12 +23,13 @@ import (
 // apiService serves the api frame protocol (4-byte BE length + CBOR
 // {t, b}) of one client ALPN over the scheduler. The build ALPN accepts
 // submit/watch/logs/cancel; the admin ALPN additionally accepts
-// requests/fleet/stats/refs/delete/diagnose (admin=true).
+// requests/fleet/stats/refs/delete/diagnose/gc/pin/unpin (admin=true).
 type apiService struct {
 	log      *slog.Logger
 	sd       *sched.Sched
 	store    *amber.Store
 	storeDir string // for the stats disk-usage walk
+	gc       *gcRunner
 	admin    bool
 }
 
@@ -177,6 +179,10 @@ func (svc *apiService) dispatch(ctx context.Context, remote, t string, body cbor
 	case api.TStats:
 		st := svc.sd.Stats()
 		st.StoreBytes = dirSize(svc.storeDir)
+		if svc.gc != nil {
+			gcs := svc.gc.StatsSnapshot()
+			st.GC = &gcs
+		}
 		_ = api.WriteFrame(stream, api.TStatsReply, st)
 		return nil
 
@@ -202,6 +208,12 @@ func (svc *apiService) dispatch(ctx context.Context, remote, t string, body cbor
 				Key:       k[:],
 				CreatedNs: r.CreatedAt.UnixNano(),
 			})
+			if svc.gc != nil {
+				if e, ok := svc.gc.Entry(r.Name); ok {
+					out[len(out)-1].LastAccessNs = e.LastAccess.UnixNano()
+					out[len(out)-1].Pinned = e.Pinned
+				}
+			}
 			if req.Limit > 0 && len(out) == req.Limit {
 				break
 			}
@@ -231,6 +243,56 @@ func (svc *apiService) dispatch(ctx context.Context, remote, t string, body cbor
 			return err
 		}
 		_ = api.WriteFrame(stream, api.TDiagnoseReply, reply)
+		return nil
+
+	case api.TGC:
+		if svc.gc == nil {
+			return &sched.Error{Code: api.CodeUnavailable, Text: "GC is disabled on this server (--gc-retention 0)"}
+		}
+		var req api.GCRequest
+		if len(body) > 0 {
+			if err := api.DecodeBody(body, &req); err != nil {
+				return badFrame(t, err)
+			}
+		}
+		garbage := -1.0
+		if req.Garbage != nil {
+			garbage = *req.Garbage
+		}
+		svc.log.Info("admin gc", "remote", remote, "garbage", garbage)
+		stats, err := svc.gc.Sweep(ctx, garbage, true)
+		if err != nil {
+			return err
+		}
+		_ = api.WriteFrame(stream, api.TGCReply, stats)
+		return nil
+
+	case api.TPin, api.TUnpin:
+		if svc.gc == nil {
+			return &sched.Error{Code: api.CodeUnavailable, Text: "GC is disabled on this server (--gc-retention 0)"}
+		}
+		var req api.PinRequest
+		if err := api.DecodeBody(body, &req); err != nil {
+			return badFrame(t, err)
+		}
+		if req.Name == "" {
+			return badRequest("pin: name is required")
+		}
+		var row api.RefInfo
+		var err error
+		if t == api.TPin {
+			row, err = svc.gc.Pin(ctx, req.Name)
+		} else {
+			row, err = svc.gc.Unpin(ctx, req.Name)
+		}
+		if errors.Is(err, amber.ErrRefNotFound) {
+			return &sched.Error{Code: api.CodeNotFound, Text: err.Error()}
+		}
+		if err != nil {
+			return err
+		}
+		svc.log.Info("admin "+t, "remote", remote, "ref", req.Name)
+		_ = api.WriteFrame(stream, api.TPinReply, row)
 		return nil
 
 	default:

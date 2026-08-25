@@ -89,6 +89,17 @@ type Options struct {
 	// published. A client that cannot reach them falls back to the control
 	// connection's addresses.
 	DataEndpoints int
+	// GCRetention enables auto-cleanup: refs unread for this long are
+	// deleted and the mark-sweep collector reclaims the disk. 0 disables
+	// GC entirely (tracker, collector, sweep loop).
+	GCRetention time.Duration
+	// GCInterval is the sweep period (default 1h when GC is enabled).
+	GCInterval time.Duration
+	// GCRate caps the GC copier in bytes/s (0 = unlimited).
+	GCRate int64
+	// GCMinFree is the free-space floor in bytes under which the collector
+	// reaps more aggressively (0 = 5% of the filesystem).
+	GCMinFree uint64
 	// Logger receives server logs; nil means slog.Default().
 	Logger *slog.Logger
 	// Ready, when non-nil, is closed once the endpoint accepts connections.
@@ -136,6 +147,22 @@ func Run(ctx context.Context, opts Options) error {
 	}
 	defer store.Close()
 
+	var gcr *gcRunner
+	if opts.GCRetention > 0 {
+		if opts.GCInterval <= 0 {
+			opts.GCInterval = time.Hour
+		}
+		storeDir := filepath.Join(opts.DataDir, "store")
+		gcr, err = newGCRunner(log.With("component", "gc"), store, opts.DataDir, storeDir, opts)
+		if err != nil {
+			return err
+		}
+		defer gcr.Close()
+		if gcTestCapture != nil {
+			gcTestCapture(gcr)
+		}
+	}
+
 	// Self-seed the bootstrap floor (shell:<p>, fetcher:*:<p>) for every
 	// embedded platform: runners own no seeds — they pull fetchers and the
 	// shell from this store, so a fresh server must publish them before the
@@ -168,11 +195,15 @@ func Run(ctx context.Context, opts Options) error {
 	}
 	defer nc.Close()
 
-	sd, err := sched.New(ctx, sched.Options{
+	schedOpts := sched.Options{
 		Store: store,
 		NC:    nc,
 		Log:   log.With("component", "sched"),
-	})
+	}
+	if gcr != nil {
+		schedOpts.Touch = gcr.tracker.TouchAll
+	}
+	sd, err := sched.New(ctx, schedOpts)
 	if err != nil {
 		return fmt.Errorf("start scheduler: %w", err)
 	}
@@ -212,6 +243,11 @@ func Run(ctx context.Context, opts Options) error {
 	}
 
 	amberSrv := amberiroh.New(log.With("component", "amber"), store.Objects(), store.RefStore())
+	if gcr != nil {
+		amberSrv.SetOnAccess(gcr.tracker.Touch)
+		amberSrv.SetOnPin(gcr.tracker.Pin)
+		amberSrv.SetRefGuard(gcr.coll)
+	}
 
 	// Extra data endpoints for sharded transfers. Each carries only the two
 	// amber ALPNs; TAttach reaches the one amberSrv (and its transfer
@@ -294,8 +330,8 @@ func Run(ctx context.Context, opts Options) error {
 	}
 
 	storeDir := filepath.Join(opts.DataDir, "store")
-	buildSvc := &apiService{log: log.With("service", "build"), sd: sd, store: store, storeDir: storeDir}
-	adminSvc := &apiService{log: log.With("service", "admin"), sd: sd, store: store, storeDir: storeDir, admin: true}
+	buildSvc := &apiService{log: log.With("service", "build"), sd: sd, store: store, storeDir: storeDir, gc: gcr}
+	adminSvc := &apiService{log: log.With("service", "admin"), sd: sd, store: store, storeDir: storeDir, gc: gcr, admin: true}
 
 	handlers := map[string]iroh.ProtocolHandler{
 		ALPNRunnerNATS:  logConns(log, "runner-nats", natsiroh.Handler(ns)),
@@ -316,6 +352,9 @@ func Run(ctx context.Context, opts Options) error {
 	)
 	if opts.Ready != nil {
 		opts.Ready(&Server{Endpoint: ep, Store: store, NATS: ns, Sched: sd})
+	}
+	if gcr != nil {
+		gcr.start(ctx)
 	}
 
 	<-ctx.Done()

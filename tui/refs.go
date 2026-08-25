@@ -108,7 +108,12 @@ func (m refsModel) rowsHeight() int { return max(1, m.height-2) }
 func (m refsModel) refWidths() []int {
 	w := make([]int, len(refCols))
 	copy(w, refCols)
-	if slack := m.width - (refCols[0] + refCols[1] + refCols[2] + 4); slack > 0 {
+	fixed := 0
+	for _, c := range refCols {
+		fixed += c
+	}
+	fixed += 2 * (len(refCols) - 1) // joinCells' two-space separators
+	if slack := m.width - fixed; slack > 0 {
 		w[0] += slack
 	}
 	return w

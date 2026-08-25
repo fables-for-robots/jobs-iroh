@@ -14,7 +14,7 @@ func testJob() wire.Job {
 
 func TestBuildResultSuccess(t *testing.T) {
 	refs := []wire.RefProposal{{Name: "import-output:abc", Key: []byte{1}}}
-	res := buildResult(testJob(), "r1", runner.Outcome{}, refs, "runner-push/r1/import_abc-3", wire.Rusage{WallNs: 42})
+	res := buildResult(testJob(), "r1", runner.Outcome{}, refs, "runner-push/r1/import_abc-3", wire.Rusage{WallNs: 42}, nil)
 	if res.Class != wire.ClassOK {
 		t.Fatalf("class = %q, want ok", res.Class)
 	}
@@ -30,7 +30,7 @@ func TestBuildResultSuccess(t *testing.T) {
 }
 
 func TestBuildResultCancelled(t *testing.T) {
-	res := buildResult(testJob(), "r1", runner.Outcome{Cancelled: true}, nil, "", wire.Rusage{})
+	res := buildResult(testJob(), "r1", runner.Outcome{Cancelled: true}, nil, "", wire.Rusage{}, nil)
 	if res.Class != wire.ClassCancelled {
 		t.Fatalf("class = %q, want cancelled", res.Class)
 	}
@@ -40,7 +40,7 @@ func TestBuildResultCancelled(t *testing.T) {
 }
 
 func TestBuildResultDeclineIsRetryable(t *testing.T) {
-	res := buildResult(testJob(), "r1", runner.Outcome{Decline: true, DeclineReason: "no shell"}, nil, "", wire.Rusage{})
+	res := buildResult(testJob(), "r1", runner.Outcome{Decline: true, DeclineReason: "no shell"}, nil, "", wire.Rusage{}, nil)
 	if res.Class != wire.ClassRetryable {
 		t.Fatalf("class = %q, want retryable", res.Class)
 	}
@@ -61,7 +61,7 @@ func TestBuildResultFailureClasses(t *testing.T) {
 	}
 	for _, tc := range cases {
 		out := runner.Outcome{Failed: true, Class: tc.driver, ExitCode: 7, Phase: "building", Stderr: "boom"}
-		res := buildResult(testJob(), "r1", out, nil, "", wire.Rusage{})
+		res := buildResult(testJob(), "r1", out, nil, "", wire.Rusage{}, nil)
 		if res.Class != tc.want {
 			t.Errorf("driver class %q -> %q, want %q", tc.driver, res.Class, tc.want)
 		}
@@ -76,9 +76,26 @@ func TestBuildResultFailureClasses(t *testing.T) {
 
 func TestBuildResultFailureRefsNeverLeak(t *testing.T) {
 	refs := []wire.RefProposal{{Name: "import-output:abc", Key: []byte{1}}}
-	res := buildResult(testJob(), "r1", runner.Outcome{Failed: true, Class: "hard"}, refs, "scratch", wire.Rusage{})
+	res := buildResult(testJob(), "r1", runner.Outcome{Failed: true, Class: "hard"}, refs, "scratch", wire.Rusage{}, nil)
 	if len(res.Refs) != 0 || res.ScratchRef != "" {
 		t.Fatalf("failed result must not propose refs: %+v", res)
+	}
+}
+
+// ReadRefs must ride the result for every class — the server needs to know
+// cached refs were used regardless of the build outcome.
+func TestBuildResultCarriesReadRefs(t *testing.T) {
+	job := wire.Job{Node: "n", Gen: 3}
+	reads := []string{"build-output:aa", "shell:linux/amd64"}
+
+	ok := buildResult(job, "r1", runner.Outcome{}, nil, "", wire.Rusage{}, reads)
+	failed := buildResult(job, "r1", runner.Outcome{Failed: true, Class: "hard"}, nil, "", wire.Rusage{}, reads)
+	cancelled := buildResult(job, "r1", runner.Outcome{Cancelled: true}, nil, "", wire.Rusage{}, reads)
+
+	for name, res := range map[string]wire.Result{"ok": ok, "failed": failed, "cancelled": cancelled} {
+		if !slices.Equal(res.ReadRefs, reads) {
+			t.Errorf("%s: ReadRefs = %v, want %v", name, res.ReadRefs, reads)
+		}
 	}
 }
 

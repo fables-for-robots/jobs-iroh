@@ -115,6 +115,9 @@ func adminCmd() *cli.Command {
 			adminFleetCmd(),
 			adminRequestsCmd(),
 			adminRefsCmd(),
+			adminGCCmd(),
+			adminPinCmd(true),
+			adminPinCmd(false),
 		},
 	}
 }
@@ -147,6 +150,30 @@ func adminStatsCmd() *cli.Command {
 			fmt.Fprintf(w, "requests:      %d\n", st.Requests)
 			fmt.Fprintf(w, "nodes tracked: %d\n", st.NodesTracked)
 			fmt.Fprintf(w, "uptime:        %s\n", time.Duration(st.UptimeNs).Round(time.Second))
+			if st.GC != nil {
+				g := st.GC
+				fmt.Fprintf(w, "gc retention:  %s\n", time.Duration(g.RetentionNs))
+				if g.LastSweepNs == 0 {
+					fmt.Fprintf(w, "gc sweep:      never\n")
+				} else {
+					pct := 0.0
+					if tot := g.LiveBytes + g.GarbageBytes; tot > 0 {
+						pct = 100 * float64(g.GarbageBytes) / float64(tot)
+					}
+					fmt.Fprintf(w, "gc sweep:      %s ago (expired %d, total %d)\n",
+						time.Since(time.Unix(0, g.LastSweepNs)).Round(time.Second), g.ExpiredLast, g.ExpiredTotal)
+					fmt.Fprintf(w, "gc store:      live %d, garbage %d (%.1f%%), pinned %d\n",
+						g.LiveBytes, g.GarbageBytes, pct, g.Pinned)
+				}
+				if g.LastCycleNs != 0 {
+					fmt.Fprintf(w, "gc last cycle: %s ago, reaped %d packs, freed %d bytes in %s\n",
+						time.Since(time.Unix(0, g.LastCycleNs)).Round(time.Second),
+						g.LastCycleReaped, g.LastCycleFreed, time.Duration(g.LastCycleWallNs).Round(time.Millisecond))
+				}
+				if g.LastError != "" {
+					fmt.Fprintf(w, "gc last error: %s\n", g.LastError)
+				}
+			}
 			return nil
 		},
 	}
@@ -224,7 +251,14 @@ func adminRefsCmd() *cli.Command {
 				return nil
 			}
 			for _, r := range reply.Refs {
-				fmt.Fprintf(w, "%s\t%s\n", r.Name, hex.EncodeToString(r.Key))
+				access, pin := "-", ""
+				if r.LastAccessNs > 0 {
+					access = time.Since(time.Unix(0, r.LastAccessNs)).Round(time.Second).String() + " ago"
+				}
+				if r.Pinned {
+					pin = "pin"
+				}
+				fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", r.Name, hex.EncodeToString(r.Key), access, pin)
 			}
 			return nil
 		},
@@ -238,4 +272,69 @@ func shortHex(b []byte) string {
 		return s[:8]
 	}
 	return s
+}
+
+func adminGCCmd() *cli.Command {
+	return &cli.Command{
+		Name:  "gc",
+		Usage: "run one GC sweep+cycle now and print the report",
+		Flags: append(serverFlags(),
+			&cli.Float64Flag{Name: "garbage", Value: -1,
+				Usage: "force the pack selection line 0..1 (default: server policy)"},
+		),
+		Action: func(c *cli.Context) error {
+			req := api.GCRequest{}
+			if g := c.Float64("garbage"); g >= 0 {
+				req.Garbage = &g
+			}
+			var st api.GCStats
+			if err := adminCall(c, api.TGC, req, api.TGCReply, &st); err != nil {
+				return err
+			}
+			w := c.App.Writer
+			pct := 0.0
+			if tot := st.LiveBytes + st.GarbageBytes; tot > 0 {
+				pct = 100 * float64(st.GarbageBytes) / float64(tot)
+			}
+			fmt.Fprintf(w, "disk:      %d bytes\n", st.DiskBytes)
+			fmt.Fprintf(w, "refs:      %d (%d pinned, %d expired this sweep)\n", st.RefCount, st.Pinned, st.ExpiredLast)
+			fmt.Fprintf(w, "store:     live %d, garbage %d (%.1f%%)\n", st.LiveBytes, st.GarbageBytes, pct)
+			if st.LastCycleNs != 0 {
+				fmt.Fprintf(w, "cycle:     reaped %d packs, freed %d bytes in %s\n",
+					st.LastCycleReaped, st.LastCycleFreed, time.Duration(st.LastCycleWallNs).Round(time.Millisecond))
+			}
+			if st.LastError != "" {
+				return cli.Exit("gc cycle error: "+st.LastError, 1)
+			}
+			return nil
+		},
+	}
+}
+
+func adminPinCmd(pin bool) *cli.Command {
+	name, usage, frame := "pin", "keep a ref forever (exempt from GC expiry)", api.TPin
+	if !pin {
+		name, usage, frame = "unpin", "clear a ref's pin; it then lives by its access clock", api.TUnpin
+	}
+	return &cli.Command{
+		Name:      name,
+		Usage:     usage,
+		ArgsUsage: "<ref-name>",
+		Flags:     serverFlags(),
+		Action: func(c *cli.Context) error {
+			if c.NArg() != 1 {
+				return cli.Exit("exactly one ref name required", 2)
+			}
+			var row api.RefInfo
+			if err := adminCall(c, frame, api.PinRequest{Name: c.Args().First()}, api.TPinReply, &row); err != nil {
+				return err
+			}
+			state := "unpinned"
+			if row.Pinned {
+				state = "pinned"
+			}
+			fmt.Fprintf(c.App.Writer, "%s\t%s\n", row.Name, state)
+			return nil
+		},
+	}
 }

@@ -7,16 +7,17 @@ require (
 	github.com/charmbracelet/bubbles v1.0.0
 	github.com/charmbracelet/bubbletea v1.3.10
 	github.com/charmbracelet/lipgloss v1.1.0
+	github.com/charmbracelet/x/ansi v0.11.6
 	github.com/creack/pty v1.1.9
 	github.com/fxamacker/cbor/v2 v2.9.2
 	github.com/google/go-containerregistry v0.21.7
-	github.com/jobs-build/amber-store-core v0.0.0-20260727080459-e4fcb60cba49
+	github.com/jobs-build/amber-store-core v0.0.2
 	github.com/klauspost/compress v1.19.0
 	github.com/nats-io/nats-server/v2 v2.14.3
 	github.com/nats-io/nats.go v1.52.0
 	github.com/onsi/ginkgo/v2 v2.31.0
 	github.com/onsi/gomega v1.42.0
-	github.com/tmc/go-iroh v0.0.0-20260815195718-8aca5f0f793e
+	github.com/tmc/go-iroh v0.1.0
 	github.com/urfave/cli/v2 v2.27.7
 	go.starlark.net v0.0.0-20260613233743-8ba36ccb83fb
 	golang.org/x/sync v0.22.0
@@ -38,7 +39,6 @@ require (
 	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/charmbracelet/colorprofile v0.4.1 // indirect
-	github.com/charmbracelet/x/ansi v0.11.6 // indirect
 	github.com/charmbracelet/x/cellbuf v0.0.15 // indirect
 	github.com/charmbracelet/x/term v0.2.2 // indirect
 	github.com/clipperhouse/displaywidth v0.9.0 // indirect

@@ -605,6 +605,35 @@ func (c *Client) Refs(ctx context.Context) ([]RefInfo, error) {
 	return out, nil
 }
 
+// Pin asks the server to keep the named refs forever (the GC pin-assert,
+// amberiroh.TPin). Nonexistent names are ignored server-side. An old
+// server answers with a bad-request RemoteError — callers should detect it
+// with errors.As and stop asserting.
+func (c *Client) Pin(ctx context.Context, names []string) error {
+	stream, stop, err := c.openStream(ctx)
+	if err != nil {
+		return fmt.Errorf("amberclient: pin: %w", err)
+	}
+	defer stop()
+	defer CloseStream(stream)
+
+	if err := amberiroh.WriteMsg(stream, amberiroh.Msg{Type: amberiroh.TPin, Names: names}); err != nil {
+		return fmt.Errorf("amberclient: pin: %w", err)
+	}
+	m, err := amberiroh.ReadMsg(stream)
+	if err != nil {
+		return fmt.Errorf("amberclient: pin: %w", err)
+	}
+	switch m.Type {
+	case amberiroh.TOK:
+		return nil
+	case amberiroh.TErr:
+		return fmt.Errorf("amberclient: pin: %w", amberiroh.RemoteFromMsg(m))
+	default:
+		return fmt.Errorf("amberclient: pin: %w: type %d, want TOK", amberiroh.ErrProtocol, m.Type)
+	}
+}
+
 // openStream opens one operation stream and arms ctx cancellation: the
 // protocol and wantsync loops speak plain io.ReadWriter, so cancellation is
 // delivered by expiring the stream's deadline, which unblocks any pending

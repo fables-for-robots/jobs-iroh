@@ -57,6 +57,11 @@ func (s *Sched) handleResult(data []byte) {
 		s.log.Warn("undecodable result dropped", "error", err)
 		return
 	}
+	if s.touch != nil && len(res.ReadRefs) > 0 {
+		// Reads happened regardless of how the result is disposed of below
+		// (stale, duplicate, unknown node) — touch before the dedup gate.
+		s.touch(res.ReadRefs)
+	}
 	defer s.deleteScratch(res.ScratchRef)
 
 	kind, k, err := wire.ParseNodeName(res.Node)
@@ -222,7 +227,7 @@ func (s *Sched) commit(sp commitSpec) error {
 	get := func(k key.Key) ([]byte, error) { return s.store.Get(k) }
 	has := func(k key.Key) (bool, error) { return s.store.Has(k) }
 	for i, r := range sp.refs {
-		if err := fstree.CheckComplete(keys[i], get, has, 0); err != nil {
+		if _, err := fstree.CheckComplete(keys[i], get, has, 0); err != nil {
 			return fmt.Errorf("ref %q: incomplete closure: %w", r.Name, err)
 		}
 	}

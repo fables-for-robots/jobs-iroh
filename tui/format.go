@@ -196,16 +196,25 @@ func runnerRow(r wire.RunnerInfo, now time.Time) []string {
 
 // refCols are the refs-table column widths (name gets the slack; see
 // refsModel.view which widens column 0 to the pane).
-var refCols = []int{48, 14, 8}
+var refCols = []int{48, 14, 8, 8, 4}
 
-var refHeader = []string{"NAME", "KEY", "AGE"}
+var refHeader = []string{"NAME", "KEY", "AGE", "ACCESS", "PIN"}
 
 // refRow builds one refs-table row.
 func refRow(r api.RefInfo, now time.Time) []string {
+	access, pin := "-", ""
+	if r.LastAccessNs > 0 {
+		access = ageAt(now, r.LastAccessNs)
+	}
+	if r.Pinned {
+		pin = "pin"
+	}
 	return []string{
 		r.Name,
 		shortKey(r.Key),
 		ageAt(now, r.CreatedNs),
+		access,
+		pin,
 	}
 }
 
@@ -223,13 +232,33 @@ func joinCells(cells []string, widths []int) string {
 
 // statsLines renders the stats view body.
 func statsLines(st api.StatsReply) []string {
-	return []string{
+	lines := []string{
 		fmt.Sprintf("store used     %s (%d bytes)", humanBytes(st.StoreBytes), st.StoreBytes),
 		fmt.Sprintf("refs           %d", st.RefCount),
 		fmt.Sprintf("requests       %d", st.Requests),
 		fmt.Sprintf("nodes tracked  %d", st.NodesTracked),
 		fmt.Sprintf("uptime         %s", humanAge(time.Duration(st.UptimeNs))),
 	}
+	if g := st.GC; g != nil {
+		pct := 0.0
+		if tot := g.LiveBytes + g.GarbageBytes; tot > 0 {
+			pct = 100 * float64(g.GarbageBytes) / float64(tot)
+		}
+		sweep := "never"
+		if g.LastSweepNs != 0 {
+			sweep = humanAge(time.Since(time.Unix(0, g.LastSweepNs))) + " ago"
+		}
+		lines = append(lines,
+			fmt.Sprintf("gc retention   %s", time.Duration(g.RetentionNs)),
+			fmt.Sprintf("gc sweep       %s (expired %d, total %d)", sweep, g.ExpiredLast, g.ExpiredTotal),
+			fmt.Sprintf("gc garbage     %s of %s (%.1f%%), pinned %d",
+				humanBytes(g.GarbageBytes), humanBytes(g.LiveBytes+g.GarbageBytes), pct, g.Pinned),
+		)
+		if g.LastError != "" {
+			lines = append(lines, "gc last error  "+g.LastError)
+		}
+	}
+	return lines
 }
 
 // --- build detail entries ---

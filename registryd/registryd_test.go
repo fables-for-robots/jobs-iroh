@@ -33,6 +33,7 @@ import (
 
 	"github.com/jobs-build/jobs-iroh/amber"
 	"github.com/jobs-build/jobs-iroh/amberclient"
+	"github.com/jobs-build/jobs-iroh/api"
 	"github.com/jobs-build/jobs-iroh/builddef"
 	"github.com/jobs-build/jobs-iroh/registryd"
 	"github.com/jobs-build/jobs-iroh/serve"
@@ -40,7 +41,9 @@ import (
 
 // startServer runs a jobs-server on loopback and returns its handle plus a
 // stop func that shuts it down and waits (for the serve-from-cache tests).
-func startServer(t *testing.T, ctx context.Context) (*serve.Server, func()) {
+// GC is disabled by default (registryd's pin-asserts must be a no-op
+// against a GC-less server); mods, if given, can enable it.
+func startServer(t *testing.T, ctx context.Context, mods ...func(*serve.Options)) (*serve.Server, func()) {
 	t.Helper()
 
 	ready := make(chan *serve.Server, 1)
@@ -63,12 +66,16 @@ func startServer(t *testing.T, ctx context.Context) (*serve.Server, func()) {
 		}
 	}
 	t.Cleanup(stop)
+	o := serve.Options{
+		DataDir:  t.TempDir(),
+		BindAddr: netip.AddrPortFrom(netip.IPv6Loopback(), 0),
+		Ready:    func(s *serve.Server) { ready <- s },
+	}
+	for _, mod := range mods {
+		mod(&o)
+	}
 	go func() {
-		done <- serve.Run(runCtx, serve.Options{
-			DataDir:  t.TempDir(),
-			BindAddr: netip.AddrPortFrom(netip.IPv6Loopback(), 0),
-			Ready:    func(s *serve.Server) { ready <- s },
-		})
+		done <- serve.Run(runCtx, o)
 	}()
 
 	select {
@@ -153,6 +160,45 @@ func dialAmber(t *testing.T, ctx context.Context, srv *serve.Server) *amberclien
 	}
 	t.Cleanup(func() { c.Close() })
 	return c
+}
+
+// adminRefs browses srv's refs by prefix over the jobs-admin/1.0 ALPN — the
+// same frame protocol jobs-client's `admin refs` uses, dialed directly here
+// since clientcli's apiConn helpers are unexported.
+func adminRefs(t *testing.T, ctx context.Context, srv *serve.Server, prefix string) []api.RefInfo {
+	t.Helper()
+	conn, ep, err := amberclient.DialConn(ctx, amberclient.Options{
+		EndpointID: srv.Endpoint.ID().String(),
+		Addrs:      []string{srv.Endpoint.LocalAddr().String()},
+		ALPN:       "jobs-admin/1.0",
+		BindAddr:   netip.AddrPortFrom(netip.IPv6Loopback(), 0),
+	})
+	if err != nil {
+		t.Fatalf("dial admin: %v", err)
+	}
+	defer conn.Close()
+	defer ep.Shutdown(context.Background())
+
+	stream, err := conn.OpenStreamConn(ctx)
+	if err != nil {
+		t.Fatalf("open admin stream: %v", err)
+	}
+	defer amberclient.CloseStream(stream)
+	if err := api.WriteFrame(stream, api.TRefs, api.RefsRequest{Prefix: prefix}); err != nil {
+		t.Fatalf("send refs request: %v", err)
+	}
+	rt, rb, err := api.ReadFrame(stream)
+	if err != nil {
+		t.Fatalf("read refs reply: %v", err)
+	}
+	if rt != api.TRefsReply {
+		t.Fatalf("refs reply type = %q", rt)
+	}
+	var reply api.RefsReply
+	if err := api.DecodeBody(rb, &reply); err != nil {
+		t.Fatalf("decode refs reply: %v", err)
+	}
+	return reply.Refs
 }
 
 func ingestDir(t *testing.T, ctx context.Context, st *amber.Store, files map[string]string) key.Key {
@@ -363,7 +409,10 @@ func extractFS(t *testing.T, img v1.Image) map[string]fsEntry {
 
 func TestRegistryServesServerBuild(t *testing.T) {
 	ctx := context.Background()
-	srv, stopServer := startServer(t, ctx)
+	// GC enabled (but never swept in this test's lifetime) so the served
+	// image's pin-assert is observable via admin refs — see the Pinned
+	// check below.
+	srv, stopServer := startServer(t, ctx, func(o *serve.Options) { o.GCRetention = time.Hour })
 	st := fixtureStore(t)
 	ac := dialAmber(t, ctx, srv)
 	k, depBOK := pushServerBuild(t, ctx, st, ac, "")
@@ -495,6 +544,21 @@ func TestRegistryServesServerBuild(t *testing.T) {
 	getJSON(t, "http://"+host+"/v2/_catalog", &cat)
 	if len(cat.Repositories) != 1 || cat.Repositories[0] != "jobs" {
 		t.Errorf("catalog = %v, want [jobs]", cat.Repositories)
+	}
+
+	// The registry's pin-assert (fire-and-forget, off the request path)
+	// must eventually reach the server: poll admin refs for the build's
+	// "build:K" row going Pinned.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		refs := adminRefs(t, ctx, srv, "build:"+k.String())
+		if len(refs) == 1 && refs[0].Pinned {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("build:%s never observed Pinned via admin refs: %+v", k.String(), refs)
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 
 	// The server can now go away: the image serves from the blob cache…

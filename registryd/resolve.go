@@ -186,7 +186,8 @@ func (r *registry) ensureRef(ctx context.Context, name string) (key.Key, bool, e
 // presence of a parent proves nothing about its children.
 func (r *registry) checkComplete(root key.Key) error {
 	obj := r.st.Objects()
-	return fstree.CheckComplete(root, obj.Get, obj.Has, 0)
+	_, err := fstree.CheckComplete(root, obj.Get, obj.Has, 0)
+	return err
 }
 
 // buildPlatform learns K's os/arch from its stored definition (the tiny
