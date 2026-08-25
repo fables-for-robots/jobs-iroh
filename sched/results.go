@@ -57,6 +57,11 @@ func (s *Sched) handleResult(data []byte) {
 		s.log.Warn("undecodable result dropped", "error", err)
 		return
 	}
+	if s.touch != nil && len(res.ReadRefs) > 0 {
+		// Reads happened regardless of how the result is disposed of below
+		// (stale, duplicate, unknown node) — touch before the dedup gate.
+		s.touch(res.ReadRefs)
+	}
 	defer s.deleteScratch(res.ScratchRef)
 
 	kind, k, err := wire.ParseNodeName(res.Node)

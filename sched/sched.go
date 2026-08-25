@@ -81,6 +81,9 @@ type Options struct {
 	NC *nats.Conn
 	// Log receives scheduler logs; nil means slog.Default().
 	Log *slog.Logger
+	// Touch, when set, receives the ref names each runner result reports
+	// as read (wire.Result.ReadRefs) — the GC access-tracking seam.
+	Touch func(names []string)
 }
 
 // Sched is the scheduler. All exported methods are safe for concurrent use.
@@ -91,6 +94,7 @@ type Sched struct {
 	jobs  jetstream.Stream // JOBS stream handle (queued-job purge on eviction)
 	kv    jetstream.KeyValue
 	log   *slog.Logger
+	touch func(names []string)
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -202,6 +206,7 @@ func New(ctx context.Context, o Options) (*Sched, error) {
 		jobs:          jobsStream,
 		kv:            kv,
 		log:           log,
+		touch:         o.Touch,
 		ctx:           sctx,
 		cancel:        cancel,
 		retryBase:     defaultRetryBase,
