@@ -17,7 +17,7 @@ require (
 	github.com/nats-io/nats.go v1.52.0
 	github.com/onsi/ginkgo/v2 v2.31.0
 	github.com/onsi/gomega v1.42.0
-	github.com/tmc/go-iroh v0.0.0-20260815195718-8aca5f0f793e
+	github.com/tmc/go-iroh v0.0.1
 	github.com/urfave/cli/v2 v2.27.7
 	go.starlark.net v0.0.0-20260613233743-8ba36ccb83fb
 	golang.org/x/sync v0.22.0
