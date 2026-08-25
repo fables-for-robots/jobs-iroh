@@ -189,7 +189,20 @@ func TestRefRow(t *testing.T) {
 		CreatedNs: time.Unix(700, 0).UnixNano(),
 	}
 	got := refRow(r, now)
-	want := []string{"build-output:abc", "aabbccddeeff", "5m00s"}
+	want := []string{"build-output:abc", "aabbccddeeff", "5m00s", "-", ""}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("refRow[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+	if len(got) != len(refHeader) {
+		t.Errorf("row width %d != header count %d", len(got), len(refHeader))
+	}
+
+	r.LastAccessNs = time.Unix(900, 0).UnixNano()
+	r.Pinned = true
+	got = refRow(r, now)
+	want = []string{"build-output:abc", "aabbccddeeff", "5m00s", "1m40s", "pin"}
 	for i := range want {
 		if got[i] != want[i] {
 			t.Errorf("refRow[%d] = %q, want %q", i, got[i], want[i])
@@ -214,6 +227,37 @@ func TestStatsLines(t *testing.T) {
 	})
 	joined := strings.Join(lines, "\n")
 	for _, want := range []string{"3.0 GiB", "42", "requests       2", "nodes tracked  17", "1h30m"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("statsLines missing %q in:\n%s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "gc ") {
+		t.Errorf("statsLines rendered a GC block with nil GC:\n%s", joined)
+	}
+}
+
+func TestStatsLinesGC(t *testing.T) {
+	lines := statsLines(api.StatsReply{
+		StoreBytes: 1 << 30,
+		GC: &api.GCStats{
+			RetentionNs:  int64(24 * time.Hour),
+			LastSweepNs:  time.Now().Add(-5 * time.Minute).UnixNano(),
+			ExpiredLast:  3,
+			ExpiredTotal: 9,
+			Pinned:       2,
+			LiveBytes:    300,
+			GarbageBytes: 100,
+			LastError:    "boom",
+		},
+	})
+	joined := strings.Join(lines, "\n")
+	for _, want := range []string{
+		"gc retention   24h0m0s",
+		"ago",
+		"expired 3, total 9",
+		"gc garbage     100 B of 400 B (25.0%), pinned 2",
+		"gc last error  boom",
+	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("statsLines missing %q in:\n%s", want, joined)
 		}
