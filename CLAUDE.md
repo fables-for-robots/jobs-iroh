@@ -114,7 +114,8 @@ GitHub release notes are the outward one.
 | `events/` | Build-event schema + OutputWriter (32KiB chunks, 64KiB/100ms flush) — events ride core NATS via the Sink seam. |
 | `sched/` | Server scheduler: in-memory node graph (join = get-or-create, doneness = ref existence), unfold, ref gate, JOBS/RESULTS/status-KV folds, retry classes, per-kind PullRefs, log fold rings, durable FAILURES records + Diagnose. Nodes carry display-only labels (recipe dep names/dirs/fetchers, root from SubmitRequest.Label) — never identity. Forwards `wire.Result.ReadRefs` to the tracker before commit logic. |
 | `reftrack/` | Server-side ref access tracker: touch/pin/expire + CBOR snapshot (`<data-dir>/refaccess.cbor`); protected classes shell:/fetcher:/seed-src:; build-output(-deps) family shares one clock. |
-| `serve/` | jobs-server composition: iroh Router × 5 ALPNs, embedded NATS + embedded store, build/admin API handlers, bootstrap seeding, GC runner (hourly access-expiry sweep + mark-sweep cycles). |
+| `gcsweep/` | Host-agnostic GC engine (extracted from serve): reftrack + collector + sweep pipeline + trees/fetcher-dir sweep; embedded by server, runner (hourly loop) and client (stamp-gated per-command sweep + `gc` command). |
+| `serve/` | jobs-server composition: iroh Router × 5 ALPNs, embedded NATS + embedded store, build/admin API handlers, bootstrap seeding, GC runner (thin `gcsweep` adapter to `api.GCStats`). |
 | `runnerd/` | jobs-runner daemon: boot self-test build gate, lane consumers per fitting size class, admission accounting, pull-inputs → drive stage → push-outputs → result-before-ack (MsgId dedup). |
 | `amberiroh/` | Store sync over iroh QUIC — **vendored** from amber-store-iroh (jobs-iroh was its only consumer). Wire protocol (length-prefixed CBOR frames, amberpack payloads chunked into `TData`), the have/want transfer loop, and the `Server` that `serve/` mounts on `jobs-runner-amber/1.0` + `jobs-amber-admin/1.0`. Carries no accept loop — the router owns dispatch. `ALPN` (`amber-store-iroh/1`) is a **wire constant**: renaming it breaks every peer. TAccept/TRef advertise per-endpoint `DataEndpoints` records (identity + candidates); their presence signals the 10s attach gather window. Upstream keeps its own copy for the `amber`/`amber-serve` CLIs; **this copy is authoritative and the two can drift silently.** TPin pin-asserts + OnAccess/OnPin/RefGuard hooks for the GC tracker/collector. |
 | `amberclient/` | Importable amber sync client over `amberiroh`: dial by endpoint ID, Push/Pull (+WithProgress), refs list. Transfers are sharded (`Conns`, default 4): extra QUIC connections attach to the server's transfer token, want rounds deal across all channels; degrades to the single control stream. Shard dials authenticate the advertised data-endpoint identity and, on discovery dials, bind the relay/net-report stack to hole-punch; extras are skipped (not demoted) while the control path is relayed. Shard conns are pooled (punch once, reuse; grow to PoolMax=12 under concurrency — growth dials in the background, never on a transfer's critical path; shrink after idle). Transfers are reserve-first once the server's data endpoints are cached: DataConns promises only reserved **direct-path** entries; relayed entries are parked (held for the punch, never dealt to, abandoned after ~5 min), so small transfers ride the direct control stream instead of relay shards. |
@@ -144,7 +145,8 @@ GitHub release notes are the outward one.
   are pinned forever; 0 disables.
 - `jobs-runner --server <endpoint-id> [--addr host:port]… [--size c1-m2]
   [--cpu N] [--memory NGi] [--slots N] [--name …] [--data-dir …]
-  [--skip-self-test] [--sync-conns N]`
+  [--skip-self-test] [--sync-conns N]
+  [--gc-retention 720h] [--gc-interval 1h] [--gc-rate N] [--gc-min-free N]`
   — runs a boot self-test build
   (embedded shell, real sandbox) and refuses to start if it fails, then dials
   the server twice (NATS tunnel + amber sync), pulls work-queue jobs for
@@ -155,7 +157,11 @@ GitHub release notes are the outward one.
   rung, `--slots` caps concurrent jobs.
   Build work trees live under `<data-dir>/work` (TMPDIR is pointed there;
   swept every boot) — never the OS temp dir, which is a RAM-backed tmpfs
-  on NixOS and fills at 50% of RAM.
+  on NixOS and fills at 50% of RAM. The four `--gc-*`/`JOBS_GC_*` flags
+  (same knobs as `jobs-server`) start a `gcsweep` loop over the runner's own
+  private cache after the boot self-test passes, on by default
+  (`--gc-retention 0` disables); everything in that cache is re-pullable,
+  so a wrong expiry only costs one re-pull.
 - `jobs-registry --server <endpoint-id> [--addr host:port]… [--listen :5000]
   [--data-dir …] [--cache-ttl 24h] [--default-platform os/arch]
   [--no-shell] [--sync-conns N]` — read-only OCI registry: `docker pull
@@ -172,7 +178,13 @@ GitHub release notes are the outward one.
   overrides the ceiling, `--no-repo-root` pins it to the cwd, an explicit
   `--dir` suppresses the search). The resolved `context: <root> (dir …, recipe
   …)` is always printed to stderr. Identity is unaffected — the same
-  `(root, dir)` pair still yields the same F.
+  `(root, dir)` pair still yields the same F. Every source-building command
+  and `remote-build` opportunistically sweeps the local store afterward
+  (`clientStore.MaybeGC`), stamp-gated to at most once per 24h
+  (`<data-dir>/gc.stamp`) so it stays silent on all but the rare triggering
+  run; retention defaults to 720h via `JOBS_GC_RETENTION` (0 disables).
+  Client outputs are locally authoritative, so an expired ref just costs a
+  rebuild.
   - `build|run|develop [--source <dir>] [--dir …] [--build-file …] [--platform …]
     [--shell-ref …] [--param k=v]…` — local hermetic build / build-then-exec
     entrypoint / interactive PTY shell in the build sandbox (flock held for the
@@ -205,6 +217,10 @@ GitHub release notes are the outward one.
   - `admin stats|fleet|requests|refs|gc|pin|unpin --server <id>` — thin
     frame calls; `gc [--garbage 0.4]` forces an immediate sweep tick,
     `pin <ref>`/`unpin <ref>` set/clear the never-expire flag.
+  - `gc [--data-dir …] [--garbage 0.4] [--retention …]` — forces an
+    immediate sweep of the **local** store (distinct from `admin gc`,
+    which sweeps the server); prints disk/refs/store/trees/cycle stats.
+    `--retention` overrides `JOBS_GC_RETENTION` for this run only.
   - `tui --server <id>` — interactive admin TUI.
 
 ## Sandbox re-exec rule

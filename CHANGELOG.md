@@ -1,5 +1,33 @@
 # Changelog
 
+## Unreleased
+
+- **Runner and client local-store GC** (docs/design/2026-08-25-runner-client-gc.md),
+  built on the same engine as v0.30.0's server-side GC: the tracker +
+  mark-sweep collector + sweep pipeline were extracted verbatim from
+  `serve/gc.go` into a new host-agnostic `gcsweep/` package (serve now
+  wraps it in a thin adapter to `api.GCStats`; wire and behavior
+  unchanged). The extraction also grew a trees sweep: `<cache>/trees/<k>`
+  materializations (and their `<k>.bin` companion farms) are removed once
+  the store no longer holds `k`, `staging-`/`bin-staging-` temp dirs are
+  exempt while young and collected past 24h, and abandoned `fetcher-*`
+  work dirs are collected past 24h.
+  `jobs-runner` gains four flags — `--gc-retention` (default 720h, 0
+  disables), `--gc-interval` (default 1h), `--gc-rate`, `--gc-min-free`
+  (`JOBS_GC_*` env equivalents) — that start a `gcsweep` loop over its own
+  private cache after the boot self-test passes; everything there is
+  re-pullable, so a wrong expiry only costs one re-pull.
+  `jobs-client` opens a sweeper on every store open and, after
+  build/run/develop/image/remote-build, opportunistically sweeps at most
+  once per 24h (`<data-dir>/gc.stamp`), printing one stderr line only when
+  something was reclaimed; retention defaults to 720h via
+  `JOBS_GC_RETENTION` (0 disables). New `jobs-client gc [--garbage]
+  [--retention]` command forces an immediate local sweep and prints
+  disk/refs/store/trees/cycle stats — distinct from the existing `admin
+  gc`, which sweeps the server. Client outputs are locally authoritative
+  ("wasteful never wrong"), so an expired ref just costs a rebuild. No
+  wire or API changes.
+
 ## v0.30.0 — 2026-08-25
 
 - **GC and auto-cleanup** (docs/design/2026-08-25-gc-auto-cleanup.md). The
