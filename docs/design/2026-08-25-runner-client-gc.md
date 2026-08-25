@@ -69,8 +69,16 @@ commands.
 
 When `Options.CacheDir` is set, `Sweep` ends with:
 
-- For each entry under `<CacheDir>/trees/`: parse the directory name as a
-  store key; delete the directory when the store no longer holds that
+- For each entry under `<CacheDir>/trees/`: an entry named with the
+  `staging-` or `bin-staging-` prefix (the `os.MkdirTemp(trees, ...)` temp
+  dirs `stagedTree`/`stagedBinDir` materialize into before their
+  atomic rename-into-place, `runner/importexec_linux.go:366,:402`) is
+  exempted while young and collected only once its mtime is older than
+  24h — same threshold and crash-leftover rationale as `fetcher-*` below.
+  Every other entry: parse the directory name as a store key (a trailing
+  `.bin` suffix — `stagedBinDir`'s `/bin`-farm companion — is stripped
+  first; the remaining hex is the owning key, so the companion lives and
+  dies with it); delete the directory when the store no longer holds that
   object (`Has(k)` false) or the name does not parse. The store is the
   truth — no clock, no access tracking needed. Deletion is best-effort
   and logged; a failure retries next sweep.
@@ -81,10 +89,15 @@ When `Options.CacheDir` is set, `Sweep` ends with:
 Safety: a tree in use by a running job cannot be orphaned — the job
 touched its refs at ensure time, retention shields the refs, the marked
 objects survive the cycle, so `Has(k)` holds. The staged-tree creation
-path (rename-into-place, `runner/importexec_linux.go`) is atomic, so a
-sweep racing a concurrent staging sees either nothing or a complete tree;
-deleting a *complete* tree that a racing job just staged is possible only
-for a dead key, which a live job cannot reference.
+path (rename-into-place, `runner/importexec_linux.go`) stages into a
+`staging-`/`bin-staging-` temp dir *inside* `trees/` itself, not outside
+it — the trees sweep exempts that prefix while young (see above) rather
+than relying on the rename's atomicity alone, so a sweep racing a
+concurrent staging leaves the in-flight temp dir alone instead of deleting
+it mid-write (which could otherwise let the rename publish an incomplete
+tree at the canonical path). Deleting a *complete*, published tree that a
+racing job just staged is possible only for a dead key, which a live job
+cannot reference.
 
 ## 4. Runner integration
 

@@ -51,7 +51,7 @@ func depsOutputName(name string) (string, bool) {
 type Options struct {
 	StoreDir     string // amber store root; the collector opens <StoreDir>/closures
 	SnapshotPath string // reftrack snapshot file (e.g. <data-dir>/refaccess.cbor)
-	CacheDir     string // reserved: enables the trees sweep (Task 2); unused for now
+	CacheDir     string // set to enable the trees sweep (trees.go); empty disables it
 
 	Retention time.Duration
 	Interval  time.Duration
@@ -61,8 +61,8 @@ type Options struct {
 
 // Stats reports the GC/auto-cleanup state as of the last sweep — no mark
 // walk runs on the stats path. Field names mirror api.GCStats exactly (plus
-// the two Trees fields, zero until Task 2's cache/trees sweep lands) so
-// hosts can map this 1:1 onto their wire shape.
+// the two Trees fields, populated by the trees sweep when Options.CacheDir
+// is set, zero otherwise) so hosts can map this 1:1 onto their wire shape.
 type Stats struct {
 	RetentionNs  int64
 	LastSweepNs  int64 // 0 = no sweep yet
@@ -93,7 +93,7 @@ type Sweeper struct {
 	store     *amber.Store
 	storeDir  string
 	snapPath  string // <data-dir>/refaccess.cbor
-	cacheDir  string // reserved: enables the trees sweep (Task 2)
+	cacheDir  string // enables the trees sweep (trees.go) when non-empty
 	tracker   *reftrack.Tracker
 	coll      *gc.Collector
 	retention time.Duration
@@ -264,7 +264,7 @@ func (g *Sweeper) Sweep(ctx context.Context, garbage float64, force bool) (Stats
 		cycle, cycleErr = g.coll.Run(ctx, garbage)
 	}
 
-	// Trees sweep (no-op until CacheDir is wired).
+	// Trees sweep (trees.go); no-op when CacheDir is unset.
 	treesRemoved, fetcherRemoved := g.sweepTrees()
 
 	// 4. Persist & report.
@@ -316,10 +316,6 @@ func (g *Sweeper) Sweep(ctx context.Context, garbage float64, force bool) (Stats
 	g.log.Info("gc sweep", args...)
 	return out, cycleErr
 }
-
-// sweepTrees is the cache/trees + fetcher-* sweep; enabled by
-// Options.CacheDir in a follow-up task. No-op when unset.
-func (g *Sweeper) sweepTrees() (trees, fetchers int) { return 0, 0 }
 
 // failSweep records a sweep-level failure in the stats and returns it.
 func (g *Sweeper) failSweep(err error) (Stats, error) {
