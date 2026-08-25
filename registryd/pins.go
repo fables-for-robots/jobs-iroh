@@ -78,13 +78,20 @@ func pinNames(rec imageRecord) []string {
 
 // assertPins fires a best-effort TPin for the refs backing rec: never on
 // the request path (a goroutine under the daemon context), coalesced to
-// once per ref per hour, self-disabling when the server predates TPin.
+// once per ref per hour, self-disabling when the server predates TPin. The
+// goroutine is tracked like a detached assembly (assemble.go) and drained by
+// Run before the deferred store/sync close.
 func (r *registry) assertPins(rec imageRecord) {
+	if r.runCtx.Err() != nil {
+		return
+	}
 	due := r.pins.due(pinNames(rec), time.Now())
 	if len(due) == 0 {
 		return
 	}
+	r.assemblies.Add(1)
 	go func() {
+		defer r.assemblies.Done()
 		ctx, cancel := context.WithTimeout(r.runCtx, time.Minute)
 		defer cancel()
 		if err := r.sync.Pin(ctx, due); err != nil {
