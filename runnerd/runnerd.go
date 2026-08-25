@@ -42,6 +42,7 @@ import (
 	"github.com/jobs-build/jobs-iroh/amber"
 	"github.com/jobs-build/jobs-iroh/amberclient"
 	"github.com/jobs-build/jobs-iroh/events"
+	"github.com/jobs-build/jobs-iroh/gcsweep"
 	"github.com/jobs-build/jobs-iroh/natsiroh"
 	"github.com/jobs-build/jobs-iroh/resources"
 	"github.com/jobs-build/jobs-iroh/runner"
@@ -91,6 +92,18 @@ type Options struct {
 	// data shards; see amberclient.Options.Conns). 0 uses the amberclient
 	// default, 1 disables sharding.
 	SyncConns int
+	// GCRetention enables local-store GC: refs unread for this long are
+	// deleted and the store mark-sweeps; everything here is a cache of the
+	// server, so a wrong expiry costs one re-pull. 0 disables GC.
+	GCRetention time.Duration
+	// GCInterval is the sweep period (default 1h when GC is enabled).
+	GCInterval time.Duration
+	// GCRate caps the GC copier in bytes/s (0 = unlimited). Compaction
+	// holds local ref publication for its duration.
+	GCRate int64
+	// GCMinFree is the free-space floor in bytes under which the collector
+	// reaps more aggressively (0 = 5% of the filesystem).
+	GCMinFree uint64
 	// Logger receives daemon logs; nil means slog.Default().
 	Logger *slog.Logger
 	// BindAddr optionally pins the UDP bind address (e.g. loopback in
@@ -195,6 +208,28 @@ func Run(ctx context.Context, o Options) error {
 			return nil // interrupted mid-test: a shutdown, not a verdict
 		}
 		return err
+	}
+
+	if o.GCRetention > 0 {
+		if o.GCInterval <= 0 {
+			o.GCInterval = time.Hour
+		}
+		gcw, err := gcsweep.New(log.With("component", "gc"), st, gcsweep.Options{
+			StoreDir:     filepath.Join(o.DataDir, "store"),
+			SnapshotPath: filepath.Join(o.DataDir, "refaccess.cbor"),
+			CacheDir:     cacheDir,
+			Retention:    o.GCRetention,
+			Interval:     o.GCInterval,
+			Rate:         o.GCRate,
+			MinFree:      o.GCMinFree,
+		})
+		if err != nil {
+			return fmt.Errorf("open gc: %w", err)
+		}
+		// Declared after st's defer, so LIFO closes it first — the sweeper
+		// must stop touching the store before the store itself closes.
+		defer gcw.Close()
+		gcw.Start(ctx)
 	}
 
 	// Both connections dial the same server endpoint; each owns its own
