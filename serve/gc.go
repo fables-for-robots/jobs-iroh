@@ -18,6 +18,9 @@ import (
 )
 
 // gcTestCapture, when set (tests only), receives the gcRunner Run wires.
+// Callers wire this to a buffered(1) channel, which supports exactly one
+// GC-enabled server per test process: a second such server started before
+// the first capture is drained would block on the send inside Run.
 var gcTestCapture func(*gcRunner)
 
 // gcRunner owns the GC feature: the access tracker, the mark-sweep
@@ -109,6 +112,11 @@ func (g *gcRunner) Close() {
 		g.stop()
 		<-g.done
 	}
+	// Wait out a concurrently running (e.g. admin-triggered) Sweep — it must
+	// not touch the store after Close returns. No deadlock: the loop is
+	// already joined above, so nothing new can start this lock.
+	g.sweepMu.Lock()
+	defer g.sweepMu.Unlock()
 	if err := g.coll.Close(); err != nil {
 		g.log.Warn("gc collector close", "error", err)
 	}
@@ -174,6 +182,7 @@ func (g *gcRunner) Sweep(ctx context.Context, garbage float64, force bool) (api.
 		g.log.Warn("gc: tracker flush", "error", err)
 	}
 	total, pinned := g.tracker.Counts()
+	disk := dirSize(g.storeDir)
 
 	g.mu.Lock()
 	g.stats.LastSweepNs = now.UnixNano()
@@ -181,7 +190,7 @@ func (g *gcRunner) Sweep(ctx context.Context, garbage float64, force bool) (api.
 	g.stats.ExpiredTotal += deleted
 	g.stats.Pinned = pinned
 	g.stats.RefCount = total
-	g.stats.DiskBytes = dirSize(g.storeDir)
+	g.stats.DiskBytes = disk
 	g.stats.LiveBytes = st.LiveBytes
 	g.stats.GarbageBytes = st.GarbageBytes
 	g.stats.LastError = ""
@@ -273,6 +282,9 @@ func (g *gcRunner) refRow(ri amber.RefInfo) api.RefInfo {
 // freeBelow reports whether the filesystem holding path has less than min
 // bytes free; min 0 means 5% of the filesystem (the collector's own
 // pressure line). Portable across linux and darwin.
+//
+// This intentionally mirrors amber-store-core/gc's unexported freeBelow
+// (same 5% default, same pressure-line role) — keep the two in sync.
 func freeBelow(path string, min uint64) bool {
 	var st unix.Statfs_t
 	if unix.Statfs(path, &st) != nil {

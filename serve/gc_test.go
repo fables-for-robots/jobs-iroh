@@ -21,6 +21,12 @@ import (
 func startGCServer(t *testing.T, ctx context.Context) (*Server, *gcRunner, func(alpn string) *iroh.Conn) {
 	t.Helper()
 
+	// dir must outlive the server shutdown: t.TempDir()'s RemoveAll cleanup
+	// is registered here, before the cancel-and-wait t.Cleanup below, so it
+	// runs AFTER that cleanup (t.Cleanup runs LIFO) and gcr's final tracker
+	// flush on Close doesn't hit ENOENT.
+	dir := t.TempDir()
+
 	ready := make(chan *Server, 1)
 	captured := make(chan *gcRunner, 1)
 	gcTestCapture = func(g *gcRunner) { captured <- g }
@@ -40,9 +46,9 @@ func startGCServer(t *testing.T, ctx context.Context) (*Server, *gcRunner, func(
 	})
 	go func() {
 		done <- Run(runCtx, Options{
-			DataDir:     t.TempDir(),
+			DataDir:     dir,
 			BindAddr:    netip.AddrPortFrom(netip.IPv6Loopback(), 0),
-			GCRetention: 200 * time.Millisecond,
+			GCRetention: 500 * time.Millisecond,
 			GCInterval:  time.Hour, // the loop never fires in tests
 			Ready:       func(s *Server) { ready <- s },
 		})
@@ -119,8 +125,8 @@ func TestGCSweepExpiresAndSpares(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Age everything past the 200ms retention.
-	time.Sleep(300 * time.Millisecond)
+	// Age everything past the 500ms retention.
+	time.Sleep(700 * time.Millisecond)
 
 	// A synthetic runner result touches gc-test:reader (verifies the
 	// sched Touch forwarding of Task 7).

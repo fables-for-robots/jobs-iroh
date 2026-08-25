@@ -99,7 +99,11 @@ func familySibling(name string) (string, bool) {
 	return "", false
 }
 
-// Pin marks name kept-forever and touches it (a pin is an access).
+// Pin marks name kept-forever and touches it (a pin is an access), and
+// mirrors the pin onto its build-output family sibling when that sibling is
+// tracked — pinning build-output:X alone would leave build-output-deps:X
+// expirable, letting the sweep delete deps while output survives, which
+// inverts the family invariant (deps strictly before output).
 func (t *Tracker) Pin(name string) {
 	now := time.Now()
 	t.mu.Lock()
@@ -108,15 +112,30 @@ func (t *Tracker) Pin(name string) {
 	e := t.entries[name]
 	e.Pinned = true
 	t.entries[name] = e
+	if sib, ok := familySibling(name); ok {
+		if _, tracked := t.entries[sib]; tracked {
+			t.touchLocked(sib, now)
+			se := t.entries[sib]
+			se.Pinned = true
+			t.entries[sib] = se
+		}
+	}
 }
 
-// Unpin clears the flag; the ref then lives by its access clock.
+// Unpin clears the flag; the ref then lives by its access clock. Mirrors
+// onto the build-output family sibling the same way Pin does, when tracked.
 func (t *Tracker) Unpin(name string) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	if e, ok := t.entries[name]; ok {
 		e.Pinned = false
 		t.entries[name] = e
+	}
+	if sib, ok := familySibling(name); ok {
+		if se, tracked := t.entries[sib]; tracked {
+			se.Pinned = false
+			t.entries[sib] = se
+		}
 	}
 }
 

@@ -118,6 +118,27 @@ func TestLoadFlushRoundTrip(t *testing.T) {
 	}
 }
 
+func TestPinMirrorsFamily(t *testing.T) {
+	tr := New()
+	base := time.Now()
+	out, deps := "build-output:abc", "build-output-deps:abc"
+	tr.Reconcile([]string{out, deps}, base)
+	tr.Pin(out)
+	if e, _ := tr.Get(deps); !e.Pinned {
+		t.Fatal("pinning output must pin the deps sibling")
+	}
+	tr.Unpin(deps)
+	if e, _ := tr.Get(out); e.Pinned {
+		t.Fatal("unpinning deps must unpin the output sibling")
+	}
+	// A sibling that is not tracked is not created by Pin.
+	tr2 := New()
+	tr2.Pin("build-output:solo")
+	if _, ok := tr2.Get("build-output-deps:solo"); ok {
+		t.Fatal("pin must not create an untracked sibling")
+	}
+}
+
 func TestLoadMissingAndCorrupt(t *testing.T) {
 	tr := New()
 	if err := tr.Load(filepath.Join(t.TempDir(), "nope.cbor")); err != nil {
