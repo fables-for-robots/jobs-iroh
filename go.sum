@@ -122,8 +122,8 @@ github.com/google/pprof v0.0.0-20260402051712-545e8a4df936 h1:EwtI+Al+DeppwYX2oX
 github.com/google/pprof v0.0.0-20260402051712-545e8a4df936/go.mod h1:MxpfABSjhmINe3F1It9d+8exIHFvUqtLIRCdOGNXqiI=
 github.com/jbenet/go-context v0.0.0-20150711004518-d14ea06fba99 h1:BQSFePA1RWJOlocH6Fxy8MmwDt+yVQYULKfN0RoTN8A=
 github.com/jbenet/go-context v0.0.0-20150711004518-d14ea06fba99/go.mod h1:1lJo3i6rXxKeerYnT8Nvf0QmHCRC1n8sfWVwXF2Frvo=
-github.com/jobs-build/amber-store-core v0.0.0-20260727080459-e4fcb60cba49 h1:Fw+eRdS72v38HdYbiQ6ssDUB3KrKaFd1NG2EWxqWR9U=
-github.com/jobs-build/amber-store-core v0.0.0-20260727080459-e4fcb60cba49/go.mod h1:6W8t/OqZ5VKDiMOHVvDflgiOZ3BiSRqcYKDIyJgHn6k=
+github.com/jobs-build/amber-store-core v0.0.2 h1:b7y0ZgwDV2FtzX93Ss8Tq2YCh/6bpq+/yVGQtBGNrxo=
+github.com/jobs-build/amber-store-core v0.0.2/go.mod h1:6W8t/OqZ5VKDiMOHVvDflgiOZ3BiSRqcYKDIyJgHn6k=
 github.com/joshdk/go-junit v1.0.0 h1:S86cUKIdwBHWwA6xCmFlf3RTLfVXYQfvanM5Uh+K6GE=
 github.com/joshdk/go-junit v1.0.0/go.mod h1:TiiV0PqkaNfFXjEiyjWM3XXrhVyCa1K4Zfga6W52ung=
 github.com/kisielk/errcheck v1.5.0/go.mod h1:pFxgyoBC7bSaBwPgfKdkLd5X25qrDl4LWUI2bnpBCr8=

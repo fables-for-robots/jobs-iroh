@@ -213,7 +213,8 @@ func (d *daemon) ensureRef(ctx context.Context, name string) (key.Key, error) {
 // (objects-before-anything: presence of a parent proves nothing).
 func (d *daemon) checkComplete(root key.Key) error {
 	obj := d.st.Objects()
-	return fstree.CheckComplete(root, obj.Get, obj.Has, 0)
+	_, err := fstree.CheckComplete(root, obj.Get, obj.Has, 0)
+	return err
 }
 
 // driveStage is the real driver dispatch (execcore's switch, keyed by the

@@ -96,7 +96,7 @@ func (s *Sched) Submit(ctx context.Context, req api.SubmitRequest) (api.Submitte
 		}
 		get := func(k key.Key) ([]byte, error) { return s.store.Get(k) }
 		has := func(k key.Key) (bool, error) { return s.store.Has(k) }
-		if err := fstree.CheckComplete(t, get, has, 0); err != nil {
+		if _, err := fstree.CheckComplete(t, get, has, 0); err != nil {
 			return api.Submitted{}, incomplete("submit: source tree %s incomplete: %v", t, err)
 		}
 		if err := s.store.PutRef(ctx, "build-from-tree:"+t.String(), t); err != nil {

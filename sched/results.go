@@ -222,7 +222,7 @@ func (s *Sched) commit(sp commitSpec) error {
 	get := func(k key.Key) ([]byte, error) { return s.store.Get(k) }
 	has := func(k key.Key) (bool, error) { return s.store.Has(k) }
 	for i, r := range sp.refs {
-		if err := fstree.CheckComplete(keys[i], get, has, 0); err != nil {
+		if _, err := fstree.CheckComplete(keys[i], get, has, 0); err != nil {
 			return fmt.Errorf("ref %q: incomplete closure: %w", r.Name, err)
 		}
 	}
