@@ -121,7 +121,7 @@ func (cfg *imageConfig) run(c *cli.Context) (err error) {
 		if err := seedBootstrap(ctx, cs.Store, shellRef); err != nil {
 			return err
 		}
-		return runner.BuildImageFromSource(ctx, cs.Store, runner.DevelopConfig{
+		err = runner.BuildImageFromSource(ctx, cs.Store, runner.DevelopConfig{
 			SourceDir: cfg.source,
 			Dir:       cfg.dir,
 			BuildFile: cfg.buildFile,
@@ -130,6 +130,10 @@ func (cfg *imageConfig) run(c *cli.Context) (err error) {
 			ShellRef:  cfg.shellRef,
 			CacheDir:  cs.CacheDir,
 		}, cfg.platform, opts)
+		if err == nil {
+			cs.MaybeGC(ctx)
+		}
+		return err
 	}
 
 	// By-key mode: image an already-built output. The first positional is the
@@ -149,5 +153,9 @@ func (cfg *imageConfig) run(c *cli.Context) (err error) {
 	// assembly needs unless --no-shell. No hard gate — a --no-shell image never
 	// resolves the shell ref at all, so it must work against a shell-less store.
 	seedLocal(ctx, cs.Store)
-	return runner.BuildImageByKey(ctx, cs.Store, k, cfg.platform, cfg.shellRef, opts)
+	err = runner.BuildImageByKey(ctx, cs.Store, k, cfg.platform, cfg.shellRef, opts)
+	if err == nil {
+		cs.MaybeGC(ctx)
+	}
+	return err
 }

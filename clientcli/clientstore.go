@@ -1,11 +1,15 @@
 package clientcli
 
 import (
+	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/jobs-build/jobs-iroh/amber"
+	"github.com/jobs-build/jobs-iroh/gcsweep"
 )
 
 // testStore, when non-nil, bypasses the data-dir open entirely (no flock, no
@@ -38,6 +42,7 @@ type clientStore struct {
 	dataDir  string
 	release  func()
 	closeFn  func() error
+	gc       *gcsweep.Sweeper // nil = disabled (JOBS_GC_RETENTION=0, testStore path, or construction failure)
 }
 
 // openClientStore locks the data dir (flock FIRST — the embedded packstore's
@@ -67,12 +72,58 @@ func openClientStore(dataDir string, mode lockMode) (*clientStore, error) {
 		release()
 		return nil, fmt.Errorf("open embedded store: %w", err)
 	}
-	return &clientStore{Store: st, CacheDir: cacheDir, dataDir: dataDir,
-		release: release, closeFn: st.Close}, nil
+	cs := &clientStore{Store: st, CacheDir: cacheDir, dataDir: dataDir,
+		release: release, closeFn: st.Close}
+	if ret := clientGCRetention(); ret > 0 {
+		sw, err := gcsweep.New(slog.Default(), st, gcsweep.Options{
+			StoreDir:     filepath.Join(dataDir, "store"),
+			SnapshotPath: filepath.Join(dataDir, "refaccess.cbor"),
+			CacheDir:     cacheDir,
+			Retention:    ret,
+		})
+		if err != nil {
+			// GC must never block a build: warn and run without it.
+			fmt.Fprintf(os.Stderr, "gc disabled for this run: %v\n", err)
+		} else {
+			cs.gc = sw
+		}
+	}
+	return cs, nil
 }
 
-// Close closes the store, then releases the flock.
+// Close closes the sweeper first (flushes the tracker snapshot), then the
+// store, then releases the flock.
 func (cs *clientStore) Close() {
+	if cs.gc != nil {
+		cs.gc.Close()
+	}
 	_ = cs.closeFn()
 	cs.release()
+}
+
+// gcCheckEvery is how often the auto sweep is allowed to run; the stamp
+// file's mtime is the record.
+const gcCheckEvery = 24 * time.Hour
+
+// MaybeGC runs the opportunistic sweep: at most once per gcCheckEvery
+// (stamp-gated), after a command's main work, while the flock is still
+// held. Silent unless something was reclaimed; never fails the command.
+func (cs *clientStore) MaybeGC(ctx context.Context) {
+	if cs.gc == nil {
+		return
+	}
+	stamp := filepath.Join(cs.dataDir, "gc.stamp")
+	if info, err := os.Stat(stamp); err == nil && time.Since(info.ModTime()) < gcCheckEvery {
+		return
+	}
+	stats, err := cs.gc.Sweep(ctx, -1, false)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "gc sweep failed (will retry within %s): %v\n", gcCheckEvery, err)
+		return
+	}
+	_ = os.WriteFile(stamp, nil, 0o644) // mtime is the record; content unused
+	if stats.ExpiredLast > 0 || stats.LastCycleFreed > 0 || stats.TreesRemoved > 0 {
+		fmt.Fprintf(os.Stderr, "gc: expired %d refs, freed %d bytes, removed %d orphaned trees\n",
+			stats.ExpiredLast, stats.LastCycleFreed, stats.TreesRemoved)
+	}
 }

@@ -333,6 +333,10 @@ func (cfg *remoteConfig) pullHome(ctx context.Context, c *cli.Context, ac *amber
 	pull.finish(true)
 	fmt.Fprintf(c.App.Writer, "build:  %s\n", f.String())
 	fmt.Fprintf(c.App.Writer, "output: %s\n", outKey.String())
+	// pullHome is the shared tail of both the classic and TUI remote-build
+	// paths (run's "done" case and finishTUI's), so sweeping here after it
+	// completes covers both without duplicating the call at each caller.
+	cs.MaybeGC(ctx)
 	return nil
 }
 
