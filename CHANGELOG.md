@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.31.0 — 2026-08-25
 
 - **Runner and client local-store GC** (docs/design/2026-08-25-runner-client-gc.md),
   built on the same engine as v0.30.0's server-side GC: the tracker +
