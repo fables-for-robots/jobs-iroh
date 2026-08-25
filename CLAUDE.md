@@ -37,7 +37,8 @@ nix develop -c go build ./...
 ```
 
 `GOPRIVATE=github.com/jobs-build/*` is required for module fetches
-(set in `.envrc`).
+(set in `.envrc`). `nix develop -c gofmt -l .` must print nothing —
+treat any output as a failure.
 
 **Cross-compile for macOS after touching any `_linux.go`/`_other.go` pair.**
 Build tags mean `go build` on Linux never type-checks the `!linux` twin, and
@@ -94,7 +95,12 @@ attestation rows. The image names are `jobs-iroh-server` / `jobs-iroh-runner`
 Docker Hub and stay untouched) and `jobs-registry`. Server and registry run
 as distroless `nonroot` (65532; give them their `/data`), the runner as root
 (its sandboxes need it). No `sudo`: the dev machine's user is in the
-`docker` group and reaches the same system daemon. If buildx reports no
+`docker` group and reaches the same system daemon. Claude cannot run the
+push itself — the permission classifier blocks `docker buildx build
+--push` from its shell regardless of approval — so stage the clean tag
+checkout, then ask the user to run `! bash scripts/release-images.sh <V>`;
+verify afterwards with `docker buildx imagetools inspect` (read-only,
+runs fine). If buildx reports no
 `jobs-multi` builder (its metadata can vanish from `~/.docker/buildx/`),
 recreate it: `docker --config "$HOME/.docker" buildx create --name jobs-multi
 --driver docker-container` — the Dockerfiles are COPY-only, so no QEMU is
@@ -263,4 +269,15 @@ Every `main()` and every sandbox-driving `TestMain` must call
   never corrupts (doneness = ref existence); bootstrap seeds and pinned
   refs never expire; every ref PUT goes through the collector's PrepareRef
   guard (`amber.PutRef` + `amberiroh.handlePush` — a new PUT path MUST take
-  the guard too).
+  the guard too). GC gotchas: `GetKey`/`GetRef` fire the access observer (a
+  read IS a touch) — tests asserting expiry must check presence via
+  `ListRefs`, which doesn't touch. Refs seed at first sight (safe-upgrade),
+  so nothing can expire on a store's first sweep — GC tests need a seeding
+  sweep before aging. ONE collector per store: `gc.Open` wipes
+  `<store>/closures` and installs the guard — close a Sweeper before
+  constructing another (`clientcli/gc.go`'s --retention path shows the
+  pattern). `gc.Status` scores only SEALED packs (segments seal at
+  256 MiB), so small/young stores report live=0/garbage=0 and pack-reaping
+  is unobservable at test scale. `cache/trees/` holds in-flight
+  `staging-`/`bin-staging-` temp dirs — any tooling touching trees/ must
+  exempt them (the sweep collects them only past 24h).
