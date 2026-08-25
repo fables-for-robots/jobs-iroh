@@ -114,6 +114,7 @@ func (r *registry) serveManifest(w http.ResponseWriter, req *http.Request, ref s
 		return
 	}
 	r.touchRecord(rec)
+	r.assertPins(rec)
 	r.writeManifest(w, req, b, rec.MediaType, rec.Manifest)
 	r.log.Info("image served", "k", k.String(), "cached", !assembled, "elapsed", elapsed)
 }
@@ -173,6 +174,7 @@ func (r *registry) serveManifestByDigest(w http.ResponseWriter, req *http.Reques
 		}
 	}
 	r.touchRecord(rec)
+	r.assertPins(rec)
 	r.writeManifest(w, req, b, rec.MediaType, d.String())
 	r.log.Info("manifest served", "k", rec.K, "digest", d.String(), "method", req.Method,
 		"elapsed", time.Since(start).Round(time.Millisecond))
