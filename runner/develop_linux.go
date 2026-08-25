@@ -168,7 +168,7 @@ func (d *developDriver) ensureBuild(k key.Key, name string, p *Progress) error {
 	if _, ok, err := d.st.ResolveBuildOutput(d.ctx, k); err != nil {
 		return err
 	} else if ok {
-		p.Cached("build "+buildLabel(k, name)+" (build)")
+		p.Cached("build " + buildLabel(k, name) + " (build)")
 		d.visited[node] = true
 		return nil
 	}

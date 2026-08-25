@@ -56,13 +56,13 @@ const gib = int64(1) << 30
 // — and the runner has parked itself in an (unlimited) leaf-holder child.
 func TestDetectCapacity_WalksUpToThePodLimit(t *testing.T) {
 	fakeCgroups(t, "/kubepods.slice/pod1.slice/cri-containerd-abc.scope/jobs-leaf", map[string]string{
-		"memory.max":                                   "max",
-		"cpu.max":                                      "max 100000",
-		"kubepods.slice/memory.max":                    "max",
-		"kubepods.slice/pod1.slice/memory.max":         itoa(32 * gib),
-		"kubepods.slice/pod1.slice/cpu.max":            "max 100000",
-		"kubepods.slice/pod1.slice/cri-containerd-abc.scope/memory.max": itoa(32 * gib),
-		"kubepods.slice/pod1.slice/cri-containerd-abc.scope/cpu.max":    "max 100000",
+		"memory.max":                           "max",
+		"cpu.max":                              "max 100000",
+		"kubepods.slice/memory.max":            "max",
+		"kubepods.slice/pod1.slice/memory.max": itoa(32 * gib),
+		"kubepods.slice/pod1.slice/cpu.max":    "max 100000",
+		"kubepods.slice/pod1.slice/cri-containerd-abc.scope/memory.max":           itoa(32 * gib),
+		"kubepods.slice/pod1.slice/cri-containerd-abc.scope/cpu.max":              "max 100000",
 		"kubepods.slice/pod1.slice/cri-containerd-abc.scope/jobs-leaf/memory.max": "max",
 	}, 125*1024*1024) // 125 GiB host
 	if got := detectMemBytes(); got != 32*gib {
