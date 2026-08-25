@@ -46,6 +46,7 @@ func App() *cli.App {
 			diagnoseCmd(),
 			statusCmd(),
 			adminCmd(),
+			gcCmd(),
 			tuiCmd(),
 		},
 	}

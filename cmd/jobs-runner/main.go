@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"github.com/urfave/cli/v2"
 
@@ -86,6 +87,28 @@ func main() {
 				EnvVars: []string{"JOBS_LOG_LEVEL"},
 				Value:   "info",
 			},
+			&cli.DurationFlag{
+				Name:    "gc-retention",
+				Usage:   "delete refs unread for this long and run store GC (0 disables)",
+				EnvVars: []string{"JOBS_GC_RETENTION"},
+				Value:   720 * time.Hour, // 30 days
+			},
+			&cli.DurationFlag{
+				Name:    "gc-interval",
+				Usage:   "period of the GC sweep job",
+				EnvVars: []string{"JOBS_GC_INTERVAL"},
+				Value:   time.Hour,
+			},
+			&cli.Int64Flag{
+				Name:    "gc-rate",
+				Usage:   "GC copier bandwidth cap in bytes/s (0 = unlimited); the sweep's compaction holds ref publication (build commits, pushes) for its duration, so a low cap lengthens that stall",
+				EnvVars: []string{"JOBS_GC_RATE"},
+			},
+			&cli.Uint64Flag{
+				Name:    "gc-min-free",
+				Usage:   "free-space floor in bytes for aggressive GC (0 = 5% of the filesystem)",
+				EnvVars: []string{"JOBS_GC_MIN_FREE"},
+			},
 		},
 		Action: func(c *cli.Context) error {
 			log, err := newLogger(c.String("log-level"))
@@ -110,6 +133,10 @@ func main() {
 				Name:         c.String("name"),
 				SkipSelfTest: c.Bool("skip-self-test"),
 				SyncConns:    max(1, c.Int("sync-conns")),
+				GCRetention:  c.Duration("gc-retention"),
+				GCInterval:   c.Duration("gc-interval"),
+				GCRate:       c.Int64("gc-rate"),
+				GCMinFree:    c.Uint64("gc-min-free"),
 				Logger:       log,
 			})
 		},

@@ -195,6 +195,7 @@ func (cfg *localConfig) runBuild(c *cli.Context) error {
 	fmt.Fprintf(c.App.Writer, "output: %s\n", outKey.String())
 	fmt.Fprintf(c.App.Writer, "refs:   build-output:%s (+ build-output-deps:%s) in %s\n",
 		f.String(), f.String(), filepath.Join(cfg.dataDir, "store"))
+	cs.MaybeGC(ctx)
 	return nil
 }
 
@@ -250,6 +251,10 @@ func (cfg *localConfig) runRun(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
+	// The build ran regardless of the entrypoint's own exit code, so sweep
+	// here — before the exit-code translation below, which may turn this
+	// return into a non-zero os.Exit via cli.Exit.
+	cs.MaybeGC(ctx)
 	if code != 0 {
 		// cli.Exit makes urfave/cli os.Exit(code) AFTER this action's defers run
 		// (store close + flock release), so the entrypoint's exit code is
@@ -302,5 +307,7 @@ func (cfg *localConfig) runDevelop(c *cli.Context) error {
 		return err
 	}
 
-	return runner.RunDevelop(ctx, cs.Store, cfg.developConfig(params, cs.CacheDir))
+	derr := runner.RunDevelop(ctx, cs.Store, cfg.developConfig(params, cs.CacheDir))
+	cs.MaybeGC(ctx) // after the PTY session ends, regardless of its outcome
+	return derr
 }

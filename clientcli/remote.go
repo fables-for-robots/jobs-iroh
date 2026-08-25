@@ -133,7 +133,9 @@ func (cfg *remoteConfig) run(c *cli.Context) error {
 	}
 
 	// SHARED lock: push/pull only ever add objects and write fresh ref
-	// names — no local build mutates shared state under us.
+	// names — no local build mutates shared state under us. MaybeGC
+	// self-disables under this shared lock for exactly that reason (its
+	// sweep does mutate shared state).
 	cs, err := openClientStore(cfg.dataDir, lockShared)
 	if err != nil {
 		return err
@@ -333,6 +335,10 @@ func (cfg *remoteConfig) pullHome(ctx context.Context, c *cli.Context, ac *amber
 	pull.finish(true)
 	fmt.Fprintf(c.App.Writer, "build:  %s\n", f.String())
 	fmt.Fprintf(c.App.Writer, "output: %s\n", outKey.String())
+	// pullHome is the shared tail of both the classic and TUI remote-build
+	// paths (run's "done" case and finishTUI's), so sweeping here after it
+	// completes covers both without duplicating the call at each caller.
+	cs.MaybeGC(ctx)
 	return nil
 }
 

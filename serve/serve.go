@@ -201,7 +201,7 @@ func Run(ctx context.Context, opts Options) error {
 		Log:   log.With("component", "sched"),
 	}
 	if gcr != nil {
-		schedOpts.Touch = gcr.tracker.TouchAll
+		schedOpts.Touch = gcr.sweeper.TouchAll
 	}
 	sd, err := sched.New(ctx, schedOpts)
 	if err != nil {
@@ -244,9 +244,9 @@ func Run(ctx context.Context, opts Options) error {
 
 	amberSrv := amberiroh.New(log.With("component", "amber"), store.Objects(), store.RefStore())
 	if gcr != nil {
-		amberSrv.SetOnAccess(gcr.tracker.Touch)
-		amberSrv.SetOnPin(gcr.tracker.Pin)
-		amberSrv.SetRefGuard(gcr.coll)
+		amberSrv.SetOnAccess(gcr.sweeper.Touch)
+		amberSrv.SetOnPin(gcr.sweeper.MarkPinned)
+		amberSrv.SetRefGuard(gcr.sweeper.Guard())
 	}
 
 	// Extra data endpoints for sharded transfers. Each carries only the two
