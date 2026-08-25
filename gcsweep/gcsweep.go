@@ -1,5 +1,5 @@
-// Package gcsweep is the host-agnostic GC engine shared by jobs-server,
-// jobs-runner and jobs-client: a reftrack access tracker + an
+// Package gcsweep is the host-agnostic GC engine designed to be embedded by
+// jobs-server, jobs-runner and jobs-client: a reftrack access tracker + an
 // amber-store-core mark-sweep collector, driven by one sweep pipeline
 // (reconcile → expire → advisory status → conditional cycle → flush).
 // Hosts construct a Sweeper over their open amber store (which installs
@@ -147,6 +147,10 @@ func New(log *slog.Logger, store *amber.Store, opts Options) (*Sweeper, error) {
 
 // Start launches the periodic sweep loop.
 func (g *Sweeper) Start(ctx context.Context) {
+	// Default the loop period here, not only in hosts: a zero interval would panic time.NewTicker inside the goroutine.
+	if g.interval <= 0 {
+		g.interval = time.Hour
+	}
 	loopCtx, cancel := context.WithCancel(ctx)
 	g.stop = cancel
 	g.done = make(chan struct{})
@@ -260,8 +264,7 @@ func (g *Sweeper) Sweep(ctx context.Context, garbage float64, force bool) (Stats
 		cycle, cycleErr = g.coll.Run(ctx, garbage)
 	}
 
-	// sweepTrees is the cache/trees + fetcher-* sweep, enabled by
-	// Options.CacheDir in a follow-up task. No-op when unset.
+	// Trees sweep (no-op until CacheDir is wired).
 	treesRemoved, fetcherRemoved := g.sweepTrees()
 
 	// 4. Persist & report.
@@ -367,22 +370,17 @@ func (g *Sweeper) Pin(ctx context.Context, name string) (amber.RefInfo, reftrack
 
 // Unpin clears the flag (always succeeds; the ref may already be gone).
 // The returned bool reports whether the ref record still exists.
-//
-// (The old refRow's nil-entry case only mattered for untracked names; here
-// Pin always touches first, so its Get after pinning always hits. On Unpin,
-// a tracked name keeps its entry and an untracked name's Get returns a zero
-// Entry — zero LastAccessNs, false Pinned — matching the old ok=false
-// branch's zero row exactly.)
 func (g *Sweeper) Unpin(ctx context.Context, name string) (amber.RefInfo, reftrack.Entry, bool) {
 	g.tracker.Unpin(name)
 	if err := g.tracker.Flush(g.snapPath); err != nil {
 		g.log.Warn("gc: tracker flush after unpin", "error", err)
 	}
-	e, _ := g.tracker.Get(name)
+	// GetRef first: it fires the store observer, so the entry read below reflects this unpin's own access.
 	ri, err := g.store.GetRef(ctx, name)
 	if err != nil {
-		return amber.RefInfo{Name: name}, e, false
+		return amber.RefInfo{Name: name}, reftrack.Entry{}, false
 	}
+	e, _ := g.tracker.Get(name)
 	return ri, e, true
 }
 
