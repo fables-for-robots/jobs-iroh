@@ -42,7 +42,7 @@ func (d *daemon) handleJob(ctx context.Context, msg jetstream.Msg, job wire.Job)
 	ev := events.NewJob(sink, job.Node, d.id, nil)
 	ev.Started(job.Kind)
 
-	out, refs, scratch := d.attempt(ctx, job, ev)
+	out, refs, scratch, readRefs := d.attempt(ctx, job, ev)
 
 	ru := wire.Rusage{WallNs: time.Since(start).Nanoseconds()}
 	if cpuMs, memPeak, ok := sink.Usage(); ok {
@@ -53,7 +53,7 @@ func (d *daemon) handleJob(ctx context.Context, msg jetstream.Msg, job wire.Job)
 			ru.MaxRSS = memPeak
 		}
 	}
-	res := buildResult(job, d.id, out, refs, scratch, ru)
+	res := buildResult(job, d.id, out, refs, scratch, ru, readRefs)
 	ev.Finished(finishOutcome(res.Class), res.Exit)
 
 	// The terminal exchange must survive the run context's cancellation —
@@ -82,22 +82,26 @@ func (d *daemon) handleJob(ctx context.Context, msg jetstream.Msg, job wire.Job)
 
 // attempt executes the runner flow of spec §3: pull pullRefs → in-band def →
 // stage driver → scratch push. It returns the driver outcome (or a synthetic
-// failure outcome), the ordered ref proposals, and the scratch ref name (""
-// when nothing was pushed).
-func (d *daemon) attempt(ctx context.Context, job wire.Job, ev *events.Job) (runner.Outcome, []wire.RefProposal, string) {
+// failure outcome), the ordered ref proposals, the scratch ref name (""
+// when nothing was pushed), and the pull-ref names successfully ensured on
+// this attempt (populated on every path, including failures, so the server's
+// GC learns which cached refs were actually used).
+func (d *daemon) attempt(ctx context.Context, job wire.Job, ev *events.Job) (runner.Outcome, []wire.RefProposal, string, []string) {
 	// 1. Pull every input ref's closure from the server store.
 	ev.Phase("pulling")
+	var readRefs []string
 	for _, name := range job.PullRefs {
 		if _, err := d.ensureRef(ctx, name); err != nil {
 			if ctx.Err() != nil {
-				return runner.Outcome{Cancelled: true}, nil, ""
+				return runner.Outcome{Cancelled: true}, nil, "", readRefs
 			}
 			class := "retryable"
 			if errors.Is(err, errPullIncomplete) {
 				class = "hard"
 			}
-			return runner.Outcome{Failed: true, Class: class, Phase: "pulling", Stderr: err.Error()}, nil, ""
+			return runner.Outcome{Failed: true, Class: class, Phase: "pulling", Stderr: err.Error()}, nil, "", readRefs
 		}
+		readRefs = append(readRefs, name)
 	}
 
 	// 2. In-band def: ingest, verify identity, write the local bookkeeping
@@ -105,16 +109,16 @@ func (d *daemon) attempt(ctx context.Context, job wire.Job, ev *events.Job) (run
 	// remote trip (execcore's exact move).
 	k, err := wire.ParseKey(job.Key)
 	if err != nil {
-		return runner.Outcome{Failed: true, Class: "hard", Phase: "pulling", Stderr: "bad job key: " + err.Error()}, nil, ""
+		return runner.Outcome{Failed: true, Class: "hard", Phase: "pulling", Stderr: "bad job key: " + err.Error()}, nil, "", readRefs
 	}
 	if len(job.Def) > 0 {
 		ik, err := d.st.IngestFile(ctx, job.Def)
 		if err != nil {
-			return runner.Outcome{Failed: true, Class: "retryable", Phase: "pulling", Stderr: "ingest def: " + err.Error()}, nil, ""
+			return runner.Outcome{Failed: true, Class: "retryable", Phase: "pulling", Stderr: "ingest def: " + err.Error()}, nil, "", readRefs
 		}
 		if ik != k {
 			return runner.Outcome{Failed: true, Class: "hard", Phase: "pulling",
-				Stderr: fmt.Sprintf("in-band def hashes to %s, job key is %s", ik, k)}, nil, ""
+				Stderr: fmt.Sprintf("in-band def hashes to %s, job key is %s", ik, k)}, nil, "", readRefs
 		}
 		var refName string
 		switch job.Kind {
@@ -125,7 +129,7 @@ func (d *daemon) attempt(ctx context.Context, job wire.Job, ev *events.Job) (run
 		}
 		if refName != "" {
 			if err := d.st.PutRef(ctx, refName, k); err != nil {
-				return runner.Outcome{Failed: true, Class: "retryable", Phase: "pulling", Stderr: "local def ref: " + err.Error()}, nil, ""
+				return runner.Outcome{Failed: true, Class: "retryable", Phase: "pulling", Stderr: "local def ref: " + err.Error()}, nil, "", readRefs
 			}
 		}
 	}
@@ -140,10 +144,10 @@ func (d *daemon) attempt(ctx context.Context, job wire.Job, ev *events.Job) (run
 		// verdict is untrustworthy — report cancelled so the message naks
 		// back to the queue (running twice is wasteful, never wrong; a hard
 		// failure here would fail the whole request on a mere restart).
-		return runner.Outcome{Cancelled: true}, nil, ""
+		return runner.Outcome{Cancelled: true}, nil, "", readRefs
 	}
 	if out.Cancelled || out.Decline || out.Failed {
-		return out, nil, ""
+		return out, nil, "", readRefs
 	}
 
 	// 4. Push the attempt's outputs: ONE scratch ref over a BuildStoreTree
@@ -151,29 +155,29 @@ func (d *daemon) attempt(ctx context.Context, job wire.Job, ev *events.Job) (run
 	// keys' closures (decision documented in runnerd.go).
 	refs := rw.proposals()
 	if len(refs) == 0 {
-		return out, refs, ""
+		return out, refs, "", readRefs
 	}
 	ev.Phase("pushing")
 	roots := make([]key.Key, 0, len(refs))
 	for _, r := range refs {
 		rk, err := wire.ParseKey(r.Key)
 		if err != nil {
-			return runner.Outcome{Failed: true, Class: "hard", Phase: "pushing", Stderr: "proposed ref key: " + err.Error()}, nil, ""
+			return runner.Outcome{Failed: true, Class: "hard", Phase: "pushing", Stderr: "proposed ref key: " + err.Error()}, nil, "", readRefs
 		}
 		roots = append(roots, rk)
 	}
 	union, err := d.st.BuildStoreTree(ctx, roots)
 	if err != nil {
-		return runner.Outcome{Failed: true, Class: "retryable", Phase: "pushing", Stderr: "assemble scratch tree: " + err.Error()}, nil, ""
+		return runner.Outcome{Failed: true, Class: "retryable", Phase: "pushing", Stderr: "assemble scratch tree: " + err.Error()}, nil, "", readRefs
 	}
 	scratch := scratchRefName(d.id, job.Node, job.Gen)
 	if err := d.sync.Push(ctx, scratch, union); err != nil {
 		if ctx.Err() != nil {
-			return runner.Outcome{Cancelled: true}, nil, ""
+			return runner.Outcome{Cancelled: true}, nil, "", readRefs
 		}
-		return runner.Outcome{Failed: true, Class: "retryable", Phase: "pushing", Stderr: "push outputs: " + err.Error()}, nil, ""
+		return runner.Outcome{Failed: true, Class: "retryable", Phase: "pushing", Stderr: "push outputs: " + err.Error()}, nil, "", readRefs
 	}
-	return out, refs, scratch
+	return out, refs, scratch, readRefs
 }
 
 // scratchRefName is the runner-push scratch ref for one attempt. The server
@@ -279,13 +283,16 @@ func (d *daemon) buildRunCfg(ctx context.Context, job wire.Job, ev *events.Job) 
 // races, the server-side gate arbitrates those); Decline → retryable (a
 // declined attempt says nothing hard about the job); Failed → the driver's
 // own class, defaulting hard when unset (fail closed); success → ok with the
-// ordered proposals and the scratch ref covering their closures.
-func buildResult(job wire.Job, runnerID string, out runner.Outcome, refs []wire.RefProposal, scratch string, ru wire.Rusage) wire.Result {
+// ordered proposals and the scratch ref covering their closures. readRefs
+// rides every class unconditionally — the server's GC needs to know which
+// cached refs were used even when the attempt didn't succeed.
+func buildResult(job wire.Job, runnerID string, out runner.Outcome, refs []wire.RefProposal, scratch string, ru wire.Rusage, readRefs []string) wire.Result {
 	res := wire.Result{
-		Node:   job.Node,
-		Gen:    job.Gen,
-		Runner: runnerID,
-		Rusage: ru,
+		Node:     job.Node,
+		Gen:      job.Gen,
+		Runner:   runnerID,
+		Rusage:   ru,
+		ReadRefs: readRefs,
 	}
 	switch {
 	case out.Cancelled:

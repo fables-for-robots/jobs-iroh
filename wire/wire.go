@@ -183,6 +183,11 @@ type Result struct {
 	// ScratchRef is the runner-side push ref holding this attempt's output
 	// closure; the server deletes it after committing the real refs.
 	ScratchRef string `cbor:"scratchRef,omitempty"`
+	// ReadRefs are the server ref names this attempt resolved as inputs
+	// (pull or local cache hit), reported regardless of outcome so the
+	// server's GC knows cached refs are in use. Additive: old runners
+	// omit it — their warm-cache reads simply go unobserved.
+	ReadRefs []string `cbor:"readRefs,omitempty"`
 }
 
 // FailureRecord origins: who produced the failing verdict.
