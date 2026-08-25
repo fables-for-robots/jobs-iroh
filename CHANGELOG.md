@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.30.0 — 2026-08-25
 
 - **GC and auto-cleanup** (docs/design/2026-08-25-gc-auto-cleanup.md). The
   server now tracks when every ref was last used — its own doneness/cache
@@ -35,6 +35,8 @@
   bump: old runners simply don't report `ReadRefs` (their warm-cache reads
   stay invisible to the tracker, worst case an avoidable rebuild), and an
   old registry never pins (status quo).
+- go-iroh pinned at its first tagged release and then upgraded to v0.1.0
+  (was an Aug-15 pseudo-version; full suite green on the upgrade).
 
 ## v0.29.0 — 2026-08-19
 
