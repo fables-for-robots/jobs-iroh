@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -16,6 +17,25 @@ import (
 	"github.com/jobs-build/jobs-iroh/api"
 	"github.com/jobs-build/jobs-iroh/reftrack"
 )
+
+// gcOutputPrefix/gcDepsPrefix mirror reftrack's own (unexported)
+// build-output:/build-output-deps: family prefixes. reftrack keeps
+// familySibling private, so the sweep loop below derives the same mapping
+// locally rather than exporting it.
+const (
+	gcOutputPrefix = "build-output:"
+	gcDepsPrefix   = "build-output-deps:"
+)
+
+// depsOutputName returns the build-output:X sibling of a build-output-deps:X
+// name, or ok=false if name isn't a deps name.
+func depsOutputName(name string) (string, bool) {
+	s, ok := strings.CutPrefix(name, gcDepsPrefix)
+	if !ok {
+		return "", false
+	}
+	return gcOutputPrefix + s, true
+}
 
 // gcTestCapture, when set (tests only), receives the gcRunner Run wires.
 // Callers wire this to a buffered(1) channel, which supports exactly one
@@ -145,13 +165,32 @@ func (g *gcRunner) Sweep(ctx context.Context, garbage float64, force bool) (api.
 	}
 	g.tracker.Reconcile(names, now)
 
-	// 2. Expire (output before deps — Expired orders them).
+	// 2. Expire (output before deps — Expired orders them). failedOutputs
+	// tracks build-output:X names whose delete failed this sweep, so the
+	// loop below skips their build-output-deps:X sibling (which sorts
+	// later in the same pass) instead of deleting it — deps must never go
+	// missing while their output survives, mirroring "deps strictly
+	// before output".
 	expired := g.tracker.Expired(g.retention, now)
+	failedOutputs := map[string]bool{}
 	deleted := 0
 	for _, name := range expired {
-		e, _ := g.tracker.Get(name)
+		if out, ok := depsOutputName(name); ok && failedOutputs[out] {
+			g.log.Debug("gc: skipping deps ref whose output failed to delete this sweep", "ref", name, "output", out)
+			continue
+		}
+		// Re-fetch immediately before deleting, not just at Expired()'s
+		// snapshot time: a TPin/admin pin may have landed in between, or
+		// the entry may already be gone (e.g. a concurrent admin gc).
+		e, ok := g.tracker.Get(name)
+		if !ok || e.Pinned {
+			continue
+		}
 		if err := g.store.DeleteRef(ctx, name); err != nil {
 			g.log.Warn("gc: delete expired ref", "ref", name, "error", err)
+			if strings.HasPrefix(name, gcOutputPrefix) {
+				failedOutputs[name] = true
+			}
 			continue
 		}
 		g.tracker.Forget(name)

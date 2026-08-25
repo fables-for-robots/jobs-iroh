@@ -79,7 +79,7 @@ func main() {
 			},
 			&cli.Int64Flag{
 				Name:    "gc-rate",
-				Usage:   "GC copier bandwidth cap in bytes/s (0 = unlimited)",
+				Usage:   "GC copier bandwidth cap in bytes/s (0 = unlimited); the sweep's compaction holds ref publication (build commits, pushes) for its duration, so a low cap lengthens that stall",
 				EnvVars: []string{"JOBS_GC_RATE"},
 			},
 			&cli.Uint64Flag{

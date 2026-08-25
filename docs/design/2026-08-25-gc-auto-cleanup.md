@@ -54,13 +54,12 @@ data movement):
    outcome; `sched.handleResult` forwards it to the tracker before any
    commit logic. Warm runners (local closure, no pull) are exactly the
    blind spot this closes.
-   > **Amendment (as built):** the out-of-band `shell:<platform>` pull
-   > (fetched by the runner's boot/self-test path, not per-job) is
+   > **Amendment (as built):** the out-of-band `shell:<platform>` ensure
+   > inside the runner's `buildRunCfg` (pull-on-miss, per job) is
    > deliberately **not** recorded in `ReadRefs` — `shell:` is a protected
-   > class (§3) and expires on nobody's clock anyway, so reporting it would
-   > only add noise. `ReadRefs` covers the job's `PullRefs` family
-   > (including `build-cache:`), which is what actually needs its clock
-   > reset.
+   > class (§3) that expires on nobody's clock, so reporting it would only
+   > add noise. `ReadRefs` covers the job's `PullRefs` family (including
+   > `build-cache:`), which is what actually needs its clock reset.
 4. **Registry pin-asserts** — `TPin` (§4): both an access and a pin.
 
 ## 3. The tracker (`reftrack/`)
@@ -194,7 +193,9 @@ abandoned until the next tick — the sweep never takes the server down;
 disables expiry *and* cycles), `--gc-interval 1h`, `--gc-rate 0` (copier
 bytes/s cap → `gc.Options.Rate`), `--gc-min-free 0` (free-space floor
 bytes; 0 = collector's 5 % default). Grace and the garbage line keep
-upstream defaults — not exposed until someone needs them.
+upstream defaults — not exposed until someone needs them. The sweep's
+compaction holds ref publication (build commits, pushes) for its duration,
+so a low `--gc-rate` cap lengthens that stall.
 
 ## 8. Compatibility
 

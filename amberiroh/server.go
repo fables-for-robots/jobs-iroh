@@ -274,11 +274,16 @@ func (s *Server) handleRefList(rw io.ReadWriter) error {
 }
 
 // handlePin marks the named refs kept-forever. Nonexistent names are
-// ignored, not an error — a registry may assert ahead of a re-resolve.
+// ignored, not an error — a registry may assert ahead of a re-resolve. Any
+// other refs.Get error (a real store problem, not a missing name) fails the
+// whole request instead of being silently swallowed.
 func (s *Server) handlePin(rw io.ReadWriter, m Msg) error {
 	for _, name := range m.Names {
 		if _, err := s.refs.Get(name); err != nil {
-			continue
+			if errors.Is(err, refstore.ErrNotFound) {
+				continue
+			}
+			return s.fail(rw, CodeInternal, err)
 		}
 		if s.onPin != nil {
 			s.onPin(name)

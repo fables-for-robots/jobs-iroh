@@ -95,8 +95,7 @@ func (r *registry) assertPins(rec imageRecord) {
 		ctx, cancel := context.WithTimeout(r.runCtx, time.Minute)
 		defer cancel()
 		if err := r.sync.Pin(ctx, due); err != nil {
-			var re *amberiroh.RemoteError
-			if errors.As(err, &re) {
+			if shouldDisable(err) {
 				r.pins.disable()
 				r.log.Warn("jobs-server does not support pin-asserts; images may be GC'd there", "error", err)
 				return
@@ -105,4 +104,18 @@ func (r *registry) assertPins(rec imageRecord) {
 			r.log.Debug("pin-assert failed; will retry on the next serve", "error", err)
 		}
 	}()
+}
+
+// shouldDisable reports whether err is the specific signal an old server
+// sends for an unrecognized TPin operation (a bad-request RemoteError) —
+// the only case that should permanently disable pin-asserting. Any other
+// *amberiroh.RemoteError (e.g. a transient store error on the server) must
+// not disable pinning; it goes down the retry path instead. Factored out as
+// a pure function so it's testable without a network round trip.
+func shouldDisable(err error) bool {
+	var re *amberiroh.RemoteError
+	if !errors.As(err, &re) {
+		return false
+	}
+	return re.Code == amberiroh.CodeBadRequest
 }

@@ -1,9 +1,13 @@
 package registryd
 
 import (
+	"errors"
+	"fmt"
 	"slices"
 	"testing"
 	"time"
+
+	"github.com/jobs-build/jobs-iroh/amberiroh"
 )
 
 func TestPinAsserterCoalesces(t *testing.T) {
@@ -38,6 +42,28 @@ func TestPinAsserterRetryAndDisable(t *testing.T) {
 	p.disable()
 	if got := p.due([]string{"a", "b"}, now.Add(3*time.Hour)); len(got) != 0 {
 		t.Fatalf("disabled asserter returned %v", got)
+	}
+}
+
+func TestShouldDisable(t *testing.T) {
+	// The old-server signal (unrecognized TPin op): disable.
+	if !shouldDisable(&amberiroh.RemoteError{Code: amberiroh.CodeBadRequest, Text: "unknown operation"}) {
+		t.Fatalf("bad-request RemoteError must disable")
+	}
+	// Any other RemoteError code (e.g. a transient server-side store
+	// error) must re-arm via retry, not disable permanently.
+	if shouldDisable(&amberiroh.RemoteError{Code: amberiroh.CodeInternal, Text: "store error"}) {
+		t.Fatalf("non-bad-request RemoteError must not disable")
+	}
+	// A non-RemoteError (e.g. a transport failure) must not disable.
+	if shouldDisable(errors.New("dial timeout")) {
+		t.Fatalf("non-RemoteError must not disable")
+	}
+	// Wrapped RemoteError (as amberclient.Pin actually returns it, via
+	// fmt.Errorf("...: %w", ...)) must still be detected through errors.As.
+	wrapped := fmt.Errorf("amberclient: pin: %w", &amberiroh.RemoteError{Code: amberiroh.CodeBadRequest})
+	if !shouldDisable(wrapped) {
+		t.Fatalf("wrapped bad-request RemoteError must disable")
 	}
 }
 
