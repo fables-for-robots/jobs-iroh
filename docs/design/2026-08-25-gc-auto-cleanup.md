@@ -49,11 +49,18 @@ data movement):
    registry pulls, client source push and pull-home.
 3. **Runner job reports** — `wire.Result` grows `ReadRefs []string`
    (additive CBOR, `omitempty`). The runner records every name that passes
-   through `ensureRef` — cache hit or pull — plus the out-of-band
-   `shell:<platform>` pull and the `build-cache:` ref, and reports the list
-   on every result regardless of outcome. `sched.handleResult` forwards it
-   to the tracker before any commit logic. Warm runners (local closure, no
-   pull) are exactly the blind spot this closes.
+   through `ensureRef` while driving the job — i.e. the ensured `PullRefs`
+   it was handed — and reports the list on every result regardless of
+   outcome; `sched.handleResult` forwards it to the tracker before any
+   commit logic. Warm runners (local closure, no pull) are exactly the
+   blind spot this closes.
+   > **Amendment (as built):** the out-of-band `shell:<platform>` pull
+   > (fetched by the runner's boot/self-test path, not per-job) is
+   > deliberately **not** recorded in `ReadRefs` — `shell:` is a protected
+   > class (§3) and expires on nobody's clock anyway, so reporting it would
+   > only add noise. `ReadRefs` covers the job's `PullRefs` family
+   > (including `build-cache:`), which is what actually needs its clock
+   > reset.
 4. **Registry pin-asserts** — `TPin` (§4): both an access and a pin.
 
 ## 3. The tracker (`reftrack/`)
@@ -86,6 +93,14 @@ crash orphans).
 — touching either touches both; expiry deletes output before deps,
 mirroring the "deps strictly before output" write invariant, so no
 consumer ever observes deps-implied-by-output missing.
+
+> **Amendment (added during review):** the family rule extends to pin
+> state, not just the clock — `Pin`/`Unpin` mirror onto the tracked
+> sibling exactly like `Touch` does. Pinning `build-output:X` alone would
+> leave `build-output-deps:X` expirable, letting a sweep delete the deps
+> while the output survives — the same inversion of "deps strictly before
+> output" that the clock-sharing rule exists to prevent, just reached via
+> the pin flag instead of the access clock.
 
 ## 4. Registry pinning (`TPin`)
 
@@ -204,9 +219,16 @@ upstream defaults — not exposed until someone needs them.
   unchanged.
 - `amberiroh`: `TPin` round-trip; `OnPull` observation; push guard.
 - `sched`: result carrying `ReadRefs` touches the tracker.
-- `serve` end-to-end: build → age the clock (injected `now` test hook) →
-  tick → expired refs gone, pinned/protected survive, packs reaped,
-  doneness triggers a clean rebuild.
+- `serve` end-to-end: build → age the clock → tick → expired refs gone,
+  pinned/protected survive, packs reaped, doneness triggers a clean
+  rebuild.
+  > **Amendment (as built):** no injected `now` test hook — the harness
+  > configures a real but tiny `GCRetention` (500ms), sleeps past it, and
+  > calls `gcRunner.Sweep` directly with its `force` argument set so the
+  > cycle always runs regardless of the garbage-fraction/free-space
+  > gate. Simpler than threading a clock seam through the collector and
+  > tracker for one test file, and it still exercises the real
+  > retention-comparison and delete path end to end.
 - `registryd`: resolve → pin asserted → sweep spares the image family.
 - CLI/TUI rendering stays presentational (no logic worth testing beyond
   formatting helpers already covered).

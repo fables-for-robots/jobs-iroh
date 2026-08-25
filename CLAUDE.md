@@ -106,19 +106,20 @@ GitHub release notes are the outward one.
 
 | Package | What it is |
 |---|---|
-| `amber/` | Store seam over amber-store-core. Pinned chunk params (ByteOpts 32Ki/128Ki/256Ki, ItemBits 7) are **identity-critical** — never change them. Sibling-sources ops: PruneTree/NormalizeTree (covered trees, uid/gid=0 + ZIP-epoch mtimes — KP is mtime-immune), OverlayTree (generated sources), BuildKPTree ({job.cbor, platform, v, src/}). Source ingest excludes `.git` at every level. |
+| `amber/` | Store seam over amber-store-core. Pinned chunk params (ByteOpts 32Ki/128Ki/256Ki, ItemBits 7) are **identity-critical** — never change them. Sibling-sources ops: PruneTree/NormalizeTree (covered trees, uid/gid=0 + ZIP-epoch mtimes — KP is mtime-immune), OverlayTree (generated sources), BuildKPTree ({job.cbor, platform, v, src/}). Source ingest excludes `.git` at every level. SetObserver/SetRefGuard GC seams (nil-safe: unset = current behavior). |
 | `cover/` | **Identity-critical shared** closure walker + KP derivation (sibling-sources design): pin expands declared+discovered paths (component-wise in-store symlink chase, ELOOP budget 40, dangling warn-keep, escaping fail + `sources_allow_escaping`) into `Pinned.Sources`; `WalkClosure` expands complete covers (no dir seed, workdir validation) into `Pinned.Closure`; `cover.Derive` (used identically by pin runner, server pin-commit, local pipeline) = prune + generated overlay + KP tree. Bump `amber.KPVersion` on ANY semantic change here or in PruneTree. |
 | `natsiroh/` | NATS-over-iroh tunnel (dialer + stream proxy). The dialer writes a `0x00` stream preamble because the NATS server speaks first. |
 | `wire/` | Frozen scheduler wire contracts: node names, phases, Job/Result CBOR, size-class ladder, NATS subject/stream layout. |
 | `api/` | Frozen client API frames (4-byte BE length + CBOR `{t,b}` envelope) for the build/admin ALPNs. |
 | `events/` | Build-event schema + OutputWriter (32KiB chunks, 64KiB/100ms flush) — events ride core NATS via the Sink seam. |
-| `sched/` | Server scheduler: in-memory node graph (join = get-or-create, doneness = ref existence), unfold, ref gate, JOBS/RESULTS/status-KV folds, retry classes, per-kind PullRefs, log fold rings, durable FAILURES records + Diagnose. Nodes carry display-only labels (recipe dep names/dirs/fetchers, root from SubmitRequest.Label) — never identity. |
-| `serve/` | jobs-server composition: iroh Router × 5 ALPNs, embedded NATS + embedded store, build/admin API handlers, bootstrap seeding. |
+| `sched/` | Server scheduler: in-memory node graph (join = get-or-create, doneness = ref existence), unfold, ref gate, JOBS/RESULTS/status-KV folds, retry classes, per-kind PullRefs, log fold rings, durable FAILURES records + Diagnose. Nodes carry display-only labels (recipe dep names/dirs/fetchers, root from SubmitRequest.Label) — never identity. Forwards `wire.Result.ReadRefs` to the tracker before commit logic. |
+| `reftrack/` | Server-side ref access tracker: touch/pin/expire + CBOR snapshot (`<data-dir>/refaccess.cbor`); protected classes shell:/fetcher:/seed-src:; build-output(-deps) family shares one clock. |
+| `serve/` | jobs-server composition: iroh Router × 5 ALPNs, embedded NATS + embedded store, build/admin API handlers, bootstrap seeding, GC runner (hourly access-expiry sweep + mark-sweep cycles). |
 | `runnerd/` | jobs-runner daemon: boot self-test build gate, lane consumers per fitting size class, admission accounting, pull-inputs → drive stage → push-outputs → result-before-ack (MsgId dedup). |
-| `amberiroh/` | Store sync over iroh QUIC — **vendored** from amber-store-iroh (jobs-iroh was its only consumer). Wire protocol (length-prefixed CBOR frames, amberpack payloads chunked into `TData`), the have/want transfer loop, and the `Server` that `serve/` mounts on `jobs-runner-amber/1.0` + `jobs-amber-admin/1.0`. Carries no accept loop — the router owns dispatch. `ALPN` (`amber-store-iroh/1`) is a **wire constant**: renaming it breaks every peer. TAccept/TRef advertise per-endpoint `DataEndpoints` records (identity + candidates); their presence signals the 10s attach gather window. Upstream keeps its own copy for the `amber`/`amber-serve` CLIs; **this copy is authoritative and the two can drift silently.** |
+| `amberiroh/` | Store sync over iroh QUIC — **vendored** from amber-store-iroh (jobs-iroh was its only consumer). Wire protocol (length-prefixed CBOR frames, amberpack payloads chunked into `TData`), the have/want transfer loop, and the `Server` that `serve/` mounts on `jobs-runner-amber/1.0` + `jobs-amber-admin/1.0`. Carries no accept loop — the router owns dispatch. `ALPN` (`amber-store-iroh/1`) is a **wire constant**: renaming it breaks every peer. TAccept/TRef advertise per-endpoint `DataEndpoints` records (identity + candidates); their presence signals the 10s attach gather window. Upstream keeps its own copy for the `amber`/`amber-serve` CLIs; **this copy is authoritative and the two can drift silently.** TPin pin-asserts + OnAccess/OnPin/RefGuard hooks for the GC tracker/collector. |
 | `amberclient/` | Importable amber sync client over `amberiroh`: dial by endpoint ID, Push/Pull (+WithProgress), refs list. Transfers are sharded (`Conns`, default 4): extra QUIC connections attach to the server's transfer token, want rounds deal across all channels; degrades to the single control stream. Shard dials authenticate the advertised data-endpoint identity and, on discovery dials, bind the relay/net-report stack to hole-punch; extras are skipped (not demoted) while the control path is relayed. Shard conns are pooled (punch once, reuse; grow to PoolMax=12 under concurrency — growth dials in the background, never on a transfer's critical path; shrink after idle). Transfers are reserve-first once the server's data endpoints are cached: DataConns promises only reserved **direct-path** entries; relayed entries are parked (held for the punch, never dealt to, abandoned after ~5 min), so small transfers ride the direct control stream instead of relay shards. |
 | `runner/` | Ported stage drivers + sandbox executors; local build/run pipeline (`driveFStages`), develop PTY shell, OCI image export (single-layer docker-load tar + two-layer `AssembleOCIImage` for the registry). |
-| `registryd/` | jobs-registry daemon: read-only OCI Distribution API (images named `jobs:<K>` — one repo, tags are build keys), on-demand K→F resolve + amberclient sync into a private store, two-layer image assembly (shell baked by default like `run`/`image`), uncompressed layers streamed from the CAS per request (never cached; the record's layer recipes are the index), manifest/config blob cache with last-read TTL sweep, offline reassembly from records. |
+| `registryd/` | jobs-registry daemon: read-only OCI Distribution API (images named `jobs:<K>` — one repo, tags are build keys), on-demand K→F resolve + amberclient sync into a private store, two-layer image assembly (shell baked by default like `run`/`image`), uncompressed layers streamed from the CAS per request (never cached; the record's layer recipes are the index), manifest/config blob cache with last-read TTL sweep, offline reassembly from records. Pins served images on the server (TPin, hourly re-assert). |
 | `clientcli/` | jobs-client command surface: local + remote commands, store flock, liveView TTY progress (NO_COLOR-aware). `contextroot.go` owns source resolution — `repoRoot` (pure `.git` walk, the ONLY repo detection; no `git` subprocess), `defaultSource` (cwd walk-up for an omitted `--source`), `resolveContextRoot` (re-anchor to the context root). Local and remote MUST both go through `resolveSource` in that order or the local↔remote F join breaks. |
 | `tui/` | bubbletea admin TUI over `jobs-admin/1.0` (builds watch/logs/cancel/delete, fleet, stats, refs) + the standalone build view (`RunBuildWatch` over the `BuildStreams` seam; `buildtree.go` folds `NodeSnap.Deps` into logical rows) that remote-build/watch run on a TTY. Never block in Update — network I/O only inside tea.Cmd goroutines. |
 | `builddef/`, `recipe/` | Build definition identity (canonical CBOR) + Starlark recipe evaluation — ports, seam-swapped. |
@@ -131,13 +132,16 @@ GitHub release notes are the outward one.
 
 - `jobs-server --data-dir <dir> [--bind host:port] [--relay url]
   [--advertise-addr ip[:port]]… [--no-announce] [--data-endpoints N]
+  [--gc-retention 720h] [--gc-interval 1h] [--gc-rate N] [--gc-min-free N]
   [--log-level …]` — one iroh endpoint, five ALPNs, embedded NATS + amber
   store; `--data-endpoints` (default 3) binds extra UDP sockets with their own
   punchable identities for sharded store transfers. Prints its endpoint ID on
   startup and announces it for discovery: direct interface addresses
   (auto-detected unless --advertise-addr) over mDNS on the LAN and via pkarr
   over the internet, nearest relay as fallback (relay connect is best-effort —
-  an offline host still starts).
+  an offline host still starts). GC runs hourly: refs unread for the
+  retention are deleted and the store mark-sweeps; registry-served images
+  are pinned forever; 0 disables.
 - `jobs-runner --server <endpoint-id> [--addr host:port]… [--size c1-m2]
   [--cpu N] [--memory NGi] [--slots N] [--name …] [--data-dir …]
   [--skip-self-test] [--sync-conns N]`
@@ -198,7 +202,9 @@ GitHub release notes are the outward one.
     output); survives retries and server restarts. `--json` is the
     machine/LLM-friendly shape.
   - `status --server <id>` — one-shot plain-text requests + fleet tables.
-  - `admin stats|fleet|requests|refs --server <id>` — thin frame calls.
+  - `admin stats|fleet|requests|refs|gc|pin|unpin --server <id>` — thin
+    frame calls; `gc [--garbage 0.4]` forces an immediate sweep tick,
+    `pin <ref>`/`unpin <ref>` set/clear the never-expire flag.
   - `tui --server <id>` — interactive admin TUI.
 
 ## Sandbox re-exec rule
@@ -237,3 +243,8 @@ Every `main()` and every sandbox-driving `TestMain` must call
   `go_closure` kwarg computes it (pure-Go transitive import walk;
   module-root packages enumerate files + embed globs). No `KPVersion` bump
   (existing derivations are byte-identical); the `/3.0` ALPN is the fence.
+- **GC expiry is rebuild-safe**: deleting a cold output ref un-memoizes,
+  never corrupts (doneness = ref existence); bootstrap seeds and pinned
+  refs never expire; every ref PUT goes through the collector's PrepareRef
+  guard (`amber.PutRef` + `amberiroh.handlePush` — a new PUT path MUST take
+  the guard too).

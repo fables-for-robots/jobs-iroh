@@ -1,5 +1,41 @@
 # Changelog
 
+## Unreleased
+
+- **GC and auto-cleanup** (docs/design/2026-08-25-gc-auto-cleanup.md). The
+  server now tracks when every ref was last used — its own doneness/cache
+  reads, remote pulls and pushes, and (new) the runner reporting every ref
+  it read while driving a job (`wire.Result.ReadRefs`, additive CBOR) — and
+  an hourly sweep (`--gc-interval`, default 1h) deletes refs unread for
+  `--gc-retention` (default 720h/30d; 0 disables expiry and cycles),
+  output before deps, then drives amber-store-core's mark-and-sweep
+  collector (`--gc-rate`, `--gc-min-free`) when expiry ran, garbage passed
+  50%, or free space is tight, logging one "gc sweep" line with disk
+  usage, ref/pinned counts, expired count, and live/garbage bytes. Every
+  ref PUT (`amber.PutRef`, `amberiroh.handlePush`) now goes through the
+  collector's `PrepareRef` write barrier so a concurrent sweep can never
+  reap a just-written ref. Bootstrap seeds (`shell:`/`fetcher:`/
+  `seed-src:`) and pinned refs never expire; `build-output`/
+  `build-output-deps` share one access clock and one pin state. New
+  `reftrack/` package owns the tracker and its `<data-dir>/refaccess.cbor`
+  snapshot. `jobs-registry` asserts keep-forever pins (new `TPin` amber
+  frame) for every image it serves, coalesced to roughly hourly, so a
+  published image never ages out even if nothing else touches its refs;
+  it self-disables against an older server that doesn't understand `TPin`
+  and drains in-flight asserts at shutdown. New admin surface: `jobs-client
+  admin gc [--garbage 0.4]` forces an immediate sweep, `admin pin <ref>` /
+  `admin unpin <ref>` set/clear the never-expire flag, `admin stats` grows
+  a GC block (retention, last sweep, expired/pinned counts, live/garbage
+  bytes and percentage, last cycle), and `admin refs` (CLI and TUI) grows
+  last-access age and pin columns. Expiring a ref only un-memoizes a build
+  — "running twice is wasteful but never wrong" — so a rebuild after a
+  wrong or premature expiry is the worst case, never corruption. Bumps
+  amber-store-core to v0.0.2 (adds the `gc` mark-sweep package;
+  `fstree.CheckComplete` now also returns the tree's `[]key.Key`). No ALPN
+  bump: old runners simply don't report `ReadRefs` (their warm-cache reads
+  stay invisible to the tracker, worst case an avoidable rebuild), and an
+  old registry never pins (status quo).
+
 ## v0.29.0 — 2026-08-19
 
 - **`tui` exports the build-graph folding API**: `FoldSnapshot`,
