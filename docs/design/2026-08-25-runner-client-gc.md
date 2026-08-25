@@ -97,7 +97,12 @@ concurrent staging leaves the in-flight temp dir alone instead of deleting
 it mid-write (which could otherwise let the rename publish an incomplete
 tree at the canonical path). Deleting a *complete*, published tree that a
 racing job just staged is possible only for a dead key, which a live job
-cannot reference.
+cannot reference. There remains a narrower TOCTOU at the `Has(k)` check
+itself: between `Has` returning false and the `RemoveAll` that follows, a
+concurrent re-ingest of that key could resurrect the dir via `stagedTree`'s
+`os.Stat` fast-path and then lose it mid-use — bounded the same way as
+everywhere else in this design ("wasteful, never wrong": the job fails and
+retries) against a microseconds-wide window on an hourly sweep.
 
 ## 4. Runner integration
 

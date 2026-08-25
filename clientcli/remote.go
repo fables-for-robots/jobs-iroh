@@ -133,7 +133,9 @@ func (cfg *remoteConfig) run(c *cli.Context) error {
 	}
 
 	// SHARED lock: push/pull only ever add objects and write fresh ref
-	// names — no local build mutates shared state under us.
+	// names — no local build mutates shared state under us. MaybeGC
+	// self-disables under this shared lock for exactly that reason (its
+	// sweep does mutate shared state).
 	cs, err := openClientStore(cfg.dataDir, lockShared)
 	if err != nil {
 		return err

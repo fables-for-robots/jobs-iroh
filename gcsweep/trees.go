@@ -88,6 +88,14 @@ func (g *Sweeper) sweepTrees() (trees, fetchers int) {
 			}
 			k, perr := parseTreeKey(e.Name())
 			if perr == nil {
+				// TOCTOU: between Has returning false and the RemoveAll
+				// below, a concurrent re-ingest of k could resurrect this
+				// dir via stagedTree's os.Stat fast-path
+				// (runner/importexec_linux.go:362) and then lose it
+				// mid-use. Bounded the same way as the rest of this
+				// package: "wasteful, never wrong" — the job that hit the
+				// race just fails and retries — against a microseconds-wide
+				// window on an hourly sweep.
 				has, herr := g.store.Has(k)
 				if herr != nil || has {
 					continue // present, or unknown — keep (conservative)

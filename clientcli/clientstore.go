@@ -40,6 +40,7 @@ type clientStore struct {
 	Store    *amber.Store
 	CacheDir string
 	dataDir  string
+	mode     lockMode // the flock mode this store was opened with; MaybeGC self-disables unless lockExclusive
 	release  func()
 	closeFn  func() error
 	gc       *gcsweep.Sweeper // nil = disabled (JOBS_GC_RETENTION=0, testStore path, or construction failure)
@@ -60,7 +61,7 @@ func openClientStore(dataDir string, mode lockMode) (*clientStore, error) {
 		return nil, fmt.Errorf("create cache dir: %w", err)
 	}
 	if testStore != nil {
-		return &clientStore{Store: testStore, CacheDir: cacheDir, dataDir: dataDir,
+		return &clientStore{Store: testStore, CacheDir: cacheDir, dataDir: dataDir, mode: mode,
 			release: func() {}, closeFn: func() error { return nil }}, nil
 	}
 	release, err := acquireStoreLock(dataDir, mode)
@@ -72,7 +73,7 @@ func openClientStore(dataDir string, mode lockMode) (*clientStore, error) {
 		release()
 		return nil, fmt.Errorf("open embedded store: %w", err)
 	}
-	cs := &clientStore{Store: st, CacheDir: cacheDir, dataDir: dataDir,
+	cs := &clientStore{Store: st, CacheDir: cacheDir, dataDir: dataDir, mode: mode,
 		release: release, closeFn: st.Close}
 	if ret := clientGCRetention(); ret > 0 {
 		sw, err := gcsweep.New(slog.Default(), st, gcsweep.Options{
@@ -110,6 +111,13 @@ const gcCheckEvery = 24 * time.Hour
 // held. Silent unless something was reclaimed; never fails the command.
 func (cs *clientStore) MaybeGC(ctx context.Context) {
 	if cs.gc == nil {
+		return
+	}
+	// The sweep mutates shared state (ref deletes, pack compaction, tree
+	// removal), which the shared-flock contract at storelock.go reserves for
+	// exclusive holders; a remote-build's due sweep is simply picked up by
+	// the next exclusive command.
+	if cs.mode != lockExclusive {
 		return
 	}
 	stamp := filepath.Join(cs.dataDir, "gc.stamp")
