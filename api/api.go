@@ -252,6 +252,27 @@ type StatsReply struct {
 	UptimeNs     int64 `cbor:"uptimeNs"`
 	Requests     int   `cbor:"requests"`
 	NodesTracked int   `cbor:"nodesTracked"`
+	// GC is the auto-cleanup block — nil on servers without GC (additive).
+	GC *GCStats `cbor:"gc,omitempty"`
+}
+
+// GCStats reports the GC/auto-cleanup state as of the last sweep — no mark
+// walk runs on the stats path.
+type GCStats struct {
+	RetentionNs     int64  `cbor:"retentionNs"`
+	LastSweepNs     int64  `cbor:"lastSweepNs,omitempty"` // 0 = no sweep yet
+	ExpiredLast     int    `cbor:"expiredLast,omitempty"`
+	ExpiredTotal    int    `cbor:"expiredTotal,omitempty"` // since boot
+	Pinned          int    `cbor:"pinned,omitempty"`
+	RefCount        int    `cbor:"refCount,omitempty"`
+	DiskBytes       int64  `cbor:"diskBytes,omitempty"`
+	LiveBytes       int64  `cbor:"liveBytes,omitempty"`
+	GarbageBytes    int64  `cbor:"garbageBytes,omitempty"`
+	LastCycleNs     int64  `cbor:"lastCycleNs,omitempty"` // start of the last cycle
+	LastCycleReaped int    `cbor:"lastCycleReaped,omitempty"`
+	LastCycleFreed  int64  `cbor:"lastCycleFreed,omitempty"`
+	LastCycleWallNs int64  `cbor:"lastCycleWallNs,omitempty"`
+	LastError       string `cbor:"lastError,omitempty"`
 }
 
 // RefsRequest browses refs by prefix (admin).
@@ -270,6 +291,10 @@ type RefInfo struct {
 	Name      string `cbor:"name"`
 	Key       []byte `cbor:"key"`
 	CreatedNs int64  `cbor:"createdNs"`
+	// LastAccessNs and Pinned come from the GC tracker — zero/false on
+	// servers without GC (additive).
+	LastAccessNs int64 `cbor:"lastAccessNs,omitempty"`
+	Pinned       bool  `cbor:"pinned,omitempty"`
 }
 
 // DiagnoseRequest fetches the durable failure trail (admin). Exactly one of

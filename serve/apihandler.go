@@ -28,6 +28,7 @@ type apiService struct {
 	sd       *sched.Sched
 	store    *amber.Store
 	storeDir string // for the stats disk-usage walk
+	gc       *gcRunner
 	admin    bool
 }
 
